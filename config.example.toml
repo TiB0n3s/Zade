@@ -1,0 +1,21 @@
+[app]
+host = "127.0.0.1"
+port = 8787
+
+[identity]
+name = "Zade"
+description = "Local-first AI co-founder and private operating partner."
+
+[paths]
+hot_root = "C:\\AI Brain"
+cold_root = "D:\\AI Brain-Cold"
+data_dir = "C:\\AI Brain\\memory-hot\\cofounder-kernel"
+
+[ollama]
+base_url = "http://127.0.0.1:11434"
+chat_model = "qwen3:14b"
+reasoning_model = "deepseek-r1:14b"
+coding_model = "qwen2.5-coder:14b"
+embedding_model = "nomic-embed-text"
+think = false
+temperature = 0.2
