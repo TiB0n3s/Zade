@@ -79,10 +79,30 @@ Add-Check "founder-ops-ui" {
     @{ status_code = $Response.StatusCode; bytes = $Response.Content.Length }
 }
 
+Add-Check "approval-console-ui" {
+    $Response = Invoke-WebRequest -Uri "$BaseUrl/ui/approvals.html" -UseBasicParsing -TimeoutSec 10
+    if ($Response.StatusCode -lt 200 -or $Response.StatusCode -ge 400) {
+        throw "Approval console UI returned HTTP $($Response.StatusCode)."
+    }
+    if (-not $Response.Content.Contains("Zade Action Approval Console")) {
+        throw "Approval console UI did not render the shell."
+    }
+    @{ status_code = $Response.StatusCode; bytes = $Response.Content.Length }
+}
+
 Add-Check "inventory" {
     $Inventory = Invoke-RestMethod -Uri "$BaseUrl/self-inventory" -TimeoutSec 10
     if (-not ($Inventory.work_queue.routes -contains "POST /work/items/{item_id}/dispatch")) {
         throw "Dispatch route missing from self-inventory."
+    }
+    if (-not ($Inventory.work_queue.routes -contains "GET /approval-console")) {
+        throw "Approval console route missing from self-inventory."
+    }
+    if (-not ($Inventory.work_queue.routes -contains "POST /approval-requests/{request_id}/defer")) {
+        throw "Approval defer route missing from self-inventory."
+    }
+    if (-not ($Inventory.work_queue.routes -contains "POST /approval-requests/{request_id}/edit")) {
+        throw "Approval edit route missing from self-inventory."
     }
     if (-not ($Inventory.skill_layer.routes -contains "POST /skills/scan")) {
         throw "Skill scan route missing from self-inventory."
@@ -157,6 +177,122 @@ Add-Check "decision-engine" {
         throw "Decision engine did not return an operating contract."
     }
     $Result.operating_contract
+}
+
+Add-Check "approval-console" {
+    $Key = "smoke.approval.console:$([guid]::NewGuid().ToString())"
+    $CreateBody = @{
+        kind = "smoke"
+        title = "Smoke approval console"
+        detail = "Verify action approval console edit and defer."
+        action = "browser.open"
+        target = "https://example.com/smoke"
+        permission_tier = "L3_EXTERNAL_ACTION"
+        source = "smoke-contract"
+        unique_key = $Key
+        metadata = @{
+            evidence = @("Smoke contract created this request.")
+            risks = @("External browser action should stay approval-gated.")
+        }
+    }
+    $Created = Invoke-RestMethod -Uri "$BaseUrl/work/items" -Method Post -Headers $Headers -Body ($CreateBody | ConvertTo-Json -Depth 10) -ContentType "application/json" -TimeoutSec 30
+    if ($Created.status -ne "approval_required") {
+        throw "Expected approval_required for console smoke, got $($Created.status)."
+    }
+    $Console = Invoke-RestMethod -Uri "$BaseUrl/approval-console?status=pending&limit=100" -TimeoutSec 20
+    $Request = $Console.items | Where-Object { $_.work_item.id -eq $Created.item_id } | Select-Object -First 1
+    if (-not $Request) {
+        throw "Console did not expose the smoke approval request."
+    }
+    if (-not $Request.evidence.items -or $Request.evidence.items.Count -lt 1) {
+        throw "Console did not expose approval evidence."
+    }
+    if (-not $Request.risk.items -or $Request.risk.items.Count -lt 1) {
+        throw "Console did not expose approval risk."
+    }
+    $EditBody = @{
+        edited_by = "smoke-contract"
+        note = "Keep smoke local."
+        title = "Smoke approval console edited"
+        action = "local.browser.open"
+        target = "http://127.0.0.1:8787/ui/approvals.html"
+        permission_tier = "L3_EXTERNAL_ACTION"
+        evidence = @("Edited by smoke contract.")
+        risks = @("Still requires approval and typed dispatch.")
+    }
+    $Edited = Invoke-RestMethod -Uri "$BaseUrl/approval-requests/$($Request.id)/edit" -Method Post -Headers $Headers -Body ($EditBody | ConvertTo-Json -Depth 10) -ContentType "application/json" -TimeoutSec 30
+    if ($Edited.request.action -ne "local.browser.open") {
+        throw "Approval edit did not update the action."
+    }
+    $DeferBody = @{
+        resolved_by = "smoke-contract"
+        note = "Deferred by smoke contract."
+        defer_until = (Get-Date).AddDays(1).ToString("o")
+    }
+    $Deferred = Invoke-RestMethod -Uri "$BaseUrl/approval-requests/$($Request.id)/defer" -Method Post -Headers $Headers -Body ($DeferBody | ConvertTo-Json -Depth 8) -ContentType "application/json" -TimeoutSec 30
+    if ($Deferred.request.status -ne "deferred") {
+        throw "Approval defer did not set request deferred."
+    }
+    $Training = Invoke-RestMethod -Uri "$BaseUrl/approval-training-events?approval_request_id=$($Request.id)&limit=10" -TimeoutSec 20
+    $Outcomes = @($Training.items | ForEach-Object { $_.outcome })
+    if (-not ($Outcomes -contains "edited") -or -not ($Outcomes -contains "deferred")) {
+        throw "Approval training events did not record edit and defer."
+    }
+    @{ request_id = $Request.id; outcomes = $Outcomes }
+}
+
+Add-Check "cadence-approval-pressure" {
+    $Key = "smoke.cadence.approval:$([guid]::NewGuid().ToString())"
+    $CreateBody = @{
+        kind = "smoke"
+        title = "Smoke cadence approval pressure"
+        detail = "Verify cadence sees approval-console blockers."
+        action = "local.browser.open"
+        target = "http://127.0.0.1:8787/ui/approvals.html"
+        permission_tier = "L3_EXTERNAL_ACTION"
+        priority = 96
+        source = "smoke-contract"
+        unique_key = $Key
+        metadata = @{
+            evidence = @("Smoke contract created cadence approval pressure.")
+            risks = @("Still requires approval and typed dispatch.")
+        }
+    }
+    $Created = Invoke-RestMethod -Uri "$BaseUrl/work/items" -Method Post -Headers $Headers -Body ($CreateBody | ConvertTo-Json -Depth 10) -ContentType "application/json" -TimeoutSec 30
+    if ($Created.status -ne "approval_required") {
+        throw "Expected cadence approval item to require approval, got $($Created.status)."
+    }
+    $Console = Invoke-RestMethod -Uri "$BaseUrl/approval-console?status=pending&limit=100" -TimeoutSec 20
+    $Request = $Console.items | Where-Object { $_.work_item.id -eq $Created.item_id } | Select-Object -First 1
+    if (-not $Request) {
+        throw "Cadence smoke approval was not visible in approval console."
+    }
+    $CadenceBody = @{
+        run_autonomous = $false
+        max_run = 0
+        review_type = "daily"
+        import_candidates = $false
+        max_import = 0
+        max_experiment_reviews = 1
+    }
+    $Cadence = Invoke-RestMethod -Uri "$BaseUrl/runtime/cadence" -Method Post -Headers $Headers -Body ($CadenceBody | ConvertTo-Json -Depth 10) -ContentType "application/json" -TimeoutSec 45
+    $Pressure = $Cadence.operating.cadence.findings.approval_pressure
+    if (-not $Pressure -or $Pressure.pending -lt 1) {
+        throw "Cadence did not report pending approval pressure."
+    }
+    $TopIds = @($Pressure.items | ForEach-Object { $_.id })
+    if (-not ($TopIds -contains $Request.id)) {
+        throw "Cadence approval pressure did not include the smoke approval request."
+    }
+    if (-not $Cadence.operating.cadence.highest_leverage_action.Contains("/ui/approvals.html")) {
+        throw "Cadence highest leverage action does not point to the approval console."
+    }
+    $DenyBody = @{
+        resolved_by = "smoke-contract"
+        note = "Cadence approval pressure smoke complete."
+    }
+    Invoke-RestMethod -Uri "$BaseUrl/approval-requests/$($Request.id)/deny" -Method Post -Headers $Headers -Body ($DenyBody | ConvertTo-Json -Depth 8) -ContentType "application/json" -TimeoutSec 30 | Out-Null
+    @{ request_id = $Request.id; pending = $Pressure.pending; highest = $Cadence.operating.cadence.highest_leverage_action }
 }
 
 Add-Check "ops-health" {

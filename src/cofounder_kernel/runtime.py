@@ -389,6 +389,7 @@ class RuntimeService:
         dashboard = context["founder_dashboard"]
         active_objective = dashboard.get("active_objective") or {}
         decision_engine = dashboard.get("decision_engine") or {}
+        approval_pressure = dashboard.get("approval_pressure") or {}
         memory_block = _brief_hits(context["memory_hits"], "kind", "title", "content")
         semantic_block = _brief_hits(context["semantic_hits"], "document_id", "document_title", "text")
         skill_block = context.get("skill_prompt_block", "No operating skills matched this request.")
@@ -415,6 +416,7 @@ Founder state:
 - Active objective: {active_objective.get("objective", "none")}
 - Active objective next action: {active_objective.get("next_action", "") or "none"}
 - One thing that matters most: {dashboard["one_thing_that_matters_most_today"]}
+- Approval pressure: {json.dumps(_brief_approval_pressure(approval_pressure), sort_keys=True)}
 - Latest decision recommendations: {json.dumps(_brief_decision_recommendations(decision_engine.get("latest_recommendations", [])), sort_keys=True)}
 - Open integrity warnings surfaced separately by the runtime loop.
 
@@ -488,6 +490,7 @@ User:
                     dashboard.get("decision_engine", {}).get("latest_recommendations", [])
                 ),
             },
+            "approval_pressure": _brief_approval_pressure(dashboard.get("approval_pressure", {})),
             "work_queue_counts": context["work_queue"]["counts"],
             "evidence_state": context["evidence_state"],
             "skill_state": {
@@ -575,3 +578,26 @@ def _brief_decision_recommendations(items: list[dict[str, Any]]) -> list[dict[st
         }
         for item in items[:3]
     ]
+
+
+def _brief_approval_pressure(pressure: dict[str, Any]) -> dict[str, Any]:
+    if not pressure:
+        return {"pending": 0, "deferred": 0, "next_action": "No approval blockers.", "items": []}
+    return {
+        "pending": pressure.get("pending", 0),
+        "deferred": pressure.get("deferred", 0),
+        "headline": pressure.get("headline", ""),
+        "next_action": pressure.get("next_action", ""),
+        "console_url": pressure.get("console_url", "/ui/approvals.html"),
+        "items": [
+            {
+                "id": item.get("id"),
+                "status": item.get("status"),
+                "title": item.get("title"),
+                "zade_wants": item.get("zade_wants"),
+                "permission_tier": item.get("permission_tier"),
+                "priority": item.get("priority"),
+            }
+            for item in pressure.get("items", [])[:3]
+        ],
+    }

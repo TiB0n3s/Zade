@@ -195,6 +195,29 @@ GET  /voice/status
 POST /voice/transcribe
 POST /voice/speak
 POST /voice/converse
+POST /action-plans
+POST /action-plans/from-recommendation/{recommendation_id}
+GET  /action-plans
+GET  /action-plans/{plan_id}
+POST /action-plans/{plan_id}/advance
+POST /action-plans/{plan_id}/steps/{step_id}/approve
+POST /action-plans/{plan_id}/steps/{step_id}/complete
+POST /action-plans/{plan_id}/steps/{step_id}/fail
+POST /action-plans/{plan_id}/steps/{step_id}/skip
+POST /action-plans/{plan_id}/steps/{step_id}/evidence
+POST /commitments
+GET  /commitments
+GET  /commitments/{commitment_id}
+POST /commitments/{commitment_id}/done
+POST /commitments/{commitment_id}/miss
+POST /commitments/{commitment_id}/drop
+POST /commitments/{commitment_id}/renegotiate
+POST /commitments/check
+POST /notify
+GET  /notifications
+POST /notifications/{notification_id}/read
+GET  /notify/channels
+POST /notify/channels/{channel}
 GET  /audit/recent
 GET  /models
 GET  /models/telemetry
@@ -414,6 +437,67 @@ $import = @{ item_ids = @(1); reliability = "C"; strength = 60 } | ConvertTo-Jso
 Invoke-RestMethod -Uri "http://127.0.0.1:8787/connectors/items/import" -Method Post -Body $import -ContentType "application/json"
 
 Invoke-RestMethod -Uri "http://127.0.0.1:8787/connectors/items/2/dismiss" -Method Post -Body (@{ reason = "not business-relevant" } | ConvertTo-Json) -ContentType "application/json"
+```
+
+## Decision-to-Action Pipeline
+
+Recommendations become action plans; plans become steps; every step carries its own authority evaluation and its own evidence trail.
+
+- `POST /action-plans/from-recommendation/{id}` converts a decision-engine recommendation into a plan (the recommendation is marked `planned`).
+- Steps are `manual` (founder work the pipeline tracks) or `work_queue` (machine steps that execute through the existing work queue, so approvals and the typed confirmation phrase apply unchanged).
+- Step statuses: `pending`, `blocked`, `approval_required`, `approved`, `queued`, `running`, `done`, `failed`, `skipped`. A denied action blocks the step — and the plan — at creation.
+- Step outcomes are recorded automatically as grade-A evidence (`action_step_outcome`) in the founder ledger; additional evidence can be attached per step.
+- Stalled plans (blocked/failed) surface in the attention queue; failed steps go through the notification bus.
+
+```powershell
+$plan = @{
+  title = "Validate pricing with five founders"
+  steps = @(
+    @{ title = "Draft the interview script" },
+    @{ title = "Send follow-up emails"; action = "email.send"; permission_tier = "L3_EXTERNAL_ACTION" }
+  )
+} | ConvertTo-Json -Depth 8
+$created = Invoke-RestMethod -Uri "http://127.0.0.1:8787/action-plans" -Method Post -Body $plan -ContentType "application/json"
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/action-plans/$($created.item.id)/advance" -Method Post
+```
+
+## Commitment Ledger
+
+The ledger tracks what you said you would do and what Zade said he would monitor — deadlines, misses, drift, and follow-ups. This is what makes Zade a co-founder instead of a smart notes app.
+
+- `who` is `founder` or `zade`; `kind` is `do`, `decide`, `deliver`, or `monitor` (monitors carry a `daily`/`weekly`/`monthly` cadence).
+- `POST /commitments/check` (also run by the daily cadence) flags overdue, due-soon, drifting, and monitor-due commitments, records at most one follow-up per commitment per day, and notifies on newly overdue promises. It never closes anything.
+- Closing is explicit: `done` (optionally with evidence), `miss`, or `drop` — history is never quietly rewritten.
+- Renegotiating moves the date and counts it; two or more renegotiations is drift, and drift gets surfaced.
+
+```powershell
+$commitment = @{ title = "Send the pilot pricing proposal"; due_at = "2026-07-15"; who = "founder" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/commitments" -Method Post -Body $commitment -ContentType "application/json"
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/commitments/check" -Method Post
+```
+
+## Notification Bus
+
+One internal `notify()` for every producer — surfacing briefs, overdue commitments, failed action steps, and anything else. No feature talks to a delivery channel directly.
+
+- Channels: `ui` (the notification feed, on by default), `voice` (speaks via the configured TTS engine, off by default), `sms` (off by default; your Android SMS gateway plugs in here via `config.gateway_url`, not into random features).
+- Rules per channel: enabled flag, minimum severity (`info`/`warning`/`critical`), quiet hours (`22:00`-`07:00` style, overnight windows supported), hourly rate limits, and a recipient whitelist for outbound channels.
+- Critical notifications bypass quiet hours but never the whitelist or the rate limit. Duplicate `dedupe_key`s within an hour are suppressed. Every suppression is recorded with its reason.
+- Enabling an outbound channel is a standing founder grant, bounded by those rules.
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/notify/channels"
+
+$sms = @{
+  enabled = $true
+  recipients = @("+15551234567")
+  config = @{ gateway_url = "http://192.168.1.50:8686/send"; to = "+15551234567" }
+} | ConvertTo-Json -Depth 8
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/notify/channels/sms" -Method Post -Body $sms -ContentType "application/json"
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/notifications?unread_only=true"
 ```
 
 ## Voice Loop
@@ -1270,6 +1354,9 @@ Implemented:
 - read-only external connectors (IMAP email, ICS calendar) with approval-gated sync, env-referenced credentials, staged candidates, and graded evidence import
 - local voice loop with founder-configured STT/TTS engines, governed voice conversations with episodic memory, and honest engine-unavailable reporting
 - always-on supervisor with a resident scheduled task, crash recovery through start.ps1, a supervisor-owned JSONL history, and kernel uptime/supervision reporting
+- decision-to-action pipeline with per-step authority, work-queue execution for machine steps, step-level evidence trails, and stalled-plan surfacing
+- commitment ledger tracking founder and Zade promises with deadlines, misses, drift detection, throttled follow-ups, and cadence integration
+- notification bus with ui/voice/sms channels, severity floors, quiet hours, rate limits, recipient whitelists, dedupe, and recorded suppressions
 - Deep Thought teaching bridge with sourced candidates, evidence import, object linking, and evidence loop
 - Deep Thought imported-candidate auto-link pass
 - experiment + evidence loop with experiment objects, evidence intake, object linking, forced reviews, runtime loop, and non-blocking pushback

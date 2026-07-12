@@ -380,6 +380,64 @@ def test_runtime_cadence_runs_all_loops(tmp_path: Path, monkeypatch) -> None:
     assert "POST /runtime/cadence" in inventory.json()["runtime_layer"]["routes"]
 
 
+def test_runtime_cadence_surfaces_approval_console_pressure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    queued = client.post(
+        "/work/items",
+        json={
+            "kind": "approval_console",
+            "title": "Approve evidence inbox sync",
+            "detail": "Zade wants approval to sync evidence inbox candidates.",
+            "action": "external.connector.sync",
+            "target": "connector:evidence-inbox",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "priority": 95,
+            "metadata": {
+                "evidence": ["Evidence inbox is blocking today's objective."],
+                "risks": ["External connector sync must be approval gated."],
+            },
+        },
+    )
+    cadence = client.post(
+        "/runtime/cadence",
+        json={"run_autonomous": False, "max_run": 0, "review_type": "daily", "max_experiment_reviews": 1},
+    )
+    context = client.post(
+        "/runtime/context",
+        json={"message": "What is blocking progress?", "use_semantic_memory": False},
+    )
+    brief = client.get("/brief/daily")
+    inventory = client.get("/self-inventory")
+
+    approval_pressure = cadence.json()["operating"]["cadence"]["findings"]["approval_pressure"]
+    surfacing_items = cadence.json()["surfacing"]["items"]
+
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "approval_required"
+    assert cadence.status_code == 200
+    assert approval_pressure["pending"] == 1
+    assert approval_pressure["items"][0]["title"] == "Approve evidence inbox sync"
+    assert cadence.json()["operating"]["cadence"]["highest_leverage_action"].startswith("Review approval #")
+    assert any(item["kind"] == "approvals_pending" for item in surfacing_items)
+    assert cadence.json()["next_action"].startswith("1 approval request(s) waiting on you")
+    assert context.json()["founder_dashboard"]["approval_pressure"]["pending"] == 1
+    assert context.json()["founder_dashboard"]["approval_pressure"]["items"][0]["title"] == "Approve evidence inbox sync"
+    assert "Approval blockers:" in brief.json()["brief"]
+    assert "Approve evidence inbox sync" in brief.json()["brief"]
+    assert any(
+        "Cadence reviews include approval pressure" in rule
+        for rule in inventory.json()["surfacing_layer"]["operating_rules"]
+    )
+
+
 def test_deepthought_teaching_scan_import_and_link(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     monkeypatch.setattr(OllamaClient, "embed", fake_embed)
@@ -958,6 +1016,116 @@ def test_approval_request_can_be_denied(tmp_path: Path, monkeypatch) -> None:
     assert denied.status_code == 200
     assert denied.json()["request"]["status"] == "denied"
     assert denied.json()["work_item"]["status"] == "denied"
+
+
+def test_action_approval_console_edit_defer_and_learning_events(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    queued = client.post(
+        "/work/items",
+        json={
+            "kind": "external",
+            "title": "Open external research",
+            "detail": "Zade wants to open a research page.",
+            "action": "browser.open",
+            "target": "https://example.com/research",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "metadata": {
+                "evidence": ["Decision engine requested competitor evidence."],
+                "risks": ["External browser action."],
+            },
+        },
+    )
+    request_id = client.get("/approval-requests").json()["items"][0]["id"]
+    console_before = client.get("/approval-console")
+    edited = client.post(
+        f"/approval-requests/{request_id}/edit",
+        json={
+            "edited_by": "founder",
+            "note": "Keep this local and auditable.",
+            "title": "Open local founder UI",
+            "detail": "Use the local UI instead of an external page.",
+            "action": "local.browser.open",
+            "target": "http://127.0.0.1:8787/ui/founder.html",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "priority": 77,
+            "evidence": ["Local UI has the current founder context."],
+            "risks": ["Browser open still needs dispatch confirmation."],
+        },
+    )
+    deferred = client.post(
+        f"/approval-requests/{request_id}/defer",
+        json={"resolved_by": "founder", "note": "Handle after the current build.", "defer_until": "2026-07-13T09:00:00-05:00"},
+    )
+
+    approve_item = client.post(
+        "/work/items",
+        json={
+            "kind": "approval_console",
+            "title": "No-op approved through console",
+            "action": "local.noop",
+            "target": "approval-console",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+        },
+    )
+    approved = client.post(
+        f"/work/items/{approve_item.json()['item_id']}/approve",
+        json={"resolved_by": "founder", "note": "Safe local no-op."},
+    )
+
+    deny_item = client.post(
+        "/work/items",
+        json={
+            "kind": "approval_console",
+            "title": "Deny external SMS",
+            "action": "sms.send",
+            "target": "+15555550100",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+        },
+    )
+    denied = client.post(
+        f"/work/items/{deny_item.json()['item_id']}/deny",
+        json={"resolved_by": "founder", "note": "No SMS gateway configured."},
+    )
+
+    console_deferred = client.get("/approval-console", params={"status": "deferred"})
+    training = client.get("/approval-training-events")
+    metrics = client.get("/founder/metrics")
+    inventory = client.get("/self-inventory")
+    ui = client.get("/ui/approvals.html")
+
+    assert queued.status_code == 200
+    assert console_before.status_code == 200
+    assert console_before.json()["items"][0]["zade_wants"].startswith("Zade wants to browser.open")
+    assert console_before.json()["items"][0]["evidence"]["items"] == ["Decision engine requested competitor evidence."]
+    assert console_before.json()["items"][0]["risk"]["items"][0] == "External browser action."
+    assert edited.status_code == 200
+    assert edited.json()["request"]["action"] == "local.browser.open"
+    assert edited.json()["work_item"]["priority"] == 77
+    assert edited.json()["console_item"]["authority_tier"]["authority_decision"] == "approval_required"
+    assert deferred.status_code == 200
+    assert deferred.json()["request"]["status"] == "deferred"
+    assert deferred.json()["work_item"]["status"] == "deferred"
+    assert approved.status_code == 200
+    assert approved.json()["training_event_id"] > 0
+    assert denied.status_code == 200
+    assert denied.json()["training_event_id"] > 0
+    assert console_deferred.json()["items"][0]["request"]["action"] == "local.browser.open"
+    outcomes = {item["outcome"] for item in training.json()["items"]}
+    assert {"edited", "deferred", "approved", "denied"} <= outcomes
+    assert metrics.json()["counts"]["approval_training_events"] == 4
+    assert metrics.json()["approvals"]["training_by_outcome"]["edited"] == 1
+    assert "GET /approval-console" in inventory.json()["work_queue"]["routes"]
+    assert "POST /approval-requests/{request_id}/defer" in inventory.json()["work_queue"]["routes"]
+    assert "POST /approval-requests/{request_id}/edit" in inventory.json()["work_queue"]["routes"]
+    assert ui.status_code == 200
+    assert "Zade Action Approval Console" in ui.text
 
 
 def test_ops_health_check_and_backup_routes(tmp_path: Path, monkeypatch) -> None:

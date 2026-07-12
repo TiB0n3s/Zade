@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 def utc_now() -> str:
@@ -69,6 +69,27 @@ class ApprovalRequest:
     resolved_by: str
     resolved_at: str | None
     resolution_note: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ApprovalTrainingEvent:
+    id: int
+    created_at: str
+    approval_request_id: int | None
+    work_item_id: int | None
+    event_type: str
+    outcome: str
+    actor: str
+    note: str
+    action: str
+    target: str
+    permission_tier: str
+    authority_decision: str
+    authority: dict[str, Any]
+    request_snapshot: dict[str, Any]
+    work_item_snapshot: dict[str, Any]
+    edits: dict[str, Any]
     metadata: dict[str, Any]
 
 
@@ -305,6 +326,74 @@ class KernelDatabase:
                 ),
             )
 
+    def update_work_item_proposal(
+        self,
+        item_id: int,
+        *,
+        title: str | None = None,
+        detail: str | None = None,
+        action: str | None = None,
+        target: str | None = None,
+        permission_tier: str | None = None,
+        priority: int | None = None,
+        source: str | None = None,
+        due_at: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        status: str | None = None,
+        authority_decision: str | None = None,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> WorkItem:
+        with self.connect() as conn:
+            current = conn.execute("SELECT * FROM work_items WHERE id = ?", (item_id,)).fetchone()
+            if current is None:
+                raise ValueError(f"Work item not found: {item_id}")
+            merged_metadata = (
+                {**json.loads(current["metadata_json"] or "{}"), **metadata}
+                if metadata is not None
+                else json.loads(current["metadata_json"] or "{}")
+            )
+            merged_result = result if result is not None else json.loads(current["result_json"] or "{}")
+            conn.execute(
+                """
+                UPDATE work_items
+                SET updated_at = ?,
+                    title = COALESCE(?, title),
+                    detail = COALESCE(?, detail),
+                    action = COALESCE(?, action),
+                    target = COALESCE(?, target),
+                    permission_tier = COALESCE(?, permission_tier),
+                    priority = COALESCE(?, priority),
+                    source = COALESCE(?, source),
+                    due_at = COALESCE(?, due_at),
+                    metadata_json = ?,
+                    status = COALESCE(?, status),
+                    authority_decision = COALESCE(?, authority_decision),
+                    result_json = ?,
+                    last_error = COALESCE(?, last_error)
+                WHERE id = ?
+                """,
+                (
+                    utc_now(),
+                    title,
+                    detail,
+                    action,
+                    target,
+                    permission_tier,
+                    priority,
+                    source,
+                    due_at,
+                    json.dumps(merged_metadata, sort_keys=True),
+                    status,
+                    authority_decision,
+                    json.dumps(merged_result, sort_keys=True),
+                    error,
+                    item_id,
+                ),
+            )
+            row = conn.execute("SELECT * FROM work_items WHERE id = ?", (item_id,)).fetchone()
+            return _work_item_from_row(row)
+
     def work_queue_counts(self) -> dict[str, int]:
         with self.connect() as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS count FROM work_items GROUP BY status").fetchall()
@@ -418,6 +507,148 @@ class KernelDatabase:
             )
             row = conn.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,)).fetchone()
             return _approval_request_from_row(row)
+
+    def update_approval_request(
+        self,
+        request_id: int,
+        *,
+        title: str | None = None,
+        detail: str | None = None,
+        action: str | None = None,
+        target: str | None = None,
+        permission_tier: str | None = None,
+        authority_decision: str | None = None,
+        authority: dict[str, Any] | None = None,
+        status: str | None = None,
+        requested_by: str | None = None,
+        resolved_by: str | None = None,
+        resolved_at: str | None = None,
+        resolution_note: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ApprovalRequest:
+        with self.connect() as conn:
+            current = conn.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,)).fetchone()
+            if current is None:
+                raise ValueError(f"Approval request not found: {request_id}")
+            merged_metadata = (
+                {**json.loads(current["metadata_json"] or "{}"), **metadata}
+                if metadata is not None
+                else json.loads(current["metadata_json"] or "{}")
+            )
+            authority_json = authority if authority is not None else json.loads(current["authority_json"] or "{}")
+            conn.execute(
+                """
+                UPDATE approval_requests
+                SET updated_at = ?,
+                    title = COALESCE(?, title),
+                    detail = COALESCE(?, detail),
+                    action = COALESCE(?, action),
+                    target = COALESCE(?, target),
+                    permission_tier = COALESCE(?, permission_tier),
+                    authority_decision = COALESCE(?, authority_decision),
+                    authority_json = ?,
+                    status = COALESCE(?, status),
+                    requested_by = COALESCE(?, requested_by),
+                    resolved_by = COALESCE(?, resolved_by),
+                    resolved_at = COALESCE(?, resolved_at),
+                    resolution_note = COALESCE(?, resolution_note),
+                    metadata_json = ?
+                WHERE id = ?
+                """,
+                (
+                    utc_now(),
+                    title,
+                    detail,
+                    action,
+                    target,
+                    permission_tier,
+                    authority_decision,
+                    json.dumps(authority_json, sort_keys=True),
+                    status,
+                    requested_by,
+                    resolved_by,
+                    resolved_at,
+                    resolution_note,
+                    json.dumps(merged_metadata, sort_keys=True),
+                    request_id,
+                ),
+            )
+            row = conn.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,)).fetchone()
+            return _approval_request_from_row(row)
+
+    def record_approval_training_event(
+        self,
+        *,
+        approval_request_id: int | None,
+        work_item_id: int | None,
+        event_type: str,
+        outcome: str,
+        actor: str,
+        note: str = "",
+        action: str = "",
+        target: str = "",
+        permission_tier: str = "",
+        authority_decision: str = "",
+        authority: dict[str, Any] | None = None,
+        request_snapshot: dict[str, Any] | None = None,
+        work_item_snapshot: dict[str, Any] | None = None,
+        edits: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO approval_training_events (
+                  created_at, approval_request_id, work_item_id, event_type, outcome, actor, note,
+                  action, target, permission_tier, authority_decision, authority_json,
+                  request_snapshot_json, work_item_snapshot_json, edits_json, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    approval_request_id,
+                    work_item_id,
+                    event_type,
+                    outcome,
+                    actor,
+                    note,
+                    action,
+                    target,
+                    permission_tier,
+                    authority_decision,
+                    json.dumps(authority or {}, sort_keys=True),
+                    json.dumps(request_snapshot or {}, sort_keys=True),
+                    json.dumps(work_item_snapshot or {}, sort_keys=True),
+                    json.dumps(edits or {}, sort_keys=True),
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def list_approval_training_events(
+        self,
+        *,
+        approval_request_id: int | None = None,
+        outcome: str | None = None,
+        limit: int = 50,
+    ) -> list[ApprovalTrainingEvent]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if approval_request_id is not None:
+            clauses.append("approval_request_id = ?")
+            params.append(approval_request_id)
+        if outcome:
+            clauses.append("outcome = ?")
+            params.append(outcome)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM approval_training_events {where} ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [_approval_training_event_from_row(row) for row in rows]
 
     def upsert_document(
         self,
@@ -1064,14 +1295,69 @@ class KernelDatabase:
             "recently_used": [dict(row) for row in recently_used],
         }
 
-    def daily_brief_inputs(self) -> dict[str, list[dict[str, Any]]]:
+    def daily_brief_inputs(self) -> dict[str, Any]:
         with self.connect() as conn:
             return {
                 "recent_memories": [dict(row) for row in conn.execute("SELECT * FROM memories ORDER BY id DESC LIMIT 8")],
                 "active_goals": [dict(row) for row in conn.execute("SELECT * FROM goals WHERE status = 'active' ORDER BY id DESC LIMIT 8")],
                 "open_decisions": [dict(row) for row in conn.execute("SELECT * FROM decisions WHERE status = 'open' ORDER BY id DESC LIMIT 8")],
                 "recent_disagreements": [dict(row) for row in conn.execute("SELECT * FROM disagreements ORDER BY id DESC LIMIT 5")],
+                "approval_pressure": self.approval_pressure(limit=3),
             }
+
+    def approval_pressure(self, *, limit: int = 3) -> dict[str, Any]:
+        with self.connect() as conn:
+            counts = conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM approval_requests
+                WHERE status IN ('pending', 'deferred')
+                GROUP BY status
+                """
+            ).fetchall()
+            rows = conn.execute(
+                """
+                SELECT
+                  ar.*,
+                  wi.priority AS work_priority,
+                  wi.kind AS work_kind,
+                  wi.source AS work_source,
+                  wi.due_at AS work_due_at,
+                  wi.metadata_json AS work_metadata_json
+                FROM approval_requests ar
+                LEFT JOIN work_items wi
+                  ON ar.source_type = 'work_item' AND ar.source_id = wi.id
+                WHERE ar.status IN ('pending', 'deferred')
+                ORDER BY
+                  CASE ar.status WHEN 'pending' THEN 0 ELSE 1 END,
+                  COALESCE(wi.priority, 50) DESC,
+                  ar.id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        by_status = {str(row["status"]): int(row["count"]) for row in counts}
+        items = [_approval_pressure_from_row(row) for row in rows]
+        top = items[0] if items else {}
+        pending = by_status.get("pending", 0)
+        deferred = by_status.get("deferred", 0)
+        if pending:
+            headline = f"{pending} approval request(s) waiting on you."
+        elif deferred:
+            headline = f"{deferred} deferred approval request(s) still on the board."
+        else:
+            headline = "No approval blockers."
+        return {
+            "pending": pending,
+            "deferred": deferred,
+            "total": pending + deferred,
+            "items": items,
+            "top": top,
+            "headline": headline,
+            "next_action": f"Review approval #{top['id']} in /ui/approvals.html: {top['title']}" if top else "No approval blockers.",
+            "console_url": "/ui/approvals.html",
+            "has_blockers": bool(items),
+        }
 
     def create_conversation(self, *, title: str = "", metadata: dict[str, Any] | None = None) -> int:
         now = utc_now()
@@ -1261,6 +1547,73 @@ def _approval_request_from_row(row: sqlite3.Row) -> ApprovalRequest:
         resolution_note=str(row["resolution_note"]),
         metadata=json.loads(row["metadata_json"] or "{}"),
     )
+
+
+def _approval_training_event_from_row(row: sqlite3.Row) -> ApprovalTrainingEvent:
+    return ApprovalTrainingEvent(
+        id=int(row["id"]),
+        created_at=str(row["created_at"]),
+        approval_request_id=int(row["approval_request_id"]) if row["approval_request_id"] is not None else None,
+        work_item_id=int(row["work_item_id"]) if row["work_item_id"] is not None else None,
+        event_type=str(row["event_type"]),
+        outcome=str(row["outcome"]),
+        actor=str(row["actor"]),
+        note=str(row["note"]),
+        action=str(row["action"]),
+        target=str(row["target"]),
+        permission_tier=str(row["permission_tier"]),
+        authority_decision=str(row["authority_decision"]),
+        authority=json.loads(row["authority_json"] or "{}"),
+        request_snapshot=json.loads(row["request_snapshot_json"] or "{}"),
+        work_item_snapshot=json.loads(row["work_item_snapshot_json"] or "{}"),
+        edits=json.loads(row["edits_json"] or "{}"),
+        metadata=json.loads(row["metadata_json"] or "{}"),
+    )
+
+
+def _approval_pressure_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    request_metadata = json.loads(row["metadata_json"] or "{}")
+    work_metadata = json.loads(row["work_metadata_json"] or "{}") if "work_metadata_json" in row.keys() and row["work_metadata_json"] else {}
+    authority = json.loads(row["authority_json"] or "{}")
+    merged_metadata = {**work_metadata, **request_metadata}
+    evidence = _metadata_list(merged_metadata, "evidence", "evidence_items", "required_evidence")
+    risks = _metadata_list(merged_metadata, "risk", "risks", "downside_risk", "downside_risks")
+    if authority.get("reason"):
+        risks.append({"authority_reason": authority["reason"]})
+    action = str(row["action"])
+    target = str(row["target"] or "")
+    return {
+        "id": int(row["id"]),
+        "status": str(row["status"]),
+        "title": str(row["title"]),
+        "detail": str(row["detail"]),
+        "action": action,
+        "target": target,
+        "zade_wants": f"Zade wants to {action} -> {target}" if target else f"Zade wants to {action}",
+        "permission_tier": str(row["permission_tier"]),
+        "authority_decision": str(row["authority_decision"]),
+        "authority_reason": str(authority.get("reason", "")),
+        "matched_rule": str(authority.get("matched_rule", "")),
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+        "source_type": str(row["source_type"]),
+        "source_id": int(row["source_id"]) if row["source_id"] is not None else None,
+        "priority": int(row["work_priority"] if row["work_priority"] is not None else 50),
+        "due_at": str(row["work_due_at"]) if "work_due_at" in row.keys() and row["work_due_at"] else None,
+        "evidence": evidence,
+        "risks": risks,
+    }
+
+
+def _metadata_list(metadata: dict[str, Any], *keys: str) -> list[Any]:
+    values: list[Any] = []
+    for key in keys:
+        raw = metadata.get(key)
+        if isinstance(raw, list):
+            values.extend(raw)
+        elif raw:
+            values.append(raw)
+    return values
 
 
 def _model_call_from_row(row: sqlite3.Row) -> ModelCall:
@@ -1657,6 +2010,26 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   resolved_by TEXT NOT NULL DEFAULT '',
   resolved_at TEXT,
   resolution_note TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS approval_training_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  approval_request_id INTEGER,
+  work_item_id INTEGER,
+  event_type TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  actor TEXT NOT NULL DEFAULT 'founder',
+  note TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  target TEXT NOT NULL DEFAULT '',
+  permission_tier TEXT NOT NULL DEFAULT '',
+  authority_decision TEXT NOT NULL DEFAULT '',
+  authority_json TEXT NOT NULL DEFAULT '{}',
+  request_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  work_item_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  edits_json TEXT NOT NULL DEFAULT '{}',
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -2300,5 +2673,113 @@ CREATE TABLE IF NOT EXISTS connector_items (
   status TEXT NOT NULL DEFAULT 'candidate',
   metadata_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(connector_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS action_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  title TEXT NOT NULL,
+  objective TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT 'manual',
+  source_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'active',
+  priority INTEGER NOT NULL DEFAULT 50,
+  owner TEXT NOT NULL DEFAULT 'founder',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS action_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  plan_id INTEGER NOT NULL REFERENCES action_plans(id) ON DELETE CASCADE,
+  step_index INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT 'founder.task',
+  target TEXT NOT NULL DEFAULT '',
+  permission_tier TEXT NOT NULL DEFAULT 'L1_MEMORY_WRITE',
+  execution TEXT NOT NULL DEFAULT 'manual',
+  authority_decision TEXT NOT NULL DEFAULT '',
+  authority_reason TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  work_item_id INTEGER,
+  approved_by TEXT NOT NULL DEFAULT '',
+  result TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(plan_id, step_index)
+);
+
+CREATE TABLE IF NOT EXISTS commitments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  who TEXT NOT NULL DEFAULT 'founder',
+  kind TEXT NOT NULL DEFAULT 'do',
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  due_at TEXT,
+  cadence TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  source_type TEXT NOT NULL DEFAULT 'manual',
+  source_id INTEGER,
+  closed_at TEXT,
+  closed_note TEXT NOT NULL DEFAULT '',
+  renegotiation_count INTEGER NOT NULL DEFAULT 0,
+  follow_up_count INTEGER NOT NULL DEFAULT 0,
+  last_follow_up_at TEXT,
+  evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS commitment_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  commitment_id INTEGER NOT NULL REFERENCES commitments(id) ON DELETE CASCADE,
+  event TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'kernel',
+  dedupe_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued',
+  suppressed_reason TEXT NOT NULL DEFAULT '',
+  read_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  notification_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL,
+  status TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS notification_channels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  channel TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  min_severity TEXT NOT NULL DEFAULT 'info',
+  quiet_start TEXT NOT NULL DEFAULT '',
+  quiet_end TEXT NOT NULL DEFAULT '',
+  rate_limit_per_hour INTEGER NOT NULL DEFAULT 30,
+  recipients_json TEXT NOT NULL DEFAULT '[]',
+  config_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 """

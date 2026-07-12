@@ -379,3 +379,48 @@ def test_overrides_missed_calls_and_cadence_reviews(tmp_path: Path) -> None:
     assert override.record["risk_accepted"].startswith("May spend")
     assert review["review_type"] == "daily"
     assert review["highest_leverage_action"]
+
+
+def test_cadence_review_prioritizes_pending_approval_pressure(tmp_path: Path) -> None:
+    founder = make_founder(tmp_path)
+    item_id, _created = founder.db.enqueue_work_item(
+        kind="approval_console",
+        title="Approve local customer research sync",
+        detail="Zade wants to sync read-only customer research evidence.",
+        action="external.connector.sync",
+        target="connector:customer-research",
+        permission_tier="L3_EXTERNAL_ACTION",
+        priority=91,
+        metadata={
+            "evidence": ["Customer research is the active objective bottleneck."],
+            "risks": ["External connector sync requires founder authority."],
+        },
+    )
+    request, _request_created = founder.db.ensure_approval_request(
+        source_type="work_item",
+        source_id=item_id,
+        title="Approve local customer research sync",
+        detail="Zade wants to sync read-only customer research evidence.",
+        action="external.connector.sync",
+        target="connector:customer-research",
+        permission_tier="L3_EXTERNAL_ACTION",
+        authority_decision="approval_required",
+        authority={"decision": "approval_required", "reason": "External connector sync.", "matched_rule": "approval.action_token"},
+        requested_by="test",
+        metadata={"evidence": ["Approval request carries evidence."], "risks": ["Approval request carries risk."]},
+    )
+
+    dashboard = founder.dashboard()
+    review = founder.generate_cadence_review("daily", period="2026-07-12")
+    brief = founder.brief()
+
+    assert request.id > 0
+    assert dashboard["approval_pressure"]["pending"] == 1
+    assert dashboard["approval_pressure"]["top"]["id"] == request.id
+    assert dashboard["one_thing_that_matters_most_today"].startswith(f"Review approval #{request.id}")
+    assert review["findings"]["approval_pressure"]["pending"] == 1
+    assert review["findings"]["approval_pressure"]["items"][0]["title"] == "Approve local customer research sync"
+    assert review["highest_leverage_action"].startswith(f"Review approval #{request.id}")
+    assert review["metadata"]["approval_console_url"] == "/ui/approvals.html"
+    assert "Approval pressure:" in brief["brief"]
+    assert "Approve local customer research sync" in brief["brief"]

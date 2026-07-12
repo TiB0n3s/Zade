@@ -58,6 +58,26 @@ class ApprovalResolveRequest(BaseModel):
     typed_confirmation: str = Field(default="", max_length=200)
 
 
+class ApprovalDeferRequest(BaseModel):
+    resolved_by: str = Field(default="founder", min_length=1, max_length=120)
+    note: str = Field(default="", max_length=1000)
+    defer_until: str | None = Field(default=None, max_length=120)
+
+
+class ApprovalEditRequest(BaseModel):
+    edited_by: str = Field(default="founder", min_length=1, max_length=120)
+    note: str = Field(default="", max_length=1000)
+    title: str | None = Field(default=None, max_length=240)
+    detail: str | None = Field(default=None, max_length=4000)
+    action: str | None = Field(default=None, max_length=240)
+    target: str | None = Field(default=None, max_length=1000)
+    permission_tier: str | None = Field(default=None, max_length=80)
+    priority: int | None = Field(default=None, ge=0, le=100)
+    evidence: list[Any] | None = None
+    risks: list[Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class BackupCreateRequest(BaseModel):
     label: str = Field(default="manual", min_length=1, max_length=80)
 
@@ -706,3 +726,93 @@ class ChatResponse(BaseModel):
     memory_hits: list[dict[str, Any]]
     semantic_hits: list[dict[str, Any]] = Field(default_factory=list)
     audit_id: int
+
+
+class ActionStepCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=240)
+    detail: str = Field(default="", max_length=4000)
+    action: str = Field(default="founder.task", min_length=1, max_length=240)
+    target: str = Field(default="", max_length=1000)
+    permission_tier: str = Field(default="L1_MEMORY_WRITE", min_length=1, max_length=80)
+    execution: str = Field(default="manual", min_length=1, max_length=40)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActionPlanCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=240)
+    objective: str = Field(default="", max_length=2000)
+    source_type: str = Field(default="manual", max_length=80)
+    source_id: int | None = None
+    priority: int = Field(default=50, ge=0, le=100)
+    owner: str = Field(default="founder", max_length=120)
+    steps: list[ActionStepCreate] = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActionPlanFromRecommendation(BaseModel):
+    steps: list[ActionStepCreate] = Field(default_factory=list)
+
+
+class ActionStepComplete(BaseModel):
+    result: str = Field(default="", max_length=4000)
+    note: str = Field(default="", max_length=2000)
+    create_evidence: bool = True
+
+
+class ActionStepFail(BaseModel):
+    error: str = Field(min_length=1, max_length=2000)
+    create_evidence: bool = True
+
+
+class ActionStepSkip(BaseModel):
+    note: str = Field(default="", max_length=2000)
+
+
+class ActionStepApprove(BaseModel):
+    approved_by: str = Field(default="founder", min_length=1, max_length=120)
+
+
+class ActionStepEvidenceAttach(BaseModel):
+    evidence_id: int = Field(ge=1)
+
+
+class CommitmentCreate(BaseModel):
+    who: str = Field(default="founder", min_length=1, max_length=40)
+    kind: str = Field(default="do", min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=240)
+    detail: str = Field(default="", max_length=4000)
+    due_at: str | None = Field(default=None, max_length=64)
+    cadence: str = Field(default="", max_length=20)
+    source_type: str = Field(default="manual", max_length=80)
+    source_id: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommitmentClose(BaseModel):
+    note: str = Field(default="", max_length=2000)
+    evidence_id: int | None = Field(default=None, ge=1)
+
+
+class CommitmentRenegotiate(BaseModel):
+    due_at: str = Field(min_length=4, max_length=64)
+    note: str = Field(default="", max_length=2000)
+
+
+class NotifyRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=120)
+    title: str = Field(min_length=1, max_length=240)
+    body: str = Field(default="", max_length=4000)
+    severity: str = Field(default="info", min_length=1, max_length=20)
+    source: str = Field(default="api", max_length=120)
+    dedupe_key: str = Field(default="", max_length=240)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class NotificationChannelUpdate(BaseModel):
+    enabled: bool | None = None
+    min_severity: str | None = Field(default=None, max_length=20)
+    quiet_start: str | None = Field(default=None, max_length=5)
+    quiet_end: str | None = Field(default=None, max_length=5)
+    rate_limit_per_hour: int | None = Field(default=None, ge=1, le=1000)
+    recipients: list[str] | None = None
+    config: dict[str, Any] | None = None

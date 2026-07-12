@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Action Approval Console</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506;
+      --panel: #0d0d0f;
+      --panel-2: #111114;
+      --line: rgba(255,255,255,0.09);
+      --text: #eeeae5;
+      --muted: #8c8c94;
+      --accent: #b0473f;
+      --accent-2: #d07d74;
+      --ok: #5a8a72;
+      --warn: #c69b5f;
+      --bad: #a84a4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #070708 0%, #0e0c0c 48%, var(--bg) 100%);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.86);
+      backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; }
+    h2 { margin: 0 0 12px; font-size: 15px; }
+    h3 { margin: 0; font-size: 15px; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; padding: 24px 28px 36px; }
+    .toolbar, .panel, .card {
+      background: rgba(13,13,15,0.94);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; margin-bottom: 14px; }
+    .panel { padding: 16px; }
+    .list { display: grid; gap: 12px; }
+    .card { padding: 14px; display: grid; gap: 12px; }
+    .topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .wants { font-weight: 680; font-size: 16px; }
+    .detail { color: #c9c4bd; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .field {
+      background: rgba(255,255,255,0.025);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 10px;
+      min-height: 82px;
+    }
+    .field strong { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .pill.pending, .pill.approval_required { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    .pill.approved, .pill.done { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.denied { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .pill.deferred { color: #d7cff0; border-color: rgba(128,107,184,0.55); background: rgba(128,107,184,0.14); }
+    button, a.button, select, input, textarea {
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #09090b;
+      color: var(--text);
+      font: inherit;
+    }
+    button, a.button {
+      padding: 9px 12px;
+      cursor: pointer;
+      text-decoration: none;
+      background: rgba(176,71,63,0.12);
+      border-color: rgba(176,71,63,0.5);
+    }
+    button.secondary, a.button.secondary { background: rgba(255,255,255,0.03); border-color: var(--line); }
+    button.ok { border-color: rgba(90,138,114,0.7); background: rgba(90,138,114,0.16); }
+    button.warn { border-color: rgba(198,155,95,0.7); background: rgba(198,155,95,0.15); }
+    button.bad { border-color: rgba(168,74,74,0.7); background: rgba(168,74,74,0.15); }
+    button:disabled { cursor: not-allowed; opacity: 0.45; }
+    input, textarea, select { width: 100%; padding: 8px 9px; outline: none; }
+    textarea { resize: vertical; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.7); }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .muted { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .history { display: grid; gap: 10px; }
+    .history-item { border: 1px solid var(--line); border-radius: 5px; padding: 10px; background: rgba(255,255,255,0.02); }
+    .empty { padding: 20px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; }
+    .error { color: #f0c4c4; white-space: pre-wrap; }
+    @media (max-width: 1060px) {
+      main { grid-template-columns: 1fr; }
+      .grid, .edit-grid { grid-template-columns: 1fr; }
+      header { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Action Approval Console</h1>
+      <div class="sub">Zade wants to do X. Evidence. Risk. Authority tier. Approve, deny, defer, edit.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="toolbar">
+        <div class="actions">
+          <select id="statusFilter">
+            <option value="pending">Pending</option>
+            <option value="deferred">Deferred</option>
+            <option value="">All</option>
+            <option value="approved">Approved</option>
+            <option value="denied">Denied</option>
+          </select>
+          <span class="pill" id="summaryPill">Loading</span>
+        </div>
+        <span class="muted mono" id="loadedAt"></span>
+      </div>
+      <div class="list" id="approvalList"></div>
+    </section>
+
+    <aside class="panel">
+      <h2>Learning Events</h2>
+      <div class="sub">Every approval decision becomes judgment data.</div>
+      <div class="history" id="trainingEvents" style="margin-top:12px;"></div>
+    </aside>
+  </main>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+
+    let state = { items: [], summary: {}, training: [] };
+
+    async function load() {
+      const status = byId('statusFilter').value;
+      const query = status ? '?status=' + encodeURIComponent(status) + '&limit=50' : '?limit=50';
+      const [consoleData, trainingData] = await Promise.all([
+        api('/approval-console' + query),
+        api('/approval-training-events?limit=25')
+      ]);
+      state = { items: consoleData.items || [], summary: consoleData.summary || {}, training: trainingData.items || [] };
+      render();
+    }
+
+    function render() {
+      byId('summaryPill').textContent = `${state.summary.pending || 0} pending / ${state.summary.deferred || 0} deferred / ${state.summary.training_events || 0} learned`;
+      byId('loadedAt').textContent = new Date().toLocaleTimeString();
+      byId('approvalList').innerHTML = state.items.length ? state.items.map(renderApproval).join('') : '<div class="empty">No approval requests in this view.</div>';
+      byId('trainingEvents').innerHTML = state.training.length ? state.training.map(renderTraining).join('') : '<div class="empty">No training events yet.</div>';
+      wireActions();
+    }
+
+    function renderApproval(item) {
+      const request = item.request || {};
+      const work = item.work_item || {};
+      const authority = item.authority_tier || {};
+      return `
+        <article class="card" data-card="${esc(item.id)}">
+          <div class="topline">
+            <div>
+              <div class="wants">${esc(item.zade_wants)}</div>
+              <div class="detail">${esc(request.title || '')}</div>
+            </div>
+            <div class="actions">
+              <span class="pill ${esc(item.status)}">${esc(item.status)}</span>
+              <span class="pill ${esc(authority.authority_decision)}">${esc(authority.permission_tier)}</span>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="field">
+              <strong>Evidence</strong>
+              ${formatList(item.evidence && item.evidence.items)}
+              ${formatIds(item.evidence && item.evidence.evidence_ids)}
+            </div>
+            <div class="field">
+              <strong>Risk</strong>
+              ${formatList(item.risk && item.risk.items)}
+            </div>
+            <div class="field">
+              <strong>Authority Tier</strong>
+              <div>${esc(authority.authority_decision || 'unknown')}</div>
+              <div class="muted">${esc(authority.reason || 'No authority reason recorded.')}</div>
+              <div class="mono muted">${esc(authority.matched_rule || '')}</div>
+            </div>
+          </div>
+
+          <div class="edit-grid">
+            <label>Title <input data-edit="title" value="${esc(request.title || '')}"></label>
+            <label>Action <input data-edit="action" value="${esc(request.action || '')}"></label>
+            <label>Target <input data-edit="target" value="${esc(request.target || '')}"></label>
+            <label>Tier <input data-edit="permission_tier" value="${esc(request.permission_tier || '')}"></label>
+            <label>Priority <input data-edit="priority" type="number" min="0" max="100" value="${esc(work.priority == null ? '' : work.priority)}"></label>
+            <label>Defer until <input data-edit="defer_until" placeholder="2026-07-13T09:00:00-05:00"></label>
+          </div>
+          <label>Detail <textarea data-edit="detail" rows="2">${esc(request.detail || '')}</textarea></label>
+          <label>Evidence, one per line <textarea data-edit="evidence" rows="2">${esc(toLines(item.evidence && item.evidence.items))}</textarea></label>
+          <label>Risks, one per line <textarea data-edit="risks" rows="2">${esc(toLines(item.risk && item.risk.items))}</textarea></label>
+          <label>Decision note <textarea data-edit="note" rows="2" placeholder="Why are you approving, denying, deferring, or editing?"></textarea></label>
+          <div class="edit-grid">
+            <label>Typed phrase for dispatch <input data-edit="typed_confirmation" placeholder="make the jump to hyperspace"></label>
+            <label><span class="muted">Dispatch after approval</span><select data-edit="dispatch"><option value="false">No</option><option value="true">Yes</option></select></label>
+          </div>
+
+          <div class="actions">
+            <button class="ok" data-action="approve" data-id="${esc(item.id)}" ${item.available_actions && item.available_actions.approve ? '' : 'disabled'}>Approve</button>
+            <button class="bad" data-action="deny" data-id="${esc(item.id)}" ${item.available_actions && item.available_actions.deny ? '' : 'disabled'}>Deny</button>
+            <button class="warn" data-action="defer" data-id="${esc(item.id)}" ${item.available_actions && item.available_actions.defer ? '' : 'disabled'}>Defer</button>
+            <button class="secondary" data-action="edit" data-id="${esc(item.id)}" ${item.available_actions && item.available_actions.edit ? '' : 'disabled'}>Save Edit</button>
+          </div>
+          <div class="error" data-error></div>
+        </article>
+      `;
+    }
+
+    function renderTraining(item) {
+      return `
+        <div class="history-item">
+          <div class="actions" style="justify-content:space-between;">
+            <strong>${esc(item.outcome)}</strong>
+            <span class="pill">${esc(item.event_type)}</span>
+          </div>
+          <div class="muted">${esc(item.action)} ${item.target ? '-> ' + esc(item.target) : ''}</div>
+          <div>${esc(item.note || '')}</div>
+          <div class="mono muted">${esc(item.created_at)}</div>
+        </div>
+      `;
+    }
+
+    function formatList(items) {
+      const list = Array.isArray(items) ? items : [];
+      if (!list.length) return '<div class="muted">None recorded.</div>';
+      return '<ul>' + list.map((item) => '<li>' + esc(typeof item === 'object' ? JSON.stringify(item) : item) + '</li>').join('') + '</ul>';
+    }
+
+    function formatIds(ids) {
+      const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+      return list.length ? '<div class="mono muted">evidence ids: ' + esc(list.join(', ')) + '</div>' : '';
+    }
+
+    function toLines(items) {
+      const list = Array.isArray(items) ? items : [];
+      return list.map((item) => typeof item === 'object' ? JSON.stringify(item) : item).join('\n');
+    }
+
+    function card(id) {
+      return document.querySelector(`[data-card="${CSS.escape(String(id))}"]`);
+    }
+
+    function value(id, field) {
+      const el = card(id).querySelector(`[data-edit="${field}"]`);
+      return el ? el.value : '';
+    }
+
+    function lines(id, field) {
+      return value(id, field).split('\n').map((line) => line.trim()).filter(Boolean);
+    }
+
+    function setError(id, message) {
+      card(id).querySelector('[data-error]').textContent = message || '';
+    }
+
+    function wireActions() {
+      document.querySelectorAll('[data-action]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const id = button.dataset.id;
+          const action = button.dataset.action;
+          setError(id, '');
+          try {
+            if (action === 'approve') await approve(id);
+            if (action === 'deny') await deny(id);
+            if (action === 'defer') await deferItem(id);
+            if (action === 'edit') await edit(id);
+            await load();
+          } catch (err) {
+            setError(id, err.message);
+          }
+        });
+      });
+    }
+
+    async function approve(id) {
+      await api(`/approval-requests/${encodeURIComponent(id)}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({
+          resolved_by: 'founder',
+          note: value(id, 'note'),
+          dispatch: value(id, 'dispatch') === 'true',
+          typed_confirmation: value(id, 'typed_confirmation')
+        })
+      });
+    }
+
+    async function deny(id) {
+      await api(`/approval-requests/${encodeURIComponent(id)}/deny`, {
+        method: 'POST',
+        body: JSON.stringify({ resolved_by: 'founder', note: value(id, 'note') })
+      });
+    }
+
+    async function deferItem(id) {
+      await api(`/approval-requests/${encodeURIComponent(id)}/defer`, {
+        method: 'POST',
+        body: JSON.stringify({ resolved_by: 'founder', note: value(id, 'note'), defer_until: value(id, 'defer_until') || null })
+      });
+    }
+
+    async function edit(id) {
+      const priority = value(id, 'priority');
+      await api(`/approval-requests/${encodeURIComponent(id)}/edit`, {
+        method: 'POST',
+        body: JSON.stringify({
+          edited_by: 'founder',
+          note: value(id, 'note'),
+          title: value(id, 'title'),
+          detail: value(id, 'detail'),
+          action: value(id, 'action'),
+          target: value(id, 'target'),
+          permission_tier: value(id, 'permission_tier'),
+          priority: priority === '' ? null : Number(priority),
+          evidence: lines(id, 'evidence'),
+          risks: lines(id, 'risks')
+        })
+      });
+    }
+
+    byId('refreshBtn').addEventListener('click', () => load().catch((err) => { byId('approvalList').innerHTML = '<div class="error">' + esc(err.message) + '</div>'; }));
+    byId('statusFilter').addEventListener('change', () => load().catch((err) => { byId('approvalList').innerHTML = '<div class="error">' + esc(err.message) + '</div>'; }));
+    load().catch((err) => { byId('approvalList').innerHTML = '<div class="error">' + esc(err.message) + '</div>'; });
+  </script>
+</body>
+</html>

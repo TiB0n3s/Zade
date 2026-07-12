@@ -150,6 +150,54 @@ def test_approval_request_lifecycle(tmp_path: Path) -> None:
     assert resolved.resolved_by == "founder"
 
 
+def test_approval_training_events_capture_decision_snapshots(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    item_id, _created = db.enqueue_work_item(
+        kind="external",
+        title="Send founder update",
+        detail="Outbound update requires approval.",
+        action="email.send",
+        target="founder@example.com",
+        permission_tier="L3_EXTERNAL_ACTION",
+        metadata={"evidence": ["Founder requested SMS/email updates."], "risks": ["External send."]},
+    )
+    request, _request_created = db.ensure_approval_request(
+        source_type="work_item",
+        source_id=item_id,
+        title="Send founder update",
+        detail="Outbound update requires approval.",
+        action="email.send",
+        target="founder@example.com",
+        permission_tier="L3_EXTERNAL_ACTION",
+        authority_decision="approval_required",
+        authority={"decision": "approval_required", "reason": "external action"},
+        requested_by="test",
+    )
+
+    event_id = db.record_approval_training_event(
+        approval_request_id=request.id,
+        work_item_id=item_id,
+        event_type="approval_resolution",
+        outcome="approved",
+        actor="founder",
+        note="Approved after checking evidence.",
+        action=request.action,
+        target=request.target,
+        permission_tier=request.permission_tier,
+        authority_decision=request.authority_decision,
+        authority=request.authority,
+        request_snapshot=request.__dict__,
+        work_item_snapshot={"id": item_id, "action": "email.send"},
+    )
+    events = db.list_approval_training_events(approval_request_id=request.id)
+
+    assert event_id > 0
+    assert events[0].outcome == "approved"
+    assert events[0].request_snapshot["title"] == "Send founder update"
+    assert events[0].work_item_snapshot["action"] == "email.send"
+
+
 def test_model_call_telemetry_records_and_summarizes(tmp_path: Path) -> None:
     db = KernelDatabase(tmp_path / "kernel.sqlite")
     db.migrate()

@@ -25,10 +25,11 @@ class SurfacingService:
     and honest; narration is optional and clearly separated.
     """
 
-    def __init__(self, *, config: KernelConfig, db: KernelDatabase, ollama: OllamaClient):
+    def __init__(self, *, config: KernelConfig, db: KernelDatabase, ollama: OllamaClient, bus: Any | None = None):
         self.config = config
         self.db = db
         self.ollama = ollama
+        self.bus = bus
 
     def scan(self) -> dict[str, Any]:
         since = self._last_brief_at()
@@ -45,6 +46,9 @@ class SurfacingService:
         items.extend(self._experiments_needing_evidence())
         items.extend(self._pending_approvals())
         items.extend(self._pending_connector_items())
+        items.extend(self._overdue_commitments())
+        items.extend(self._drifting_commitments())
+        items.extend(self._stalled_action_plans())
         items.sort(key=lambda item: (-item["score"], item["kind"], item.get("subject_id") or 0))
         one_thing = items[0] if items else None
         return {
@@ -93,9 +97,27 @@ class SurfacingService:
             status="quiet" if quiet else "ok",
             details={"event_id": event_id, "memory_id": memory_id, "item_count": scan["count"]},
         )
+        notification_id = None
+        if self.bus is not None and not quiet:
+            top_score = scan["items"][0]["score"] if scan["items"] else 0
+            severity = "critical" if top_score >= 85 else "warning" if top_score >= 65 else "info"
+            try:
+                notification = self.bus.notify(
+                    topic="surfacing.brief",
+                    severity=severity,
+                    title=f"{scan['count']} item(s) need founder attention",
+                    body=scan["one_thing"],
+                    source="surfacing",
+                    dedupe_key=f"surfacing.brief:{utc_now()[:10]}",
+                    metadata={"event_id": event_id, "memory_id": memory_id},
+                )
+                notification_id = notification["id"]
+            except Exception:
+                notification_id = None
         return {
             "event_id": event_id,
             "memory_id": memory_id,
+            "notification_id": notification_id,
             "quiet": quiet,
             "generated_at": scan["generated_at"],
             "since_last_brief": since,
@@ -375,24 +397,22 @@ class SurfacingService:
         return items
 
     def _pending_approvals(self) -> list[dict[str, Any]]:
-        with self.db.connect() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS count, MIN(created_at) AS oldest FROM approval_requests WHERE status = 'pending'"
-            ).fetchone()
-        count = int(row["count"]) if row else 0
+        pressure = self.db.approval_pressure(limit=3)
+        count = int(pressure.get("pending", 0))
         if count <= 0:
             return []
+        top = pressure.get("top") or {}
         return [
             _item(
                 kind="approvals_pending",
                 severity="yellow",
-                score=min(60, 48 + count * 4),
+                score=min(72, 56 + count * 4),
                 title=f"{count} approval request(s) waiting on you",
-                detail="Queued work is blocked until you approve or deny.",
+                detail=top.get("zade_wants") or "Queued work is blocked until you approve, deny, defer, or edit.",
                 subject_type="approval_requests",
-                subject_id=None,
-                recommended_action="Review /approval-requests and clear the queue.",
-                opened_at=str(row["oldest"]) if row["oldest"] else None,
+                subject_id=top.get("id"),
+                recommended_action=pressure["next_action"],
+                opened_at=top.get("created_at"),
             )
         ]
 
@@ -416,6 +436,84 @@ class SurfacingService:
                 recommended_action="Review /connectors/items and import the useful ones as evidence.",
                 opened_at=str(row["oldest"]) if row["oldest"] else None,
             )
+        ]
+
+    def _overdue_commitments(self) -> list[dict[str, Any]]:
+        now = utc_now()
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM commitments
+                WHERE status = 'open' AND due_at IS NOT NULL AND due_at < ?
+                ORDER BY due_at ASC LIMIT 25
+                """,
+                (now,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            age = _age_days(str(row["due_at"]))
+            owner = "You" if str(row["who"]) == "founder" else "Zade"
+            items.append(
+                _item(
+                    kind="commitment_overdue",
+                    severity="red" if age >= 7 else "orange",
+                    score=min(86, 68 + min(age, 14)),
+                    title=f"Commitment overdue: {row['title']}",
+                    detail=f"{owner} committed to this by {row['due_at']} ({age} day(s) ago). It is still open.",
+                    subject_type="commitment",
+                    subject_id=int(row["id"]),
+                    recommended_action="Do it, renegotiate the date with a reason, or record the miss honestly.",
+                    opened_at=str(row["due_at"]),
+                )
+            )
+        return items
+
+    def _drifting_commitments(self) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM commitments
+                WHERE status = 'open' AND renegotiation_count >= 2
+                ORDER BY renegotiation_count DESC LIMIT 10
+                """
+            ).fetchall()
+        return [
+            _item(
+                kind="commitment_drifting",
+                severity="orange",
+                score=58 + min(int(row["renegotiation_count"]), 6),
+                title=f"Commitment drifting: {row['title']}",
+                detail=f"Renegotiated {row['renegotiation_count']} time(s). Repeated pushes usually mean it should be dropped or resized.",
+                subject_type="commitment",
+                subject_id=int(row["id"]),
+                recommended_action="Decide: commit to the current date, resize the promise, or drop it explicitly.",
+                opened_at=str(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def _stalled_action_plans(self) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM action_plans
+                WHERE status IN ('blocked', 'failed')
+                ORDER BY updated_at ASC LIMIT 15
+                """
+            ).fetchall()
+        return [
+            _item(
+                kind="action_plan_stalled",
+                severity="orange" if str(row["status"]) == "blocked" else "red",
+                score=62 if str(row["status"]) == "blocked" else 72,
+                title=f"Action plan {row['status']}: {row['title']}",
+                detail=f"The decision-to-action pipeline is stuck on this plan (status {row['status']}).",
+                subject_type="action_plan",
+                subject_id=int(row["id"]),
+                recommended_action="Unblock the failing step, skip it with a reason, or abandon the plan.",
+                opened_at=str(row["updated_at"]),
+            )
+            for row in rows
         ]
 
     def _underweighted(self, items: list[dict[str, Any]]) -> str:

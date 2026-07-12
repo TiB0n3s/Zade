@@ -1346,31 +1346,45 @@ class FounderService:
         integrity = self.run_integrity_check()
         dashboard = self.dashboard()
         open_predictions = self.list_predictions(result="open", limit=10)
+        approval_pressure = self.db.approval_pressure(limit=3)
         findings = {
             "company_health": dashboard["company_health"],
             "decisions_waiting": len(dashboard["decisions_waiting"]),
             "open_predictions": len(open_predictions),
             "integrity_warnings": integrity["count"],
             "top_objectives": [item["objective"] for item in dashboard["top_objectives"]],
+            "approval_pressure": approval_pressure,
+            "approvals_pending": approval_pressure["pending"],
+            "approvals_deferred": approval_pressure["deferred"],
         }
         if review_type == "daily":
             actions = [dashboard["one_thing_that_matters_most_today"]]
-            highest = dashboard["one_thing_that_matters_most_today"]
+            if approval_pressure["pending"]:
+                actions = [approval_pressure["next_action"], *actions]
+            highest = actions[0]
         elif review_type == "weekly":
             actions = ["Resolve integrity warnings", "Score due predictions", "Commit next week's top objective"]
+            if approval_pressure["has_blockers"]:
+                actions.append("Review approval learning events and clear stale approval blockers")
             highest = actions[0]
         else:
             actions = ["Review thesis strength", "Keep/kill/change bets", "Set next strategic focus"]
+            if approval_pressure["has_blockers"]:
+                actions.append("Review approval-console patterns before expanding autonomy")
             highest = actions[0]
         result = self.create_cadence_review(
             {
                 "review_type": review_type,
                 "period": period or utc_now()[:10],
                 "findings": findings,
-                "changes": {"recommended_focus": dashboard["recommended_focus"]},
+                "changes": {"recommended_focus": dashboard["recommended_focus"], "approval_pressure": approval_pressure},
                 "actions": actions,
-                "drift_detected": integrity["count"] > 0,
+                "drift_detected": integrity["count"] > 0 or approval_pressure["pending"] > 0,
                 "highest_leverage_action": highest,
+                "metadata": {
+                    "approval_console_url": approval_pressure["console_url"],
+                    "approval_top_request_id": approval_pressure["top"].get("id") if approval_pressure["top"] else None,
+                },
             }
         )
         return result.record
@@ -1387,6 +1401,7 @@ class FounderService:
         active_bets = self.list_strategy_objects(object_type="active_bet", limit=25)
         open_conflicts = self.list_thesis_conflicts(status="open", limit=10)
         integrity_warnings = self.list_integrity_warnings(status="open", limit=10)
+        approval_pressure = self.db.approval_pressure(limit=3)
         confidence_values = [
             float(item["confidence"])
             for item in [*active_initiatives, *active_strategy, *active_goals, *active_bets]
@@ -1426,6 +1441,7 @@ class FounderService:
         recommended_focus = _recommended_focus(top_objectives, open_decisions, thesis)
         if active_objective and not open_decisions:
             recommended_focus = _active_objective_focus(active_objective, recommended_focus)
+        one_thing = approval_pressure["next_action"] if approval_pressure["pending"] else recommended_focus
         return {
             "identity": self.config.identity.name,
             "company_health": _company_health(overall_confidence, critical_risks, top_objectives),
@@ -1444,10 +1460,11 @@ class FounderService:
             "goals_active": active_goals[:5],
             "thesis_conflicts_open": open_conflicts[:5],
             "integrity_warnings_open": integrity_warnings[:5],
+            "approval_pressure": approval_pressure,
             "prediction_accuracy": self._prediction_accuracy(),
             "knowledge_gaps": _knowledge_gaps(thesis),
             "recommended_focus": recommended_focus,
-            "one_thing_that_matters_most_today": recommended_focus,
+            "one_thing_that_matters_most_today": one_thing,
         }
 
     def brief(self) -> dict[str, Any]:
@@ -1462,6 +1479,10 @@ class FounderService:
             "",
             "Decision engine:",
             *_bullet(item["recommendation"] for item in dashboard["decision_engine"]["latest_recommendations"]),
+            "",
+            "Approval pressure:",
+            f"- {dashboard['approval_pressure']['headline']}",
+            *_bullet(item["title"] for item in dashboard["approval_pressure"]["items"]),
             "",
             "Top objectives:",
             *_bullet(item["objective"] for item in dashboard["top_objectives"]),

@@ -22,9 +22,18 @@ from .founder import FounderService
 from .handlers import ActionHandlerRegistry
 from .ingestion import IngestionService
 from .models import (
+    ActionPlanCreate,
+    ActionPlanFromRecommendation,
+    ActionStepApprove,
+    ActionStepComplete,
+    ActionStepEvidenceAttach,
+    ActionStepFail,
+    ActionStepSkip,
     ActiveObjectiveCreate,
     ActiveObjectiveStatusUpdate,
     AssumptionCreate,
+    ApprovalDeferRequest,
+    ApprovalEditRequest,
     ApprovalResolveRequest,
     AuthorityEvaluateRequest,
     BackupCreateRequest,
@@ -33,6 +42,9 @@ from .models import (
     CadenceRunRequest,
     ChatRequest,
     ChatResponse,
+    CommitmentClose,
+    CommitmentCreate,
+    CommitmentRenegotiate,
     CompanyThesisUpsert,
     ConnectorCreate,
     ConnectorItemDismiss,
@@ -68,6 +80,8 @@ from .models import (
     MemorySearch,
     MissedCallReviewCreate,
     ModelBenchmarkRequest,
+    NotificationChannelUpdate,
+    NotifyRequest,
     ObjectLinkCreate,
     ReflectionCreate,
     RelationshipCharterUpsert,
@@ -91,6 +105,9 @@ from .models import (
 )
 from .ollama import OllamaClient, OllamaError
 from .ops import KernelOpsService
+from .actions import ActionPipelineService
+from .commitments import CommitmentLedger
+from .notify import NotificationBus
 from .runtime import RuntimeService
 from .skills import SkillService
 from .surfacing import SurfacingService
@@ -125,6 +142,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     approvals = ApprovalService(
         db=db,
         handlers=handlers,
+        authority=authority,
         typed_confirmation_phrase=authority.summary()["typed_confirmation_phrase"],
     )
     conversations = ConversationService(config=cfg, db=db, ollama=ollama)
@@ -149,10 +167,13 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         "Read-only sync of an approved external connector into staged candidate items.",
         connectors.sync_from_work_item,
     )
-    surfacing = SurfacingService(config=cfg, db=db, ollama=ollama)
     ops = KernelOpsService(config=cfg, db=db, ollama=ollama, ui_dir=UI_DIR)
     evals = EvalService(config=cfg, db=db, ollama=ollama, runtime=runtime, critic=critic)
     voice = VoiceService(config=cfg, db=db, runtime=runtime)
+    bus = NotificationBus(db=db, voice=voice)
+    commitments = CommitmentLedger(db=db, bus=bus)
+    actions = ActionPipelineService(db=db, authority=authority, founder=founder, work_queue=work_queue, bus=bus)
+    surfacing = SurfacingService(config=cfg, db=db, ollama=ollama, bus=bus)
 
     app = FastAPI(title=f"{cfg.identity.name} Local AI Co-founder Kernel", version="0.1.0")
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
@@ -174,6 +195,9 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     app.state.experiments = experiments
     app.state.connectors = connectors
     app.state.surfacing = surfacing
+    app.state.bus = bus
+    app.state.commitments = commitments
+    app.state.actions = actions
     app.state.ops = ops
     app.state.evals = evals
     app.state.voice = voice
@@ -587,6 +611,177 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/action-plans")
+    def create_action_plan(payload: ActionPlanCreate) -> dict[str, Any]:
+        try:
+            return {"item": actions.create_plan(payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/action-plans/from-recommendation/{recommendation_id}")
+    def create_action_plan_from_recommendation(
+        recommendation_id: int,
+        payload: ActionPlanFromRecommendation | None = None,
+    ) -> dict[str, Any]:
+        request = payload or ActionPlanFromRecommendation()
+        try:
+            return {
+                "item": actions.create_plan_from_recommendation(
+                    recommendation_id,
+                    steps=[step.model_dump() for step in request.steps] or None,
+                )
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/action-plans")
+    def list_action_plans(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"items": actions.list_plans(status=status, limit=limit)}
+
+    @app.get("/action-plans/{plan_id}")
+    def get_action_plan(plan_id: int) -> dict[str, Any]:
+        try:
+            return {"item": actions.get_plan(plan_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/action-plans/{plan_id}/advance")
+    def advance_action_plan(plan_id: int) -> dict[str, Any]:
+        try:
+            return actions.advance(plan_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/action-plans/{plan_id}/steps/{step_id}/approve")
+    def approve_action_step(plan_id: int, step_id: int, payload: ActionStepApprove | None = None) -> dict[str, Any]:
+        request = payload or ActionStepApprove()
+        try:
+            return {"item": actions.approve_step(plan_id, step_id, approved_by=request.approved_by)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/action-plans/{plan_id}/steps/{step_id}/complete")
+    def complete_action_step(plan_id: int, step_id: int, payload: ActionStepComplete | None = None) -> dict[str, Any]:
+        request = payload or ActionStepComplete()
+        try:
+            return {"item": actions.complete_step(plan_id, step_id, **request.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/action-plans/{plan_id}/steps/{step_id}/fail")
+    def fail_action_step(plan_id: int, step_id: int, payload: ActionStepFail) -> dict[str, Any]:
+        try:
+            return {"item": actions.fail_step(plan_id, step_id, **payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/action-plans/{plan_id}/steps/{step_id}/skip")
+    def skip_action_step(plan_id: int, step_id: int, payload: ActionStepSkip | None = None) -> dict[str, Any]:
+        request = payload or ActionStepSkip()
+        try:
+            return {"item": actions.skip_step(plan_id, step_id, note=request.note)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/action-plans/{plan_id}/steps/{step_id}/evidence")
+    def attach_action_step_evidence(plan_id: int, step_id: int, payload: ActionStepEvidenceAttach) -> dict[str, Any]:
+        try:
+            return {"item": actions.attach_evidence(plan_id, step_id, evidence_id=payload.evidence_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/commitments")
+    def create_commitment(payload: CommitmentCreate) -> dict[str, Any]:
+        try:
+            return {"item": commitments.create(payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/commitments")
+    def list_commitments(
+        status: str | None = None,
+        who: str | None = None,
+        kind: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return {"items": commitments.list(status=status, who=who, kind=kind, limit=limit)}
+
+    @app.post("/commitments/check")
+    def check_commitments() -> dict[str, Any]:
+        return commitments.check()
+
+    @app.get("/commitments/{commitment_id}")
+    def get_commitment(commitment_id: int) -> dict[str, Any]:
+        try:
+            return {"item": commitments.get(commitment_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/commitments/{commitment_id}/done")
+    def complete_commitment(commitment_id: int, payload: CommitmentClose | None = None) -> dict[str, Any]:
+        request = payload or CommitmentClose()
+        try:
+            return {"item": commitments.close(commitment_id, status="done", note=request.note, evidence_id=request.evidence_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/commitments/{commitment_id}/miss")
+    def miss_commitment(commitment_id: int, payload: CommitmentClose | None = None) -> dict[str, Any]:
+        request = payload or CommitmentClose()
+        try:
+            return {"item": commitments.close(commitment_id, status="missed", note=request.note, evidence_id=request.evidence_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/commitments/{commitment_id}/drop")
+    def drop_commitment(commitment_id: int, payload: CommitmentClose | None = None) -> dict[str, Any]:
+        request = payload or CommitmentClose()
+        try:
+            return {"item": commitments.close(commitment_id, status="dropped", note=request.note, evidence_id=request.evidence_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/commitments/{commitment_id}/renegotiate")
+    def renegotiate_commitment(commitment_id: int, payload: CommitmentRenegotiate) -> dict[str, Any]:
+        try:
+            return {"item": commitments.renegotiate(commitment_id, due_at=payload.due_at, note=payload.note)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/notify")
+    def send_notification(payload: NotifyRequest) -> dict[str, Any]:
+        try:
+            return {"item": bus.notify(**payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/notifications")
+    def list_notifications(
+        status: str | None = None,
+        topic: str | None = None,
+        unread_only: bool = False,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return {"items": bus.list(status=status, topic=topic, unread_only=unread_only, limit=limit)}
+
+    @app.post("/notifications/{notification_id}/read")
+    def read_notification(notification_id: int) -> dict[str, Any]:
+        try:
+            return {"item": bus.mark_read(notification_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/notify/channels")
+    def list_notification_channels() -> dict[str, Any]:
+        return {"items": bus.list_channels()}
+
+    @app.post("/notify/channels/{channel}")
+    def update_notification_channel(channel: str, payload: NotificationChannelUpdate) -> dict[str, Any]:
+        try:
+            return {"item": bus.update_channel(channel, payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/runtime/operating-loop")
     def runtime_operating_loop(payload: RuntimeLoopRequest | None = None) -> dict[str, Any]:
         request = payload or RuntimeLoopRequest()
@@ -623,6 +818,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             period=request.experiment_period,
             max_reviews=request.max_experiment_reviews,
         )
+        commitment_check = commitments.check()
         surface = surfacing.brief()
         next_action = (
             surface["one_thing"]
@@ -641,6 +837,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
                 "experiment_event_id": experiment.get("event_id"),
                 "surfacing_event_id": surface.get("event_id"),
                 "surfacing_item_count": surface.get("count"),
+                "commitments_overdue": len(commitment_check.get("overdue", [])),
                 "next_action": next_action,
             },
         )
@@ -649,6 +846,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             "operating": operating,
             "evidence": evidence,
             "experiment": experiment,
+            "commitments": commitment_check,
             "surfacing": surface,
             "audit_id": audit_id,
             "next_action": next_action,
@@ -766,6 +964,29 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     def list_approval_requests(status: str | None = None, limit: int = 50) -> dict[str, Any]:
         return {"items": approvals.list_requests(status=status, limit=limit)}
 
+    @app.get("/approval-console")
+    def approval_console(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return approvals.list_console(status=status, limit=limit)
+
+    @app.get("/approval-console/{request_id}")
+    def approval_console_item(request_id: int) -> dict[str, Any]:
+        try:
+            return {"item": approvals.get_console_item(request_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/approval-training-events")
+    def approval_training_events(
+        approval_request_id: int | None = None,
+        outcome: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return {"items": approvals.list_training_events(
+            approval_request_id=approval_request_id,
+            outcome=outcome,
+            limit=limit,
+        )}
+
     @app.get("/action-handlers")
     def list_action_handlers() -> dict[str, Any]:
         return {"items": approvals.list_handlers()}
@@ -799,6 +1020,39 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/approval-requests/{request_id}/defer")
+    def defer_request(request_id: int, payload: ApprovalDeferRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalDeferRequest()
+        try:
+            return approvals.defer_request(
+                request_id,
+                resolved_by=request.resolved_by,
+                note=request.note,
+                defer_until=request.defer_until,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/approval-requests/{request_id}/edit")
+    def edit_request(request_id: int, payload: ApprovalEditRequest) -> dict[str, Any]:
+        try:
+            return approvals.edit_request(
+                request_id,
+                edited_by=payload.edited_by,
+                note=payload.note,
+                title=payload.title,
+                detail=payload.detail,
+                action=payload.action,
+                target=payload.target,
+                permission_tier=payload.permission_tier,
+                priority=payload.priority,
+                evidence=payload.evidence,
+                risks=payload.risks,
+                metadata=payload.metadata,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/work/items/{item_id}/approve")
     def approve_work_item(item_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
         request = payload or ApprovalResolveRequest()
@@ -826,6 +1080,39 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         request = payload or ApprovalResolveRequest()
         try:
             return approvals.deny_work_item(item_id, resolved_by=request.resolved_by, note=request.note)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/work/items/{item_id}/defer")
+    def defer_work_item(item_id: int, payload: ApprovalDeferRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalDeferRequest()
+        try:
+            return approvals.defer_work_item(
+                item_id,
+                resolved_by=request.resolved_by,
+                note=request.note,
+                defer_until=request.defer_until,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/work/items/{item_id}/edit")
+    def edit_work_item(item_id: int, payload: ApprovalEditRequest) -> dict[str, Any]:
+        try:
+            return approvals.edit_work_item(
+                item_id,
+                edited_by=payload.edited_by,
+                note=payload.note,
+                title=payload.title,
+                detail=payload.detail,
+                action=payload.action,
+                target=payload.target,
+                permission_tier=payload.permission_tier,
+                priority=payload.priority,
+                evidence=payload.evidence,
+                risks=payload.risks,
+                metadata=payload.metadata,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1276,6 +1563,7 @@ def _founder_metrics(db: KernelDatabase) -> dict[str, Any]:
             "predictions": _count(conn, "founder_predictions"),
             "experiments": _count(conn, "founder_experiments"),
             "cadence_reviews": _count(conn, "cadence_reviews"),
+            "approval_training_events": _count(conn, "approval_training_events"),
         }
         calibration = conn.execute(
             """
@@ -1321,6 +1609,8 @@ def _founder_metrics(db: KernelDatabase) -> dict[str, Any]:
         },
         "approvals": {
             "by_status": _count_by(db, "approval_requests", "status"),
+            "training_by_outcome": _count_by(db, "approval_training_events", "outcome"),
+            "training_by_event_type": _count_by(db, "approval_training_events", "event_type"),
         },
         "models": {
             "calls_by_status": _count_by(db, "model_calls", "status"),
@@ -1540,12 +1830,19 @@ def _inventory_payload(
             "POST /work/run-next",
             "POST /work/run-due",
             "GET /approval-requests",
+            "GET /approval-console",
+            "GET /approval-console/{request_id}",
+            "GET /approval-training-events",
             "GET /action-handlers",
             "GET /approval-requests/{request_id}",
             "POST /approval-requests/{request_id}/approve",
             "POST /approval-requests/{request_id}/deny",
+            "POST /approval-requests/{request_id}/defer",
+            "POST /approval-requests/{request_id}/edit",
             "POST /work/items/{item_id}/approve",
             "POST /work/items/{item_id}/deny",
+            "POST /work/items/{item_id}/defer",
+            "POST /work/items/{item_id}/edit",
             "POST /work/items/{item_id}/dispatch",
         ],
         "autonomous_handlers": [
@@ -1565,6 +1862,8 @@ def _inventory_payload(
         ],
         "approval_contract": [
             "Approval records founder authorization without bypassing denied boundaries.",
+            "The approval console exposes Zade's proposed action, evidence, risk, and authority tier before resolution.",
+            "Approve, deny, defer, and edit decisions are recorded as approval_training_events for future judgment tuning.",
             "Approved work items can dispatch only when the action has a registered local handler.",
             "Dispatch of approved local handlers requires the typed confirmation phrase.",
             "Unmanaged external actions remain approved-for-record only and are not run by the kernel.",
@@ -1698,12 +1997,76 @@ def _inventory_payload(
             "founder_assumptions",
             "approval_requests",
             "connector_items",
+            "commitments",
+            "action_plans",
         ],
         "operating_rules": [
             "Attention detection is deterministic; no model call decides what needs founder attention.",
             "Initiated briefs are persisted as memories only when something needs attention.",
             "The cadence loop generates an initiated brief so Zade initiates instead of waiting to be asked.",
+            "Cadence reviews include approval pressure: pending/deferred counts, the top three blockers, and the approval-console next action.",
+            "Pending approval pressure can become the daily highest-leverage action until cleared, denied, deferred, or edited.",
             "Surfacing reads state; it never mutates operating objects or takes action on them.",
+            "Non-quiet briefs are announced through the notification bus.",
+        ],
+    }
+    inventory["action_pipeline_layer"] = {
+        "routes": [
+            "POST /action-plans",
+            "POST /action-plans/from-recommendation/{recommendation_id}",
+            "GET /action-plans",
+            "GET /action-plans/{plan_id}",
+            "POST /action-plans/{plan_id}/advance",
+            "POST /action-plans/{plan_id}/steps/{step_id}/approve",
+            "POST /action-plans/{plan_id}/steps/{step_id}/complete",
+            "POST /action-plans/{plan_id}/steps/{step_id}/fail",
+            "POST /action-plans/{plan_id}/steps/{step_id}/skip",
+            "POST /action-plans/{plan_id}/steps/{step_id}/evidence",
+        ],
+        "artifacts": ["action_plans", "action_steps"],
+        "step_statuses": ["pending", "blocked", "approval_required", "approved", "queued", "running", "done", "failed", "skipped"],
+        "operating_rules": [
+            "Every step carries its own authority evaluation; denied steps block the plan at creation.",
+            "Machine steps execute through the work queue, so approvals and typed confirmation apply unchanged.",
+            "Manual steps are founder work the pipeline tracks; it never pretends Zade executed them.",
+            "Step outcomes are recorded as grade-A evidence in the founder ledger.",
+        ],
+    }
+    inventory["commitment_layer"] = {
+        "routes": [
+            "POST /commitments",
+            "GET /commitments",
+            "GET /commitments/{commitment_id}",
+            "POST /commitments/{commitment_id}/done",
+            "POST /commitments/{commitment_id}/miss",
+            "POST /commitments/{commitment_id}/drop",
+            "POST /commitments/{commitment_id}/renegotiate",
+            "POST /commitments/check",
+        ],
+        "artifacts": ["commitments", "commitment_events"],
+        "operating_rules": [
+            "Track what the founder said they would do and what Zade said he would monitor.",
+            "The check pass flags overdue, due-soon, drifting, and monitor-due commitments; it never closes anything itself.",
+            "Marking a commitment missed is an explicit founder act; history is never quietly rewritten.",
+            "Repeated renegotiation is drift and gets surfaced as such.",
+        ],
+    }
+    inventory["notification_layer"] = {
+        "routes": [
+            "POST /notify",
+            "GET /notifications",
+            "POST /notifications/{notification_id}/read",
+            "GET /notify/channels",
+            "POST /notify/channels/{channel}",
+        ],
+        "artifacts": ["notifications", "notification_deliveries", "notification_channels"],
+        "channels": ["ui", "voice", "sms"],
+        "operating_rules": [
+            "Producers call notify(); no feature talks to a delivery channel directly.",
+            "Channel rules govern egress: enabled flag, minimum severity, quiet hours, hourly rate limits, and a recipient whitelist for outbound channels.",
+            "Enabling an outbound channel is a standing founder grant bounded by those rules.",
+            "Critical notifications bypass quiet hours but never the whitelist or rate limit.",
+            "Every suppression is recorded with its reason; nothing is dropped silently.",
         ],
     }
     inventory["conversation_layer"] = {
