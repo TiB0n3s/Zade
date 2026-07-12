@@ -282,6 +282,7 @@ class ConnectorItemDismiss(BaseModel):
 
 class VoiceTranscribeRequest(BaseModel):
     audio_base64: str = Field(min_length=1)
+    audio_mime: str = Field(default="audio/wav", max_length=80)
 
 
 class VoiceSpeakRequest(BaseModel):
@@ -290,6 +291,7 @@ class VoiceSpeakRequest(BaseModel):
 
 class VoiceConverseRequest(BaseModel):
     audio_base64: str = Field(min_length=1)
+    audio_mime: str = Field(default="audio/wav", max_length=80)
     conversation_id: int | None = Field(default=None, ge=1)
     task_type: ModelRole = "general"
     contrarian: bool | None = None

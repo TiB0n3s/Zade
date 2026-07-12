@@ -80,7 +80,7 @@ class VoiceService:
             "timeout_seconds": voice.timeout_seconds,
         }
 
-    def transcribe(self, *, audio_base64: str) -> dict[str, Any]:
+    def transcribe(self, *, audio_base64: str, audio_mime: str = "audio/wav") -> dict[str, Any]:
         engine = self.config.voice.stt_engine
         if engine not in STT_ENGINES:
             raise ValueError(f"Unknown STT engine: {engine}. Supported: {', '.join(sorted(STT_ENGINES))}")
@@ -88,11 +88,11 @@ class VoiceService:
             raise VoiceNotConfigured("STT engine is not configured; set [voice] stt_command in config.toml.")
         audio_bytes = _decode_audio(audio_base64)
         stamp = _stamp()
-        audio_path = self._write_artifact(f"{stamp}-in.wav", audio_bytes)
+        audio_path = self._write_artifact(f"{stamp}-in{_ext_for_mime(audio_mime)}", audio_bytes)
         transcript_path = self.voice_dir / f"{stamp}-transcript.txt"
         started = time.perf_counter()
         if engine == "deepgram":
-            text = self._transcribe_deepgram(audio_bytes)
+            text = self._transcribe_deepgram(audio_bytes, mime=audio_mime)
             transcript_path.write_text(text, encoding="utf-8")
         else:
             self._run_engine(
@@ -119,6 +119,7 @@ class VoiceService:
         return {
             "text": text,
             "engine": engine,
+            "audio_mime": audio_mime,
             "latency_ms": latency_ms,
             "audio_path": str(audio_path),
             "transcript_path": str(transcript_path),
@@ -173,6 +174,7 @@ class VoiceService:
         self,
         *,
         audio_base64: str,
+        audio_mime: str = "audio/wav",
         conversation_id: int | None = None,
         task_type: str = "general",
         contrarian: bool | None = None,
@@ -180,7 +182,7 @@ class VoiceService:
         speak_response: bool = True,
         speak_full: bool = False,
     ) -> dict[str, Any]:
-        transcription = self.transcribe(audio_base64=audio_base64)
+        transcription = self.transcribe(audio_base64=audio_base64, audio_mime=audio_mime)
         response = self.runtime.respond(
             message=transcription["text"],
             task_type=task_type,  # type: ignore[arg-type]
@@ -226,13 +228,13 @@ class VoiceService:
             "contrarian": response.get("contrarian"),
         }
 
-    def _transcribe_deepgram(self, audio_bytes: bytes) -> str:
+    def _transcribe_deepgram(self, audio_bytes: bytes, *, mime: str = "audio/wav") -> str:
         api_key = self._require_api_key(self.config.voice.stt_api_key_env, engine="Deepgram")
         params = urllib.parse.urlencode({"model": self.config.voice.stt_model, "smart_format": "true"})
         request = urllib.request.Request(
             f"{DEEPGRAM_URL}?{params}",
             data=audio_bytes,
-            headers={"Authorization": f"Token {api_key}", "Content-Type": "audio/wav"},
+            headers={"Authorization": f"Token {api_key}", "Content-Type": _clean_mime(mime)},
             method="POST",
         )
         payload = json.loads(self._http_call(request, engine="Deepgram STT").decode("utf-8", errors="replace"))
@@ -351,3 +353,24 @@ def _binary_found(command: tuple[str, ...]) -> bool:
 
 def _stamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+
+
+_MIME_EXT = {
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/flac": ".flac",
+}
+
+
+def _clean_mime(mime: str) -> str:
+    # Browsers send values like "audio/webm;codecs=opus"; Deepgram wants the base type.
+    return (mime or "audio/wav").split(";", 1)[0].strip().lower() or "audio/wav"
+
+
+def _ext_for_mime(mime: str) -> str:
+    return _MIME_EXT.get(_clean_mime(mime), ".bin")

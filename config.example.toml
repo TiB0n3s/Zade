@@ -65,3 +65,13 @@ wsl_distro = "Ubuntu-TradingBot-C"
 repo_path = "/home/tradingbot/trading-bot"
 python = "./venv/bin/python"
 timeout_seconds = 120.0
+
+[devtools]
+# The repo Zade may act in through approved developer action handlers
+# (dev.command.run, dev.git.branch, dev.git.commit, dev.draft.write). Every
+# action still requires approval + the typed confirmation phrase; this just
+# bounds where those actions run. Point it at whichever repo you want Zade to
+# help with. Defaults to the kernel's own project root.
+workspace_root = "C:\\LocalAICofounder"
+default_branch = "main"
+command_timeout_seconds = 300.0

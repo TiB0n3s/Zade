@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Voice</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506;
+      --panel: #0c0c0e;
+      --panel-2: #121216;
+      --line: rgba(255,255,255,0.08);
+      --text: #eeeae5;
+      --muted: #8a8a91;
+      --accent: #b0473f;
+      --accent-2: #d07d74;
+      --ok: #5a8a72;
+      --warn: #c69b5f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 30% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.76); position: sticky; top: 0; backdrop-filter: blur(16px); z-index: 10;
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { padding: 24px 28px 40px; display: grid; gap: 18px; max-width: 900px; margin: 0 auto; }
+    section {
+      background: rgba(12,12,14,0.9); border: 1px solid var(--line);
+      border-radius: 8px; padding: 18px;
+    }
+    h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+    .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; overflow: hidden; border-radius: 6px; }
+    .status-cell { padding: 12px 14px; background: rgba(255,255,255,0.02); }
+    .status-cell strong { display: block; font-size: 15px; margin-bottom: 4px; }
+    .status-cell span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: var(--muted); }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 8px rgba(90,138,114,0.7); }
+    .dot.bad { background: var(--accent); }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
+      border-radius: 6px; padding: 10px 14px; cursor: pointer; text-decoration: none; font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button:disabled { opacity: 0.4; cursor: default; }
+    .mic-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .mic-btn {
+      width: 76px; height: 76px; border-radius: 50%; font-size: 26px; padding: 0;
+      display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+      transition: transform 0.1s, background 0.2s, box-shadow 0.2s;
+    }
+    .mic-btn.recording {
+      background: var(--accent); border-color: var(--accent-2);
+      box-shadow: 0 0 0 0 rgba(176,71,63,0.6); animation: pulse 1.4s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(176,71,63,0.55); }
+      70% { box-shadow: 0 0 0 18px rgba(176,71,63,0); }
+      100% { box-shadow: 0 0 0 0 rgba(176,71,63,0); }
+    }
+    .mic-hint { color: var(--muted); font-size: 13px; }
+    .options { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; color: var(--muted); font-size: 13px; }
+    .options label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+    textarea, input, select {
+      background: #09090b; color: var(--text); border: 1px solid var(--line);
+      border-radius: 5px; padding: 10px; outline: none; font: inherit; width: 100%;
+    }
+    textarea:focus, input:focus { border-color: rgba(208,125,116,0.65); }
+    .speak-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+    .exchange { display: grid; gap: 14px; }
+    .bubble { border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    .bubble.you { background: rgba(255,255,255,0.03); }
+    .bubble.zade { background: rgba(176,71,63,0.08); border-color: rgba(176,71,63,0.28); }
+    .bubble .who { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; }
+    .bubble .body { white-space: pre-wrap; color: #e7e2db; }
+    audio { width: 100%; margin-top: 12px; filter: invert(0.92) hue-rotate(180deg); }
+    .notice { min-height: 20px; color: var(--muted); font-size: 13px; }
+    .notice.err { color: var(--accent-2); }
+    .contrarian { margin-top: 10px; padding: 10px 12px; border-left: 2px solid rgba(198,155,95,0.6); background: rgba(198,155,95,0.06); color: #e8d6b6; font-size: 13px; border-radius: 0 5px 5px 0; }
+    .caption-hint { font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .caption { white-space: pre-wrap; color: #e7e2db; font-size: 15px; line-height: 1.55; min-height: 22px; }
+    .caption.placeholder { color: var(--muted); font-style: italic; }
+    #captionWrap { border-color: rgba(176,71,63,0.28); background: rgba(176,71,63,0.06); }
+    @media (max-width: 620px) { .speak-row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Talk to Zade</h1>
+      <div class="sub">Speech in, governed answer out. Authority, memory, and the contrarian pass all apply.</div>
+    </div>
+    <div>
+      <a class="button secondary" href="/ui">Back to Zade</a>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Voice engines</h2>
+      <div class="status-grid" id="status">
+        <div class="status-cell"><strong>&hellip;</strong><span>loading</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Speak to Zade</h2>
+      <div class="mic-row">
+        <button class="mic-btn" id="micBtn" title="Hold a conversation">&#127908;</button>
+        <div>
+          <div id="micState" class="mic-hint">Click to record. Click again to send.</div>
+          <div class="options">
+            <label><input type="checkbox" id="playAudio" checked> Play reply audio</label>
+            <label><input type="checkbox" id="remember" checked> Remember this thread</label>
+            <label><input type="checkbox" id="speakFull"> Speak the contrarian check too</label>
+            <label>
+              <span>Mode</span>
+              <select id="taskType" style="width:auto;padding:4px 8px;">
+                <option value="general">general</option>
+                <option value="reasoning">reasoning</option>
+                <option value="coding">coding</option>
+              </select>
+            </label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="captionWrap">
+      <h2>Zade says <span class="caption-hint">&mdash; full text, shown whether or not audio plays</span></h2>
+      <div class="caption placeholder" id="caption">Zade's replies appear here as text. Uncheck &ldquo;Play reply audio&rdquo; above to read silently.</div>
+    </section>
+
+    <section>
+      <h2>Or type &mdash; Zade will speak it back</h2>
+      <div class="speak-row">
+        <textarea id="speakText" rows="2" placeholder="Type anything and hear Zade say it in his voice."></textarea>
+        <button id="speakBtn">Speak</button>
+      </div>
+    </section>
+
+    <div class="notice" id="notice"></div>
+    <section id="exchangeWrap" style="display:none;">
+      <h2>Conversation</h2>
+      <div class="exchange" id="exchange"></div>
+    </section>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    const headers = () => token()
+      ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() }
+      : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const notice = (t, err) => { const n = byId('notice'); n.textContent = t || ''; n.classList.toggle('err', !!err); };
+    const autoplayOn = () => byId('playAudio').checked;
+    const CAPTION_PLACEHOLDER = 'Zade’s replies appear here as text. Uncheck “Play reply audio” above to read silently.';
+    function setCaption(text) {
+      const el = byId('caption');
+      const has = !!(text && text.trim());
+      el.textContent = has ? text : CAPTION_PLACEHOLDER;
+      el.classList.toggle('placeholder', !has);
+    }
+
+    const state = { recorder: null, chunks: [], recording: false, conversationId: null, ready: false };
+
+    function statusCell(value, label, dot) {
+      const d = dot ? `<span class="dot ${dot}"></span>` : '';
+      return `<div class="status-cell"><strong>${d}${esc(value)}</strong><span>${esc(label)}</span></div>`;
+    }
+
+    async function loadStatus() {
+      try {
+        const s = await api('/voice/status');
+        const sttDot = s.stt.configured && (s.stt.engine === 'command' ? s.stt.binary_found : s.stt.credential_set) ? 'ok' : 'bad';
+        const ttsDot = s.tts.configured && (s.tts.engine === 'command' ? s.tts.binary_found : s.tts.credential_set) ? 'ok' : 'bad';
+        state.ready = s.ready && sttDot === 'ok' && ttsDot === 'ok';
+        byId('status').innerHTML = [
+          statusCell(s.stt.engine, 'Speech-to-text', sttDot),
+          statusCell(s.tts.engine, 'Text-to-speech', ttsDot),
+          statusCell(s.cloud_engines_in_use ? 'cloud' : 'local', 'Location', s.cloud_engines_in_use ? 'warn' : 'ok'),
+          statusCell(state.ready ? 'ready' : 'not ready', 'Status', state.ready ? 'ok' : 'bad')
+        ].join('');
+        if (!state.ready) {
+          const missing = [];
+          if (sttDot !== 'ok') missing.push('STT (' + (s.stt.credential_env || 'command') + ')');
+          if (ttsDot !== 'ok') missing.push('TTS (' + (s.tts.credential_env || 'command') + ')');
+          notice('Voice not fully ready: ' + missing.join(', ') + '. Set the engine and credentials in config.toml, then restart the kernel.', true);
+        }
+      } catch (err) {
+        byId('status').innerHTML = statusCell('error', 'status', 'bad');
+        notice('Could not read voice status: ' + err.message, true);
+      }
+    }
+
+    function addBubble(who, text, audioBase64, audioMime, autoplay) {
+      byId('exchangeWrap').style.display = '';
+      const wrap = byId('exchange');
+      const el = document.createElement('div');
+      el.className = 'bubble ' + (who === 'You' ? 'you' : 'zade');
+      el.innerHTML = `<div class="who"><span>${esc(who)}</span></div><div class="body">${esc(text)}</div>`;
+      if (audioBase64) {
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.autoplay = !!autoplay;
+        audio.src = 'data:' + (audioMime || 'audio/mpeg') + ';base64,' + audioBase64;
+        el.appendChild(audio);
+      }
+      wrap.appendChild(el);
+      el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+
+    async function ensureConversation() {
+      if (!byId('remember').checked) return null;
+      if (state.conversationId) return state.conversationId;
+      const c = await api('/conversations', { method: 'POST', body: JSON.stringify({ title: 'Voice thread' }) });
+      state.conversationId = c.conversation ? c.conversation.id : (c.item ? c.item.id : c.id);
+      return state.conversationId;
+    }
+
+    // ---- Microphone capture ----
+    async function toggleRecording() {
+      if (state.recording) { stopRecording(); return; }
+      if (!navigator.mediaDevices || !window.MediaRecorder) {
+        notice('This browser does not support microphone capture. Use the type-to-speak box instead.', true);
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        state.chunks = [];
+        const rec = new MediaRecorder(stream);
+        rec.ondataavailable = (e) => { if (e.data && e.data.size) state.chunks.push(e.data); };
+        rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); sendRecording(rec.mimeType); };
+        rec.start();
+        state.recorder = rec;
+        state.recording = true;
+        byId('micBtn').classList.add('recording');
+        byId('micState').textContent = 'Recording&hellip; click again to send.';
+        notice('');
+      } catch (err) {
+        notice('Microphone access denied or unavailable: ' + err.message, true);
+      }
+    }
+
+    function stopRecording() {
+      if (state.recorder && state.recording) {
+        state.recording = false;
+        byId('micBtn').classList.remove('recording');
+        byId('micState').textContent = 'Transcribing and thinking&hellip;';
+        state.recorder.stop();
+      }
+    }
+
+    function blobToBase64(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result).split(',')[1] || '');
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function sendRecording(mimeType) {
+      try {
+        const blob = new Blob(state.chunks, { type: mimeType || 'audio/webm' });
+        if (!blob.size) { notice('No audio captured. Try holding a moment before clicking to send.', true); resetMic(); return; }
+        const audio_base64 = await blobToBase64(blob);
+        const conversation_id = await ensureConversation();
+        const play = autoplayOn();
+        const result = await api('/voice/converse', {
+          method: 'POST',
+          body: JSON.stringify({
+            audio_base64,
+            audio_mime: blob.type || mimeType || 'audio/webm',
+            conversation_id,
+            task_type: byId('taskType').value,
+            speak_full: byId('speakFull').checked,
+            speak_response: play
+          })
+        });
+        addBubble('You', result.transcript || '(no speech detected)');
+        const speech = result.speech || {};
+        const fullText = result.response || result.spoken_text || '(no reply)';
+        setCaption(fullText);
+        addBubble('Zade', fullText, speech.audio_base64, 'audio/' + (speech.format || 'mpeg'), play);
+        if (result.speech_error) notice('Answer ready, but speech failed: ' + result.speech_error + ' — text is shown above.', true);
+        else notice('');
+      } catch (err) {
+        notice('Voice exchange failed: ' + err.message, true);
+      } finally {
+        resetMic();
+      }
+    }
+
+    function resetMic() {
+      state.recording = false;
+      byId('micBtn').classList.remove('recording');
+      byId('micState').textContent = 'Click to record. Click again to send.';
+    }
+
+    // ---- Type to speak ----
+    async function speakTyped() {
+      const text = byId('speakText').value.trim();
+      if (!text) return;
+      byId('speakBtn').disabled = true;
+      notice('Synthesizing&hellip;');
+      try {
+        const result = await api('/voice/speak', { method: 'POST', body: JSON.stringify({ text }) });
+        setCaption(text);
+        addBubble('Zade', text, result.audio_base64, 'audio/' + (result.format || 'mpeg'), autoplayOn());
+        notice('');
+      } catch (err) {
+        notice('Speak failed: ' + err.message, true);
+      } finally {
+        byId('speakBtn').disabled = false;
+      }
+    }
+
+    byId('micBtn').addEventListener('click', toggleRecording);
+    byId('speakBtn').addEventListener('click', speakTyped);
+    byId('speakText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) speakTyped(); });
+    byId('remember').addEventListener('change', () => { if (!byId('remember').checked) state.conversationId = null; });
+
+    loadStatus();
+  </script>
+</body>
+</html>

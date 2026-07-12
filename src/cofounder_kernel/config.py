@@ -146,6 +146,20 @@ class TradingBotConfig:
 
 
 @dataclass(frozen=True)
+class DevToolsConfig:
+    """Workspace Zade may act in through approved developer action handlers.
+
+    workspace_root is a trusted local grant, like the Ollama endpoint. Every
+    dev action still dispatches only through approval + the typed confirmation
+    phrase; this just bounds where those actions run.
+    """
+
+    workspace_root: Path = DEFAULT_PROJECT_ROOT
+    default_branch: str = "main"
+    command_timeout_seconds: float = 300.0
+
+
+@dataclass(frozen=True)
 class KernelConfig:
     app: AppConfig = AppConfig()
     identity: IdentityConfig = IdentityConfig()
@@ -155,6 +169,7 @@ class KernelConfig:
     skills: SkillConfig = SkillConfig()
     voice: VoiceConfig = VoiceConfig()
     trading_bot: TradingBotConfig = TradingBotConfig()
+    devtools: DevToolsConfig = DevToolsConfig()
 
 
 def _read_toml(path: Path) -> dict:
@@ -235,6 +250,14 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         python=str(os.getenv("ZADE_TRADING_BOT_PYTHON", trading_bot_raw.get("python", "./venv/bin/python"))),
         timeout_seconds=float(os.getenv("ZADE_TRADING_BOT_TIMEOUT_SECONDS", trading_bot_raw.get("timeout_seconds", 120.0))),
     )
+    devtools_raw = raw.get("devtools", {})
+    devtools = DevToolsConfig(
+        workspace_root=_path(
+            os.getenv("COFOUNDER_WORKSPACE_ROOT", devtools_raw.get("workspace_root")), DEFAULT_PROJECT_ROOT
+        ),
+        default_branch=str(os.getenv("COFOUNDER_DEFAULT_BRANCH", devtools_raw.get("default_branch", "main"))),
+        command_timeout_seconds=float(devtools_raw.get("command_timeout_seconds", 300.0)),
+    )
     return KernelConfig(
         app=app,
         identity=identity,
@@ -244,6 +267,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         skills=skills,
         voice=voice,
         trading_bot=trading_bot,
+        devtools=devtools,
     )
 
 

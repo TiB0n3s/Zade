@@ -615,6 +615,31 @@ $created = Invoke-RestMethod -Uri "http://127.0.0.1:8787/action-plans" -Method P
 Invoke-RestMethod -Uri "http://127.0.0.1:8787/action-plans/$($created.item.id)/advance" -Method Post
 ```
 
+### Developer Action Handlers
+
+Zade can do developer work, not just advise on it, through a set of approved action handlers. These make him a co-founder that acts — run tests and lint, inspect/branch/commit a repo, and draft outbound messages — while every action stays behind the same gate as any other external action.
+
+- `dev.command.run` — run an **allowlisted** command in the workspace: `pytest`, `ruff-check`, `ruff-format-check`, `git-status`, `git-diff`, `git-diff-staged`, `git-log`, `python-version`. No arbitrary shell; args cannot use absolute paths or `..`.
+- `dev.git.branch` — create or switch to a branch.
+- `dev.git.commit` — stage and commit local changes; **refuses the default branch** unless `metadata.allow_default_branch` is set, and only commits already-staged local changes.
+- `dev.draft.write` — write an email/PR/message draft to the local drafts folder. It is never sent; sending stays a human action.
+
+The safety model is unchanged: these run **only through approved dispatch** — an approved work item plus the typed confirmation phrase — and execution is confined to `[devtools] workspace_root` in `config.toml` (defaults to the kernel's own repo; point it at whichever repo you want help with). Because they run as work-queue steps, the decision-to-action pipeline can emit them: a plan step with `execution = "work_queue"` and `action = "dev.command.run"` becomes a queued item that you approve, and its output is recorded as grade-A evidence.
+
+Run the workspace tests through the approval flow:
+
+```powershell
+$item = @{
+  kind = "action_step"; title = "Run tests before shipping"
+  action = "dev.command.run"; permission_tier = "L3_EXTERNAL_ACTION"
+  metadata = @{ command = "pytest" }
+} | ConvertTo-Json -Depth 8
+$queued = Invoke-RestMethod -Uri "http://127.0.0.1:8787/work/items" -Method Post -Body $item -ContentType "application/json"
+
+$approve = @{ dispatch = $true; typed_confirmation = "make the jump to hyperspace" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/work/items/$($queued.item_id)/approve" -Method Post -Body $approve -ContentType "application/json"
+```
+
 ## Commitment Ledger
 
 The ledger tracks what you said you would do and what Zade said he would monitor — deadlines, misses, drift, and follow-ups. This is what makes Zade a co-founder instead of a smart notes app.
@@ -656,6 +681,8 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8787/notifications?unread_only=true"
 ## Voice Loop
 
 The voice loop wraps the governed runtime in speech. Voice is an interface, not a bypass — `/voice/converse` transcribes, answers through `runtime.respond` (authority, charters, episodic memory, and the contrarian pass all apply), then synthesizes the reply.
+
+The easiest way to use it is the browser: open `http://127.0.0.1:8787/ui/voice.html` (also linked as **Voice** from the founder dashboard). Click the mic to record a question and hear Zade answer inline; or type text and hear it spoken back. Browser audio needs no file associations — recordings post as base64 with their real mime type, and Zade's reply plays in an `<audio>` element. Every reply also appears as **full text** in an always-visible "Zade says" readout (including the contrarian check), so you never miss anything when audio is off. Uncheck **Play reply audio** to read silently — Zade then skips synthesis entirely, saving latency and TTS quota. For direct API use:
 
 Two engine families per direction:
 
@@ -1527,6 +1554,7 @@ Implemented:
 - local voice loop with founder-configured STT/TTS engines, governed voice conversations with episodic memory, and honest engine-unavailable reporting
 - always-on supervisor with a resident scheduled task, crash recovery through start.ps1, a supervisor-owned JSONL history, and kernel uptime/supervision reporting
 - decision-to-action pipeline with per-step authority, work-queue execution for machine steps, step-level evidence trails, and stalled-plan surfacing
+- developer action handlers (run tests/lint, git branch/commit, draft messages) on the approved-dispatch substrate, with command allowlisting, workspace confinement, and default-branch protection
 - commitment ledger tracking founder and Zade promises with deadlines, misses, drift detection, throttled follow-ups, and cadence integration
 - notification bus with ui/voice/sms channels, severity floors, quiet hours, rate limits, recipient whitelists, dedupe, and recorded suppressions
 - Deep Thought teaching bridge with sourced candidates, evidence import, object linking, and evidence loop

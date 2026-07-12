@@ -227,11 +227,40 @@ def test_deepgram_and_elevenlabs_adapters(tmp_path: Path, monkeypatch) -> None:
     deepgram_request = calls["requests"][0]
     assert "model=nova-2" in deepgram_request.full_url
     assert deepgram_request.get_header("Authorization") == "Token dg-key"
+    assert deepgram_request.get_header("Content-type") == "audio/wav"  # default mime
     assert deepgram_request.data == base64.b64decode(FAKE_AUDIO)
     elevenlabs_request = calls["requests"][1]
     assert "/v1/text-to-speech/voice123" in elevenlabs_request.full_url
     assert elevenlabs_request.get_header("Xi-api-key") == "el-key"
     assert json.loads(elevenlabs_request.data.decode("utf-8"))["text"] == "Evidence first."
+
+
+def test_browser_webm_mime_reaches_deepgram(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-key")
+    seen = {}
+
+    def fake_urlopen(request, timeout=120):
+        seen["content_type"] = request.get_header("Content-type")
+        body = {"results": {"channels": [{"alternatives": [{"transcript": "hello from the browser"}]}]}}
+        return FakeHttpResponse(json.dumps(body).encode("utf-8"))
+
+    monkeypatch.setattr(voice_module.urllib.request, "urlopen", fake_urlopen)
+    cfg = _config(tmp_path, VoiceConfig(stt_engine="deepgram", tts_engine="elevenlabs"))
+    client = TestClient(create_app(cfg))
+
+    # The browser's MediaRecorder produces webm/opus; the codecs suffix is stripped.
+    result = client.post(
+        "/voice/transcribe",
+        json={"audio_base64": FAKE_AUDIO, "audio_mime": "audio/webm;codecs=opus"},
+    )
+
+    assert result.status_code == 200
+    assert result.json()["text"] == "hello from the browser"
+    assert result.json()["audio_mime"] == "audio/webm;codecs=opus"
+    assert seen["content_type"] == "audio/webm"
+    # The saved input artifact carries the right extension for the format.
+    assert Path(result.json()["audio_path"]).suffix == ".webm"
 
 
 def test_cloud_converse_end_to_end_and_http_errors(tmp_path: Path, monkeypatch) -> None:

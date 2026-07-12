@@ -16,6 +16,7 @@ from .connectors import ConnectorService
 from .conversation import ConversationService
 from .critic import ContrarianCritic
 from .db import KernelDatabase, utc_now
+from .devtools import DevToolsHandlers, allowed_commands
 from .evals import EvalService
 from .experiments import ExperimentService
 from .founder import FounderService
@@ -178,6 +179,8 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         "Read-only sync of an approved external connector into staged candidate items.",
         connectors.sync_from_work_item,
     )
+    devtools = DevToolsHandlers(db=db, config=cfg)
+    devtools.register_into(handlers)
     handlers.register(
         "external.dt_recommendation.ingest",
         "Append an observe-only Zade/DT advisory recommendation to the trading-bot dt_recommendations lane.",
@@ -607,7 +610,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     @app.post("/voice/transcribe")
     def voice_transcribe(payload: VoiceTranscribeRequest) -> dict[str, Any]:
         try:
-            return voice.transcribe(audio_base64=payload.audio_base64)
+            return voice.transcribe(audio_base64=payload.audio_base64, audio_mime=payload.audio_mime)
         except VoiceNotConfigured as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
@@ -2165,6 +2168,24 @@ def _inventory_payload(
             "Machine steps execute through the work queue, so approvals and typed confirmation apply unchanged.",
             "Manual steps are founder work the pipeline tracks; it never pretends Zade executed them.",
             "Step outcomes are recorded as grade-A evidence in the founder ledger.",
+        ],
+    }
+    inventory["devtools_layer"] = {
+        "workspace_root": str(cfg.devtools.workspace_root),
+        "default_branch": cfg.devtools.default_branch,
+        "actions": [
+            "dev.command.run",
+            "dev.git.branch",
+            "dev.git.commit",
+            "dev.draft.write",
+        ],
+        "allowed_commands": sorted(allowed_commands("python").keys()),
+        "operating_rules": [
+            "Dev actions run only through approved dispatch: an approved work item plus the typed confirmation phrase.",
+            "Commands are allowlisted (tests, lint, git diagnostics); there is no arbitrary shell execution.",
+            "Execution is confined to the configured workspace root; command args cannot use absolute paths or traversal.",
+            "git.commit refuses the default branch unless explicitly allowed, and only commits staged local changes.",
+            "Drafts are written to the local drafts folder and never sent; sending stays a human action.",
         ],
     }
     inventory["commitment_layer"] = {
