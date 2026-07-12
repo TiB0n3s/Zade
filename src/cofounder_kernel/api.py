@@ -1708,7 +1708,19 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 # inline <script>/<style> blocks; there is no external script origin at all.
 _CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "
+    # blob: is required alongside 'self': the bundled dashboard (ui/index.html)
+    # dynamically imports its own compiled component modules from blob: URLs
+    # it creates itself (decompressed, same-origin data, never a remote
+    # fetch) — without it, dynamic import() of those modules is silently
+    # blocked and the dashboard never gets past its pre-hydration placeholder.
+    # 'unsafe-eval' is required too: that dashboard compiles its component
+    # JSX client-side via an in-browser Babel transform, which executes the
+    # result through eval — there is no way to run it without eval access.
+    # This does widen the XSS blast radius versus a stricter CSP, but
+    # connect-src/default-src still block all external egress, so an eval'd
+    # script still cannot exfiltrate data off-origin, and mutations remain
+    # behind the X-Zade-Token gate regardless.
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data:; "
     "font-src 'self' data:; "

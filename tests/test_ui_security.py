@@ -61,6 +61,12 @@ def test_security_headers_present_on_every_response(tmp_path: Path, monkeypatch)
     assert "default-src 'self'" in csp        # no external origin is loadable
     assert "connect-src 'self'" in csp         # the browser cannot exfiltrate off-origin
     assert "object-src 'none'" in csp
+    # ui/index.html dynamically imports its own compiled component modules
+    # from same-origin blob: URLs it creates itself; without this the CSP
+    # silently blocks that import and the dashboard never leaves its
+    # pre-hydration placeholder (found via live browser verification, not
+    # by any automated check — the TestClient can't exercise a blob: import).
+    assert "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:" in csp
     assert resp.headers.get("x-content-type-options") == "nosniff"
     assert resp.headers.get("x-frame-options") == "DENY"
     assert resp.headers.get("referrer-policy") == "no-referrer"
