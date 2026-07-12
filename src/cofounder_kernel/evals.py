@@ -149,10 +149,15 @@ class EvalService:
         executor = str(payload.get("executor", "generate"))
         if executor not in EXECUTORS:
             raise ValueError(f"Executor must be one of: {', '.join(sorted(EXECUTORS))}")
-        for check in payload.get("checks", []):
+        checks = payload.get("checks", [])
+        for check in checks:
             check_type = str(check.get("type", ""))
             if check_type not in CHECK_TYPES:
                 raise ValueError(f"Unknown check type: {check_type or '(empty)'}")
+        # generate/respond cases score by their checks; a check-less case would
+        # score 0 forever. The critic executor injects its own contract check.
+        if executor in {"generate", "respond"} and not checks:
+            raise ValueError(f"{executor} eval cases require at least one check.")
         case_id, _created = self._upsert_case(payload, only_if_missing=False)
         self.db.audit(
             actor="evals",
@@ -322,13 +327,15 @@ class EvalService:
     def _execute_generate(self, case: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
         task_type = case.get("task_type") or "general"
         model = self.config.ollama.model_for_role(task_type)  # type: ignore[arg-type]
-        think = self.config.ollama.think_for_role(task_type)  # type: ignore[arg-type]
         started = time.perf_counter()
+        # Evals must be a regression signal, not sampling noise: generate greedily
+        # (temperature 0) with thinking off so the same case + model is reproducible.
+        think = False
         generated = self.ollama.generate(
             prompt=case["prompt"],
             model=model,
             think=think,
-            temperature=self.config.ollama.temperature,
+            temperature=0.0,
             num_predict=256,
         )
         latency_ms = int((time.perf_counter() - started) * 1000)

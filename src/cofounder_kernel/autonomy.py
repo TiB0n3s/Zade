@@ -185,7 +185,9 @@ class WorkQueueService:
         return results
 
     def run_next(self) -> RunResult:
-        item = self.db.next_work_item()
+        # Atomic claim (pending -> running) so a concurrent scheduler + API run
+        # can never both pick up and dispatch the same item.
+        item = self.db.claim_next_work_item()
         if item is None:
             return RunResult(item_id=None, status="empty")
 

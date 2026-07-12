@@ -113,7 +113,7 @@ def test_claimed_tier_cannot_bypass_the_deny_boundary(tmp_path: Path) -> None:
     wire_l2 = evaluate(policy, "wire.transfer", "L2_FILE_WRITE")
 
     assert broker_l0.decision == AuthorityDecision.DENY
-    assert broker_l0.matched_rule == "deny.action_token"
+    assert broker_l0.matched_rule == "deny.financial_execution"
     assert trading_l1.decision == AuthorityDecision.DENY
     assert payment_l3.decision == AuthorityDecision.DENY
     assert wire_l2.decision == AuthorityDecision.DENY
@@ -205,8 +205,59 @@ def test_authority_api_reports_structured_evaluation(tmp_path: Path, monkeypatch
 
     assert summary.status_code == 200
     assert summary.json()["evaluation"]["metadata_scanned"] is False
-    assert summary.json()["policy_version"].endswith("v2")
+    assert summary.json()["policy_version"].endswith("v3")
     assert denied.status_code == 200
     assert denied.json()["decision"] == "deny"
     assert benign.status_code == 200
     assert benign.json()["decision"] == "allow"
+
+
+def test_v3_allows_financial_vocabulary_but_denies_execution(tmp_path: Path) -> None:
+    """A co-founder must be able to review orders/payments/trading without Zade transacting."""
+    policy = make_policy(tmp_path)
+
+    # Business vocabulary at analysis/review — allowed (this is the false-deny the audit found).
+    for action in (
+        "founder.sales_order.review",
+        "memory.order_by_date",
+        "founder.payment_terms.review",
+        "founder.trading_strategy.review",
+        "brief.transfer_summary",
+    ):
+        result = evaluate(policy, action, "L1_MEMORY_WRITE")
+        assert result.decision == AuthorityDecision.ALLOW, f"{action} should be allowed, got {result.matched_rule}"
+
+    # The same nouns paired with an execution verb — denied.
+    for action in ("payment.send", "order.submit", "broker.buy", "trading.execute", "securities.liquidate"):
+        result = evaluate(policy, action, "L3_EXTERNAL_ACTION")
+        assert result.decision == AuthorityDecision.DENY, f"{action} should be denied"
+        assert result.matched_rule in {"deny.financial_execution", "deny.action_token"}
+
+    # Multi-word transaction patterns in dotted action names still deny.
+    assert evaluate(policy, "wire.transfer", "L3_EXTERNAL_ACTION").decision == AuthorityDecision.DENY
+    assert evaluate(policy, "treasury.move_funds", "L3_EXTERNAL_ACTION").decision == AuthorityDecision.DENY
+    # Unambiguous processor names deny outright.
+    assert evaluate(policy, "stripe.charge", "L3_EXTERNAL_ACTION").decision == AuthorityDecision.DENY
+
+
+def test_v3_local_prefix_cannot_ride_to_auto_allow(tmp_path: Path) -> None:
+    """An external capability named under a local prefix must not short-circuit to ALLOW."""
+    policy = make_policy(tmp_path)
+
+    for action in ("self.install", "work.http_post", "runtime.upload", "skills.download", "self.subprocess"):
+        result = evaluate(policy, action, "L1_MEMORY_WRITE")
+        assert result.decision == AuthorityDecision.APPROVAL_REQUIRED, f"{action} bypassed to {result.decision}"
+        assert result.matched_rule == "approval.action_token"
+
+    # Genuinely local memory actions are still autonomous.
+    assert evaluate(policy, "self.inventory.snapshot", "L1_MEMORY_WRITE").decision == AuthorityDecision.ALLOW
+    assert evaluate(policy, "work.enqueue", "L1_MEMORY_WRITE").decision == AuthorityDecision.ALLOW
+
+
+def test_v3_dev_git_actions_require_approval(tmp_path: Path) -> None:
+    policy = make_policy(tmp_path)
+
+    for action in ("dev.git.commit", "dev.git.branch", "dev.command.run", "dev.draft.write"):
+        result = evaluate(policy, action, "L3_EXTERNAL_ACTION")
+        assert result.decision == AuthorityDecision.APPROVAL_REQUIRED, f"{action} was not approval-gated"
+        assert result.requires_typed_phrase is True

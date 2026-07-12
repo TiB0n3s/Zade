@@ -215,7 +215,9 @@ def _clamp_adjustment(value: Any, verdict: str) -> int:
         adjustment = int(value)
     except (TypeError, ValueError):
         adjustment = 0 if verdict == "proceed" else -10
-    return max(-50, min(10, adjustment))
+    # The contrarian pass is a red team: it may only lower or hold confidence,
+    # never raise it. Clamp to [-50, 0] regardless of what the model returns.
+    return max(-50, min(0, adjustment))
 
 
 def _critique_block(critique: dict[str, Any]) -> str:

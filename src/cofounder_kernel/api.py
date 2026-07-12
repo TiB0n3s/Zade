@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hmac
+import logging
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +136,8 @@ UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 def create_app(config: KernelConfig | None = None) -> FastAPI:
     cfg = config or load_config()
     ensure_local_paths(cfg)
+    local_token = _resolve_local_token(cfg)
+    _warn_on_weak_posture(cfg, local_token)
 
     db = KernelDatabase(cfg.paths.database_path)
     db.migrate()
@@ -202,6 +207,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     app = FastAPI(title=f"{cfg.identity.name} Local AI Co-founder Kernel", version="0.1.0")
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
     app.state.config = cfg
+    app.state.local_token = local_token
     app.state.db = db
     app.state.ollama = ollama
     app.state.authority = authority
@@ -229,17 +235,25 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def local_mutation_guard(request: Request, call_next):
-        if _mutation_requires_token(cfg, request):
+        if _mutation_requires_token(cfg, request, local_token):
             supplied = request.headers.get("x-zade-token", "")
-            if supplied != cfg.security.local_token:
-                return JSONResponse(
+            if not hmac.compare_digest(supplied, local_token):
+                response: Any = JSONResponse(
                     status_code=401,
                     content={
                         "detail": "Local mutation token required.",
-                        "hint": "Set localStorage.zadeKernelToken in /ui or send X-Zade-Token.",
+                        "hint": "The /ui pages auto-load it from /session/token; or send X-Zade-Token.",
                     },
                 )
-        return await call_next(request)
+            else:
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
+        # Stamp local-first security headers on every response (including the 401
+        # above), so a strict CSP blocks any external load/exfil from the browser.
+        for header, value in _SECURITY_HEADERS.items():
+            response.headers.setdefault(header, value)
+        return response
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -265,7 +279,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
                 "policy_version": authority.summary()["policy_version"],
                 "typed_confirmation_phrase": authority.summary()["typed_confirmation_phrase"],
             },
-            "security": _security_summary(cfg),
+            "security": _security_summary(cfg, local_token),
             "skills": db.skill_summary(),
             "tools": tools.list_tools(),
         }
@@ -367,7 +381,22 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
 
     @app.get("/ops/security")
     def ops_security() -> dict[str, Any]:
-        return _security_summary(cfg)
+        return _security_summary(cfg, local_token)
+
+    @app.get("/session/token")
+    def session_token() -> dict[str, Any]:
+        """Hand the loopback UI its mutation token so it can bootstrap without a
+        manual paste. Only served on a loopback bind — a networked bind must not
+        surrender the token to remote clients (and same-origin policy already
+        stops a cross-site page from reading this response)."""
+        if not _host_is_loopback(cfg.app.host):
+            raise HTTPException(status_code=403, detail="Token bootstrap is disabled on a non-loopback bind.")
+        return {
+            "token": local_token,
+            "header": "X-Zade-Token",
+            "storage": "zadeKernelToken",
+            "required": bool(local_token and cfg.security.protect_mutations),
+        }
 
     @app.get("/ops/supervision")
     def ops_supervision(limit: int = 50) -> dict[str, Any]:
@@ -1514,14 +1543,14 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             actor="api",
         )
         if not result.ok:
-            raise HTTPException(status_code=400, detail=result.data)
+            raise HTTPException(status_code=400, detail=_tool_error(result.data))
         return result.data
 
     @app.post("/memory/search")
     def search_memory(payload: MemorySearch) -> dict[str, Any]:
         result = tools.call("memory.search", payload.model_dump(), actor="api")
         if not result.ok:
-            raise HTTPException(status_code=400, detail=result.data)
+            raise HTTPException(status_code=400, detail=_tool_error(result.data))
         return result.data
 
     @app.post("/ingest/text")
@@ -1533,21 +1562,27 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             metadata=payload.metadata,
         )
         if result.status == "error":
-            raise HTTPException(status_code=400, detail=result.__dict__)
+            raise HTTPException(status_code=400, detail=result.error or "Ingestion failed.")
         return result.__dict__
 
     @app.post("/ingest/file")
     def ingest_file(payload: IngestFileRequest) -> dict[str, Any]:
-        result = ingestion.ingest_file(path=payload.path, metadata=payload.metadata)
+        try:
+            result = ingestion.ingest_file(path=payload.path, metadata=payload.metadata)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if result.status == "error":
-            raise HTTPException(status_code=400, detail=result.__dict__)
+            raise HTTPException(status_code=400, detail=result.error or "Ingestion failed.")
         return result.__dict__
 
     @app.post("/ingest/folder")
     def ingest_folder(payload: IngestFolderRequest) -> dict[str, Any]:
-        result = ingestion.ingest_folder(path=payload.path, recursive=payload.recursive, metadata=payload.metadata)
+        try:
+            result = ingestion.ingest_folder(path=payload.path, recursive=payload.recursive, metadata=payload.metadata)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if result["status"] == "error":
-            raise HTTPException(status_code=400, detail=result)
+            raise HTTPException(status_code=400, detail=str(result.get("errors") or "Ingestion failed."))
         return result
 
     @app.get("/ingest/jobs")
@@ -1568,7 +1603,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     def recent_audit(limit: int = 25) -> dict[str, Any]:
         result = tools.call("audit.recent", {"limit": limit}, actor="api")
         if not result.ok:
-            raise HTTPException(status_code=400, detail=result.data)
+            raise HTTPException(status_code=400, detail=_tool_error(result.data))
         return result.data
 
     @app.get("/brief/daily")
@@ -1665,22 +1700,128 @@ def _model_is_installed(model: str, installed_names: set[str | None]) -> bool:
     return False
 
 
-def _mutation_requires_token(cfg: KernelConfig, request: Request) -> bool:
-    if not cfg.security.local_token or not cfg.security.protect_mutations:
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+# Strict, local-first CSP. `default-src 'self'` blocks every external host —
+# CDNs, fonts, analytics — so nothing the browser loads or talks to can leave
+# the machine. `'unsafe-inline'` is required only because the bundled UI ships
+# inline <script>/<style> blocks; there is no external script origin at all.
+_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self' data:; "
+    "media-src 'self' data: blob:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'; "
+    "form-action 'self'"
+)
+
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": _CONTENT_SECURITY_POLICY,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
+
+
+def _host_is_loopback(host: str) -> bool:
+    return str(host) in _LOOPBACK_HOSTS
+
+
+def _resolve_local_token(cfg: KernelConfig) -> str:
+    """Return the effective mutation token, bootstrapping one if needed.
+
+    RC1: an install left at defaults (protect_mutations on, no token configured)
+    used to leave mutations wide open behind only a log warning. Instead we mint
+    a random token on first boot and persist it under the kernel state dir, so
+    mutations are protected-by-default and the loopback UI can auto-load it via
+    /ui/session — no manual env-var step. An explicitly configured token always
+    wins; turning protect_mutations off keeps the API open by choice.
+    """
+    if cfg.security.local_token:
+        return cfg.security.local_token
+    if not cfg.security.protect_mutations:
+        return ""
+    token_path = cfg.paths.data_dir / "local_token"
+    try:
+        existing = token_path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except (FileNotFoundError, OSError):
+        pass
+    token = secrets.token_urlsafe(32)
+    try:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(token, encoding="utf-8")
+        try:  # best-effort tighten perms; harmless/no-op where unsupported (Windows)
+            token_path.chmod(0o600)
+        except OSError:
+            pass
+    except OSError:
+        # If we cannot persist it, fall back to an in-memory token for this run.
+        pass
+    return token
+
+
+def _warn_on_weak_posture(cfg: KernelConfig, token: str) -> None:
+    """Make the security posture loud instead of silently insecure.
+
+    The kernel is safe only because it binds loopback and (by default) requires
+    a mutation token. When either invariant is weakened we log a prominent
+    warning so an unprotected install is never a quiet surprise.
+    """
+    log = logging.getLogger("cofounder_kernel.security")
+    host = str(cfg.app.host)
+    is_loopback = host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}  # noqa: S104 - detection, not a bind choice
+    if not cfg.security.protect_mutations:
+        log.warning(
+            "SECURITY: protect_mutations is off — mutation endpoints are UNPROTECTED by configuration. "
+            "Set [security] protect_mutations = true to require X-Zade-Token."
+        )
+    elif not token:
+        log.warning(
+            "SECURITY: protect_mutations is on but no local_token could be established (state dir unwritable?) — "
+            "mutation endpoints are UNPROTECTED. Set COFOUNDER_LOCAL_TOKEN (or [security] local_token)."
+        )
+    if host == "0.0.0.0":  # noqa: S104 - warning about a non-loopback bind
+        log.warning(
+            "SECURITY: host is 0.0.0.0 — the kernel is reachable off-machine. All read endpoints are unauthenticated; "
+            "bind 127.0.0.1 unless you have added transport auth."
+        )
+    elif not is_loopback:
+        log.warning("SECURITY: host %s is not loopback; ensure this is intended and access-controlled.", host)
+
+
+def _tool_error(data: Any) -> str:
+    """A clean, non-leaky error string from a failed tool result."""
+    if isinstance(data, dict):
+        return str(data.get("error") or data.get("message") or "Request failed.")
+    return "Request failed."
+
+
+def _mutation_requires_token(cfg: KernelConfig, request: Request, token: str) -> bool:
+    if not token or not cfg.security.protect_mutations:
         return False
     if request.method.upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
         return False
     return True
 
 
-def _security_summary(cfg: KernelConfig) -> dict[str, Any]:
+def _security_summary(cfg: KernelConfig, token: str) -> dict[str, Any]:
     return {
         "local_only": True,
         "host": cfg.app.host,
         "port": cfg.app.port,
-        "mutation_token_required": bool(cfg.security.local_token and cfg.security.protect_mutations),
+        "mutation_token_required": bool(token and cfg.security.protect_mutations),
+        "token_bootstrapped": bool(token and not cfg.security.local_token),
         "token_header": "X-Zade-Token",
         "ui_token_storage": "localStorage.zadeKernelToken",
+        "content_security_policy": True,
     }
 
 

@@ -49,6 +49,10 @@ class SurfacingService:
         items.extend(self._overdue_commitments())
         items.extend(self._drifting_commitments())
         items.extend(self._stalled_action_plans())
+        # Collapse multiple signals about the same object (e.g. a commitment that
+        # is both overdue and drifting) to the single highest-severity row, so the
+        # "one thing" and "underweighted" picks aren't skewed by duplicates.
+        items = _dedupe_items(items)
         items.sort(key=lambda item: (-item["score"], item["kind"], item.get("subject_id") or 0))
         one_thing = items[0] if items else None
         return {
@@ -520,7 +524,7 @@ class SurfacingService:
         candidates = [item for item in items[1:] if item["score"] >= 54 and item.get("opened_at")]
         if not candidates:
             return ""
-        oldest = min(candidates, key=lambda item: str(item["opened_at"]))
+        oldest = min(candidates, key=lambda item: _moment(str(item["opened_at"])))
         return (
             f"Longest-open high-signal item: {oldest['title']} "
             f"(open since {oldest['opened_at']}). {oldest['recommended_action']}"
@@ -642,6 +646,37 @@ def _item(
 
 def _item_headline(item: dict[str, Any]) -> str:
     return f"{item['title']} -> {item['recommended_action']}"
+
+
+def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one row per (subject_type, subject_id), the highest-scoring. Items
+    with no subject_id (aggregate rows like pending approvals) pass through."""
+    best: dict[tuple[str, int], dict[str, Any]] = {}
+    passthrough: list[dict[str, Any]] = []
+    for item in items:
+        subject_id = item.get("subject_id")
+        if subject_id is None:
+            passthrough.append(item)
+            continue
+        key = (str(item.get("subject_type")), int(subject_id))
+        if key not in best or item["score"] > best[key]["score"]:
+            best[key] = item
+    return list(best.values()) + passthrough
+
+
+def _moment(text: str) -> datetime:
+    """Parse a date-only or full-timestamp string to a comparable datetime, so
+    'oldest' ordering does not fall back to broken lexicographic string compare."""
+    value = text.strip()
+    try:
+        if len(value) == 10 and value[4:5] == "-" and value[7:8] == "-":
+            value = f"{value}T00:00:00+00:00"
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+    except ValueError:
+        return datetime.max.replace(tzinfo=UTC)
 
 
 def _age_days(date_text: str) -> int:

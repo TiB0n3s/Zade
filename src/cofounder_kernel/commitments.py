@@ -296,9 +296,23 @@ class CommitmentLedger:
             )
 
 
+def _due_moment(due: str) -> datetime:
+    """The instant a commitment is actually due. A date-only value ("2026-07-12")
+    means end of that day, so a commitment due *today* is not overdue at 00:00."""
+    text = str(due).strip()
+    if len(text) == 10 and text[4:5] == "-" and text[7:8] == "-":
+        return _parse(f"{text}T23:59:59+00:00")
+    return _parse(text)
+
+
 def _is_overdue(item: dict[str, Any], now: str) -> bool:
     due = item.get("due_at")
-    return bool(due) and str(due) < now and item["status"] == OPEN_STATUS
+    if not due or item["status"] != OPEN_STATUS:
+        return False
+    try:
+        return _parse(now) > _due_moment(str(due))
+    except ValueError:
+        return False
 
 
 def _is_due_soon(item: dict[str, Any], now: str) -> bool:
@@ -306,7 +320,7 @@ def _is_due_soon(item: dict[str, Any], now: str) -> bool:
     if not due:
         return False
     try:
-        due_parsed = _parse(str(due))
+        due_parsed = _due_moment(str(due))
         now_parsed = _parse(now)
     except ValueError:
         return False

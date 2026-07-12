@@ -8,11 +8,12 @@ import imaplib
 import json
 import os
 import re
-import urllib.request
+import urllib.error
 from email.header import decode_header
 from pathlib import Path
 from typing import Any
 
+from . import netguard
 from .config import KernelConfig
 from .db import KernelDatabase, utc_now
 from .founder import FounderService
@@ -22,7 +23,11 @@ from .autonomy import WorkQueueService
 
 
 CONNECTOR_TYPES = {"imap", "ics"}
-SECRET_CONFIG_KEYS = {"password", "passwd", "secret", "token", "api_key", "apikey", "credential", "credentials"}
+# Substrings that mark a config key as secret-bearing. Detection is by substring
+# (so app_password, client_secret_value, imap_pwd are all caught), with an
+# exemption for the sanctioned "*_env" pattern, which names an environment
+# variable to read the secret from rather than the secret itself.
+SECRET_KEY_FRAGMENTS = ("pass", "pwd", "secret", "token", "credential", "apikey", "api_key", "private_key", "access_key")
 SYNC_ACTION = "external.connector.sync"
 EXCERPT_CHARS = 1200
 BODY_FETCH_CHARS = 2000
@@ -64,7 +69,12 @@ class ConnectorService:
         if connector_type not in CONNECTOR_TYPES:
             raise ValueError(f"Connector type must be one of: {', '.join(sorted(CONNECTOR_TYPES))}")
         config = dict(payload.get("config", {}))
-        leaked = sorted(key for key in config if key.strip().lower() in SECRET_CONFIG_KEYS)
+        leaked = sorted(
+            key
+            for key in config
+            if not key.strip().lower().endswith("_env")
+            and any(fragment in key.strip().lower() for fragment in SECRET_KEY_FRAGMENTS)
+        )
         if leaked:
             raise ValueError(
                 f"Connector config must not contain secrets ({', '.join(leaked)}). "
@@ -500,15 +510,36 @@ def fetch_ics_events(config: dict[str, Any], *, allowed_roots: list[Path]) -> li
             raise ValueError(f"ICS file not found: {resolved}")
         text = resolved.read_text(encoding="utf-8", errors="replace")
     elif url:
-        lowered = url.lower()
-        is_local_http = lowered.startswith("http://127.0.0.1") or lowered.startswith("http://localhost")
-        if not lowered.startswith("https://") and not is_local_http:
-            raise ValueError("ICS url must use https (or http on localhost).")
-        with urllib.request.urlopen(url, timeout=20) as response:  # noqa: S310 - scheme validated above
-            text = response.read().decode("utf-8", errors="replace")
+        text = _fetch_ics_over_http(url)
     else:
         raise ValueError("ICS connector config requires 'url' or 'path'.")
     return [_event_to_item(event) for event in parse_ics_events(text)]
+
+
+# Egress policy for calendar/ICS feeds lives in the central netguard module so a
+# single SSRF review covers every outbound call. These thin aliases keep the
+# historical names importable.
+_host_is_private = netguard.is_private_host
+_NO_REDIRECT_OPENER = netguard.NO_REDIRECT_OPENER
+
+
+def _fetch_ics_over_http(url: str) -> str:
+    """Fetch an ICS feed with SSRF guards: https-only (loopback http allowed for
+    testing), no private/internal targets, and redirects refused so a public URL
+    cannot hop to an internal service."""
+    try:
+        netguard.assert_allowed(url, allow_loopback_http=True, require_https=True)
+    except netguard.EgressError as exc:
+        raise ValueError(str(exc)) from exc
+    try:
+        with _NO_REDIRECT_OPENER.open(url, timeout=20) as response:  # noqa: S310 - scheme+host validated above
+            return response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise ValueError("ICS url returned a redirect; redirects are refused to prevent internal-host hops.") from exc
+        raise ValueError(f"ICS fetch failed (HTTP {exc.code}).") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"ICS fetch failed: {exc.reason}") from exc
 
 
 def parse_ics_events(text: str, *, limit: int = 100) -> list[dict[str, str]]:

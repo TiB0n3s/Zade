@@ -9,7 +9,7 @@ from typing import Any
 from .config import KernelConfig
 
 
-POLICY_VERSION = "2026-07-12.local-first.v2"
+POLICY_VERSION = "2026-07-12.local-first.v3"
 
 
 class AuthorityDecision(StrEnum):
@@ -71,14 +71,25 @@ class AuthorityPolicy:
     def evaluate(self, request: AuthorityRequest) -> AuthorityResult:
         """Decide from the action taxonomy and target — never from metadata.
 
-        Order: deny taxonomy on the action, then known-local allow (L0/L1),
-        then deny phrases on the target, then external approval taxonomy, then
-        tier defaults. The action string is authoritative; request metadata is
-        payload and must not flip a decision.
+        Order (each step justified against a conflicting constraint):
+          1. deny tokens on the action (unambiguous denied capabilities)
+          2. financial *execution* on the action (noun + verb) — discussion is allowed
+          3. deny phrases on the normalized action
+          4. deny phrases / financial-execution on the target, but ONLY for
+             non-local actions, so ingesting a file named "wire transfer notes"
+             is not blocked
+          5. external/system approval screening on the action — BEFORE the local
+             allow, so an external capability named under a local prefix
+             (self.install, work.http) cannot ride the prefix to auto-allow
+          6. known-local read/memory allow at L0/L1
+          7. tier defaults
+        The action string is authoritative; request metadata never flips a decision.
         """
         action = request.action.strip().lower()
         target = request.target.strip().lower()
         tier = request.permission_tier.strip().upper()
+        action_norm = _normalize(action)
+        action_tokens = set(_action_tokens(action))
 
         deny_token = _first_token_match(action, DENY_ACTION_TOKENS)
         if deny_token:
@@ -87,7 +98,14 @@ class AuthorityPolicy:
                 reason=f"Blocked by hard safety boundary: action names a denied capability ({deny_token}).",
                 matched_rule="deny.action_token",
             )
-        deny_phrase = _first_keyword_match(action, DENY_PHRASES)
+        financial = _financial_execution(action_tokens)
+        if financial:
+            return AuthorityResult(
+                decision=AuthorityDecision.DENY,
+                reason=f"Blocked by hard safety boundary: financial execution is not permitted ({financial}).",
+                matched_rule="deny.financial_execution",
+            )
+        deny_phrase = _first_phrase(action_norm, DENY_PHRASES)
         if deny_phrase:
             return AuthorityResult(
                 decision=AuthorityDecision.DENY,
@@ -95,20 +113,30 @@ class AuthorityPolicy:
                 matched_rule="deny.action_phrase",
             )
 
-        if tier in {"L0_READ", "L1_MEMORY_WRITE"} and _is_local_memory_action(action):
-            return AuthorityResult(
-                decision=AuthorityDecision.ALLOW,
-                reason="Known local read/memory/ingestion action is autonomous.",
-                matched_rule="local_action.autonomous",
-            )
-
-        deny_target = _first_keyword_match(target, DENY_PHRASES)
-        if deny_target:
-            return AuthorityResult(
-                decision=AuthorityDecision.DENY,
-                reason=f"Blocked by hard safety boundary: {deny_target}",
-                matched_rule="deny.target_phrase",
-            )
+        known_local = _is_local_memory_action(action)
+        if not known_local and target:
+            target_norm = _normalize(target)
+            deny_target_token = _first_token_match(target, DENY_ACTION_TOKENS)
+            if deny_target_token:
+                return AuthorityResult(
+                    decision=AuthorityDecision.DENY,
+                    reason=f"Blocked by hard safety boundary: target names a denied capability ({deny_target_token}).",
+                    matched_rule="deny.target_token",
+                )
+            deny_target = _first_phrase(target_norm, DENY_PHRASES)
+            if deny_target:
+                return AuthorityResult(
+                    decision=AuthorityDecision.DENY,
+                    reason=f"Blocked by hard safety boundary: {deny_target}",
+                    matched_rule="deny.target_phrase",
+                )
+            financial_target = _financial_execution(set(_action_tokens(target)))
+            if financial_target:
+                return AuthorityResult(
+                    decision=AuthorityDecision.DENY,
+                    reason=f"Blocked by hard safety boundary: financial execution in target ({financial_target}).",
+                    matched_rule="deny.target_financial",
+                )
 
         approval_token = _first_token_match(action, APPROVAL_ACTION_TOKENS)
         if approval_token:
@@ -119,7 +147,7 @@ class AuthorityPolicy:
                 typed_phrase=self.typed_confirmation_phrase,
                 matched_rule="approval.action_token",
             )
-        approval_phrase = _first_keyword_match(f"{action} {target}", APPROVAL_PHRASES)
+        approval_phrase = _first_phrase(action_norm, APPROVAL_PHRASES)
         if approval_phrase:
             return AuthorityResult(
                 decision=AuthorityDecision.APPROVAL_REQUIRED,
@@ -127,6 +155,13 @@ class AuthorityPolicy:
                 requires_typed_phrase=True,
                 typed_phrase=self.typed_confirmation_phrase,
                 matched_rule="approval.phrase",
+            )
+
+        if tier in {"L0_READ", "L1_MEMORY_WRITE"} and known_local:
+            return AuthorityResult(
+                decision=AuthorityDecision.ALLOW,
+                reason="Known local read/memory/ingestion action is autonomous.",
+                matched_rule="local_action.autonomous",
             )
 
         if tier == "L0_READ":
@@ -178,18 +213,21 @@ class AuthorityPolicy:
             },
             "evaluation": {
                 "order": [
-                    "deny taxonomy on the action (tokens and phrases)",
-                    "known-local action allow for L0/L1 tiers",
-                    "deny phrases on the target",
-                    "external approval taxonomy on the action",
-                    "approval phrases on action and target",
+                    "deny tokens on the action (unambiguous denied capabilities)",
+                    "financial execution on the action (a financial noun plus an execution verb)",
+                    "deny phrases on the normalized action",
+                    "deny phrases / financial execution on the target (non-local actions only)",
+                    "external/system approval screening on the action (before the local allow)",
+                    "known-local read/memory allow for L0/L1 tiers",
                     "tier defaults",
                 ],
                 "metadata_scanned": False,
                 "notes": (
-                    "The action string is authoritative. Request metadata never changes a decision, "
-                    "so payload content cannot trip or evade the safety boundary. "
-                    "Deny screening runs before any tier-based allow, so a claimed tier cannot bypass it."
+                    "The action string is authoritative; request metadata never changes a decision. "
+                    "Financial vocabulary (order/payment/trade) is allowed for analysis and only denied when "
+                    "paired with an execution verb, so a founder can review finances but Zade can never transact. "
+                    "External-capability screening runs before the local-prefix allow, so a name like "
+                    "self.install cannot ride a local prefix to auto-allow."
                 ),
             },
             "autonomous": [
@@ -298,13 +336,55 @@ def _first_keyword_match(text: str, keywords: tuple[str, ...]) -> str:
     return ""
 
 
-# Denied capabilities named in the action itself. Tokenized matching (split on
-# . _ -) so file paths or notes mentioning these words elsewhere cannot trip
-# the boundary, while any action *named* for a denied capability always does.
+def _normalize(text: str) -> str:
+    """Collapse every non-alphanumeric run to a single space so multi-word
+    phrases match dotted/underscored action names (broker.place_order ->
+    'broker place order') and free-text targets ('rm -rf C:\\' -> 'rm rf c')."""
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _first_phrase(normalized_text: str, phrases: tuple[str, ...]) -> str:
+    padded = f" {normalized_text} "
+    for phrase in phrases:
+        if f" {phrase} " in padded or phrase in normalized_text:
+            return phrase
+    return ""
+
+
+def _financial_execution(tokens: set[str]) -> str:
+    """A financial *noun* plus an *execution verb* is a transaction Zade must
+    never initiate. Analysis/review of the same noun (no execution verb) is
+    ordinary co-founder work and is allowed."""
+    nouns = tokens & FINANCIAL_NOUNS
+    verbs = tokens & EXECUTION_VERBS
+    if nouns and verbs:
+        return f"{sorted(nouns)[0]}+{sorted(verbs)[0]}"
+    return ""
+
+
+# Capabilities that have no benign use as an action segment — denied outright.
 DENY_ACTION_TOKENS = frozenset(
     {
-        "broker",
+        "exfiltrate",
+        "exfiltration",
+        "keylog",
+        "keylogger",
+        "ransomware",
+        "stripe",
+        "paypal",
+        "venmo",
+        "coinbase",
         "brokerage",
+    }
+)
+
+
+# Financial nouns and execution verbs. The DENY tier fires only when BOTH are
+# present (a transaction), so a co-founder can freely review orders, payments,
+# and trading strategy while never executing one.
+FINANCIAL_NOUNS = frozenset(
+    {
+        "broker",
         "trade",
         "trades",
         "trading",
@@ -312,52 +392,84 @@ DENY_ACTION_TOKENS = frozenset(
         "orders",
         "payment",
         "payments",
-        "pay",
         "payout",
+        "payouts",
         "purchase",
         "purchases",
-        "buy",
-        "sell",
+        "invoice",
+        "invoices",
         "wire",
         "transfer",
         "transfers",
-        "exfiltrate",
-        "exfiltration",
-        "steal",
+        "withdrawal",
+        "withdrawals",
+        "deposit",
+        "deposits",
+        "securities",
+        "shares",
+        "stock",
+        "stocks",
+        "crypto",
+        "cryptocurrency",
+        "bitcoin",
+        "funds",
+    }
+)
+EXECUTION_VERBS = frozenset(
+    {
+        "execute",
+        "place",
+        "submit",
+        "initiate",
+        "buy",
+        "sell",
+        "send",
+        "pay",
+        "withdraw",
+        "move",
+        "short",
+        "liquidate",
+        "cancel",
+        "fill",
+        "settle",
+        "remit",
     }
 )
 
 
-# High-signal multi-word phrases. Checked against the action always, and
-# against the target only for actions that are not known-local (so a local
-# ingest of a file that merely mentions one of these is not blocked).
+# Denied multi-word patterns (matched against normalized action/target).
 DENY_PHRASES = (
-    "place order",
-    "order placement",
-    "live order",
-    "live trade",
-    "trade execution",
-    "auto-buy",
-    "auto buy",
-    "auto-sell",
-    "auto sell",
     "wire transfer",
     "bank transfer",
+    "transfer funds",
+    "send funds",
+    "move funds",
+    "wire funds",
+    "send money",
     "send payment",
+    "withdraw funds",
+    "make purchase",
+    "complete purchase",
+    "place order",
+    "order placement",
+    "live trade",
     "credential exfiltration",
-    "exfiltrate",
     "dump secrets",
+    "dump credentials",
     "steal token",
+    "steal credentials",
     "password dump",
     "api key dump",
     "delete vault",
     "format disk",
-    "rm -rf",
-    "remove-item -recurse -force c:\\",
+    "rm rf",
     "disable firewall",
     "disable defender",
     "disable security",
     "registry delete",
+    "delete registry",
+    "drop database",
+    "drop table",
 )
 
 
@@ -376,6 +488,8 @@ APPROVAL_ACTION_TOKENS = frozenset(
         "whatsapp",
         "github",
         "gitlab",
+        "git",
+        "clone",
         "deploy",
         "deployment",
         "publish",
@@ -384,12 +498,31 @@ APPROVAL_ACTION_TOKENS = frozenset(
         "powershell",
         "cmd",
         "command",
+        "exec",
+        "execute",
+        "subprocess",
         "process",
         "service",
+        "sudo",
+        "chmod",
+        "chown",
+        "wsl",
+        "docker",
+        "ssh",
+        "scp",
+        "curl",
+        "wget",
+        "ftp",
         "install",
         "uninstall",
         "download",
         "upload",
+        "draft",
+        "webhook",
+        "oauth",
+        "registry",
+        "firewall",
+        "defender",
         "network",
         "http",
         "https",
@@ -406,6 +539,4 @@ APPROVAL_PHRASES = (
     "delete file",
     "remove file",
     "api call",
-    "http://",
-    "https://",
 )

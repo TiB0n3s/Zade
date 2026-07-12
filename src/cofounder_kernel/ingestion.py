@@ -359,10 +359,13 @@ class IngestionService:
         roots = [
             self.config.paths.hot_root.resolve(),
             self.config.paths.cold_root.resolve(),
-            self.config.paths.data_dir.resolve(),
         ]
         if not any(is_relative_to(resolved, root) for root in roots):
             raise ValueError(f"Path is outside allowed memory roots: {resolved}")
+        # Never ingest the kernel's own state (SQLite DB, blobs, backups); it
+        # lives inside hot_root by default and is not founder content.
+        if is_relative_to(resolved, self.config.paths.data_dir.resolve()):
+            raise ValueError(f"Refusing to ingest from the kernel state directory: {resolved}")
         return resolved
 
     def _archive_file(self, file_path: Path) -> Path:

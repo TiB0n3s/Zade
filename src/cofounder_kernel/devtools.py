@@ -259,8 +259,32 @@ def _validate_args(args: Any) -> list[str]:
             raise ValueError("Invalid arg (too long or contains a newline).")
         if ".." in arg or arg.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", arg):
             raise ValueError(f"Refusing path-traversal or absolute path in arg: {arg!r}")
+        # Keep the "read-only diagnostics" guarantee honest: reject flags that
+        # make otherwise-read-only tools (pytest, ruff, git) write files.
+        lowered = arg.lower()
+        if lowered.startswith("-") and any(flag in lowered for flag in _WRITE_FLAG_FRAGMENTS):
+            raise ValueError(f"Refusing a file-writing flag in a read-only dev command: {arg!r}")
         validated.append(arg)
     return validated
+
+
+# Flag fragments that make an allowlisted read-only command produce output files.
+_WRITE_FLAG_FRAGMENTS = (
+    "output",
+    "junit",
+    "junitxml",
+    "basetemp",
+    "resultlog",
+    "result-log",
+    "report",
+    "outfile",
+    "logfile",
+    "log-file",
+    "cov-report",
+    "export",
+    "write",
+    "-o=",
+)
 
 
 def _tail(text: str | None) -> str:

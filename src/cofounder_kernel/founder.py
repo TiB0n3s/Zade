@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from statistics import mean
 from typing import Any
@@ -51,6 +52,18 @@ MENTAL_MODELS = [
         "prompt": "What prior are we starting from, and how much should this evidence move it?",
     },
 ]
+
+
+# Subject types whose confidence a contrarian review may move (they carry a
+# `confidence` column). Other subjects (runtime_event, experiment, decision) are
+# critiqued for the record but have no single confidence to adjust.
+_CONFIDENCE_TABLE_FOR_SUBJECT = {
+    "assumption": "founder_assumptions",
+    "goal": "founder_goals",
+    "bet": "strategy_objects",
+    "active_bet": "strategy_objects",
+    "strategy_object": "strategy_objects",
+}
 
 
 DEFAULT_CONTRARIAN_ROLES = {
@@ -594,8 +607,51 @@ class FounderService:
             )
             item_id = int(cur.lastrowid)
         record = self.get_record("contrarian_reviews", item_id, CONTRARIAN_JSON_FIELDS)
+        self._apply_contrarian_adjustment(record)
         self._after_create("founder.contrarian_review.create", "contrarian_review", item_id, record["title"])
         return InsertResult(id=item_id, record=record)
+
+    def _apply_contrarian_adjustment(self, review: dict[str, Any]) -> None:
+        """Close the contrarian loop: a red-team review of a belief actually moves
+        that belief's confidence, instead of only logging a number. This is what
+        makes self-critique consequential rather than decorative."""
+        adjustment = int(review.get("confidence_adjustment") or 0)
+        subject_id = review.get("subject_id")
+        if adjustment == 0 or subject_id is None:
+            return
+        table = _CONFIDENCE_TABLE_FOR_SUBJECT.get(str(review.get("subject_type") or ""))
+        if not table:
+            return  # subject has no confidence to move (e.g. a runtime_event / experiment)
+        with self.db.connect() as conn:
+            row = conn.execute(f"SELECT confidence FROM {table} WHERE id = ?", (int(subject_id),)).fetchone()
+            if not row:
+                return
+            previous = int(row["confidence"])
+            new_confidence = _clamp_confidence(previous + adjustment)
+            if new_confidence == previous:
+                return
+            conn.execute(
+                f"UPDATE {table} SET updated_at = ?, confidence = ? WHERE id = ?",
+                (utc_now(), new_confidence, int(subject_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO confidence_events (
+                  created_at, subject_type, subject_id, previous_confidence, new_confidence,
+                  reason, evidence_id, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+                """,
+                (
+                    utc_now(),
+                    str(review.get("subject_type")),
+                    int(subject_id),
+                    previous,
+                    new_confidence,
+                    f"Contrarian review adjusted confidence by {adjustment}.",
+                    _json({"contrarian_review_id": review["id"], "source": "contrarian_review"}),
+                ),
+            )
 
     def list_contrarian_reviews(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return self._list("contrarian_reviews", CONTRARIAN_JSON_FIELDS, limit=limit)
@@ -674,7 +730,11 @@ class FounderService:
         if record.get("linked_assumption_id"):
             self._link_evidence_to_assumption(record)
             self._apply_evidence_confidence(record)
-        if record.get("claim_contradicted"):
+        # A thesis conflict requires an actual thesis object to conflict with.
+        # Contradicting evidence with no linked assumption (e.g. an execution-step
+        # failure) is a fact, not a strategic contradiction, and must not
+        # manufacture a phantom "Unspecified thesis assumption" conflict.
+        if record.get("claim_contradicted") and record.get("linked_assumption_id"):
             self.detect_thesis_conflict({"evidence_id": item_id})
         return InsertResult(id=item_id, record=record)
 
@@ -1517,6 +1577,9 @@ class FounderService:
         status: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
+        # Defensive clamp: a negative LIMIT is "unlimited" in SQLite (full-table
+        # dump), and a huge one is a resource lever. Bound it regardless of caller.
+        limit = max(1, min(int(limit), 1000))
         if status:
             query = f"SELECT * FROM {table} WHERE status = ? ORDER BY id DESC LIMIT ?"
             params: list[Any] = [status, limit]
@@ -1531,15 +1594,32 @@ class FounderService:
         with self.db.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT calibration_error
+                SELECT probability, outcome, calibration_error
                 FROM founder_predictions
-                WHERE calibration_error IS NOT NULL
+                WHERE calibration_error IS NOT NULL AND probability IS NOT NULL
                 """
             ).fetchall()
-        errors = [float(row["calibration_error"]) for row in rows]
+        errors: list[float] = []
+        brier: list[float] = []
+        signed: list[float] = []
+        for row in rows:
+            actual = _outcome_to_actual(str(row["outcome"] or ""))
+            if actual is None:
+                continue
+            p = float(row["probability"])
+            errors.append(abs(p - actual))
+            brier.append((p - actual) ** 2)
+            signed.append(p - actual)  # + => predicted higher than reality (overconfident)
+        if not brier:
+            return {"scored_count": 0, "mean_calibration_error": None, "brier_score": None, "directional_bias": None, "calibration_note": "no scored predictions yet"}
+        bias = mean(signed)
+        note = "overconfident" if bias > 0.05 else "underconfident" if bias < -0.05 else "well-calibrated"
         return {
-            "scored_count": len(errors),
-            "mean_calibration_error": round(mean(errors), 4) if errors else None,
+            "scored_count": len(brier),
+            "mean_calibration_error": round(mean(errors), 4),
+            "brier_score": round(mean(brier), 4),  # 0 = perfect, 0.25 = a coin flip, lower is better
+            "directional_bias": round(bias, 4),
+            "calibration_note": note,
         }
 
     def _after_create(self, action: str, artifact: str, item_id: int, title: str) -> None:
@@ -1577,16 +1657,39 @@ class FounderService:
         )
 
     def _apply_evidence_confidence(self, evidence: dict[str, Any]) -> None:
-        assumption = self.get_record("founder_assumptions", int(evidence["linked_assumption_id"]), ASSUMPTION_JSON_FIELDS)
-        previous = int(assumption["confidence"])
-        movement = _confidence_delta(evidence)
-        if movement == 0:
-            return
-        new_confidence = _clamp_confidence(previous + movement)
+        self.apply_evidence_confidence_to("assumption", int(evidence["linked_assumption_id"]), evidence)
+
+    def apply_evidence_confidence_to(
+        self, subject_type: str, subject_id: int, evidence: dict[str, Any]
+    ) -> bool:
+        """Bayesian-update a belief's confidence from one piece of evidence.
+
+        Works for any confidence-bearing subject (assumption, goal, bet/strategy
+        object) — not just assumptions. This is what lets a single experiment
+        result move every belief it bears on, instead of stopping at the one
+        assumption the evidence happens to name. Subjects with no single
+        confidence to move (predictions, experiments, decisions) are silently
+        ignored, so callers can fire this for every link without pre-checking.
+
+        Returns True iff the belief actually moved.
+        """
+        table = _CONFIDENCE_TABLE_FOR_SUBJECT.get(str(subject_type))
+        if not table:
+            return False
         with self.db.connect() as conn:
+            row = conn.execute(
+                f"SELECT confidence FROM {table} WHERE id = ?", (int(subject_id),)
+            ).fetchone()
+            if not row:
+                return False
+            previous = int(row["confidence"])
+            new_confidence = _bayesian_confidence(previous, evidence)
+            movement = new_confidence - previous
+            if movement == 0:
+                return False
             conn.execute(
-                "UPDATE founder_assumptions SET updated_at = ?, confidence = ? WHERE id = ?",
-                (utc_now(), new_confidence, assumption["id"]),
+                f"UPDATE {table} SET updated_at = ?, confidence = ? WHERE id = ?",
+                (utc_now(), new_confidence, int(subject_id)),
             )
             conn.execute(
                 """
@@ -1598,15 +1701,16 @@ class FounderService:
                 """,
                 (
                     utc_now(),
-                    "assumption",
-                    assumption["id"],
+                    str(subject_type),
+                    int(subject_id),
                     previous,
                     new_confidence,
                     _confidence_reason(evidence, movement),
-                    evidence["id"],
-                    _json({"reliability": evidence["reliability"], "strength": evidence["strength"]}),
+                    evidence.get("id"),
+                    _json({"reliability": evidence.get("reliability"), "strength": evidence.get("strength")}),
                 ),
             )
+        return True
 
     def _link_decision_to_active_objective(self, objective_id: int, decision_id: int) -> None:
         objective = self.get_active_objective_by_id(objective_id)
@@ -1902,34 +2006,56 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+def _outcome_to_actual(outcome: str) -> float | None:
+    normalized = str(outcome).strip().lower()
+    if normalized in {"true", "yes", "hit", "success", "succeeded", "1"}:
+        return 1.0
+    if normalized in {"false", "no", "miss", "failure", "failed", "0"}:
+        return 0.0
+    return None
+
+
 def _calibration_error(probability: float | None, outcome: str) -> float | None:
     if probability is None:
         return None
-    normalized = outcome.strip().lower()
-    if normalized in {"true", "yes", "hit", "success", "succeeded", "1"}:
-        actual = 1.0
-    elif normalized in {"false", "no", "miss", "failure", "failed", "0"}:
-        actual = 0.0
-    else:
+    actual = _outcome_to_actual(outcome)
+    if actual is None:
         return None
     return round(abs(float(probability) - actual), 4)
 
 
-def _confidence_delta(evidence: dict[str, Any]) -> int:
-    grade_weight = {
-        "A": 15,
-        "B": 10,
-        "C": 6,
-        "D": 2,
-        "F": 0,
-    }.get(str(evidence.get("reliability", "D")).upper(), 2)
-    strength = int(evidence.get("strength") or 50)
-    scaled = max(1, round(grade_weight * (strength / 100)))
+# Base log-likelihood-ratio magnitude per reliability grade (natural-log units).
+# Grade F contributes nothing, so junk evidence never moves a belief — the flat
+# ±1 floor of the old linear model is gone.
+_EVIDENCE_LLR = {"A": 2.0, "B": 1.3, "C": 0.7, "D": 0.25, "F": 0.0}
+
+
+def _evidence_llr(evidence: dict[str, Any]) -> float:
+    """Signed log-likelihood-ratio this evidence contributes, weighted by
+    reliability grade and strength. Positive supports, negative contradicts."""
+    base = _EVIDENCE_LLR.get(str(evidence.get("reliability", "D")).upper(), 0.25)
+    raw_strength = evidence.get("strength")
+    strength = 50 if raw_strength is None else int(raw_strength)
+    strength = max(0, min(100, strength))
+    magnitude = base * (strength / 100)
     if evidence.get("claim_contradicted"):
-        return -scaled
+        return -magnitude
     if evidence.get("claim_supported"):
-        return scaled
-    return 0
+        return magnitude
+    return 0.0
+
+
+def _bayesian_confidence(previous: int, evidence: dict[str, Any]) -> int:
+    """Update a confidence (0-100) by adding the evidence LLR in log-odds space.
+    This is a proper Bayesian update: it weights the prior (moving off 95% is
+    harder than off 50%) and never forces a minimum move for weak evidence."""
+    llr = _evidence_llr(evidence)
+    if llr == 0.0:
+        return _clamp_confidence(previous)
+    prior = min(0.99, max(0.01, previous / 100.0))
+    log_odds = math.log(prior / (1.0 - prior)) + llr
+    posterior = 1.0 / (1.0 + math.exp(-log_odds))
+    return _clamp_confidence(round(posterior * 100))
 
 
 def _confidence_reason(evidence: dict[str, Any], movement: int) -> str:

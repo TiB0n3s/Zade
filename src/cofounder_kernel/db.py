@@ -12,6 +12,35 @@ from typing import Any, Iterator
 
 SCHEMA_VERSION = 21
 
+# Column additions to EXISTING tables, applied idempotently by migrate() on every
+# start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
+# Every historical schema change so far added a new table, so this is empty — but
+# any future `ALTER TABLE ... ADD COLUMN` must be registered here as
+# (table, column_name, "column_name TYPE [DEFAULT ...]") so upgraded DBs receive it.
+COLUMN_PATCHES: tuple[tuple[str, str, str], ...] = ()
+
+
+# Key-name fragments whose values are redacted before landing in the (plaintext,
+# queryable) audit log. The "*_env" naming pattern is exempt — it names an env
+# var, not a secret. Defense in depth: nothing should route a secret here, but if
+# it does, it is scrubbed.
+_AUDIT_SECRET_FRAGMENTS = ("password", "passwd", "pwd", "secret", "token", "credential", "apikey", "api_key", "private_key", "access_key")
+
+
+def _redact_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, inner in value.items():
+            key_l = str(key).lower()
+            if not key_l.endswith("_env") and any(frag in key_l for frag in _AUDIT_SECRET_FRAGMENTS):
+                redacted[key] = "[redacted]"
+            else:
+                redacted[key] = _redact_secrets(inner)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -116,10 +145,11 @@ class KernelDatabase:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         try:
             yield conn
             conn.commit()
@@ -131,8 +161,52 @@ class KernelDatabase:
 
     def migrate(self) -> None:
         with self.connect() as conn:
+            # The base schema is fully idempotent (CREATE TABLE/INDEX IF NOT
+            # EXISTS), so new tables always land on upgrade.
             conn.executescript(SCHEMA_SQL)
+            # Column-level reconciliation: unlike new tables, a new column on an
+            # EXISTING table is NOT applied by CREATE ... IF NOT EXISTS, so we add
+            # any missing column explicitly. Register future column additions in
+            # COLUMN_PATCHES; this pass is idempotent and safe to run every start.
+            for table, column, ddl in COLUMN_PATCHES:
+                self._add_column_if_missing(conn, table, column, ddl)
             conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)", ("version", str(SCHEMA_VERSION)))
+            conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
+
+    def _add_column_if_missing(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> bool:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not existing:
+            return False  # table itself does not exist yet (fresh DB handled by CREATE)
+        if column in existing:
+            return False
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+        return True
+
+    def schema_version(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("PRAGMA user_version").fetchone()
+        return int(row[0]) if row else 0
+
+    def claim_next_work_item(self) -> WorkItem | None:
+        """Atomically transition the highest-priority pending item to 'running'
+        and return it, so two concurrent runners (scheduler + API) can never
+        both dispatch the same item. SQLite serializes the single UPDATE."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE work_items
+                SET status = 'running', updated_at = ?
+                WHERE id = (
+                    SELECT id FROM work_items
+                    WHERE status = 'pending' AND (due_at IS NULL OR due_at <= ?)
+                    ORDER BY priority DESC, id ASC
+                    LIMIT 1
+                )
+                RETURNING *
+                """,
+                (utc_now(), utc_now()),
+            ).fetchone()
+            return _work_item_from_row(row) if row else None
 
     def audit(
         self,
@@ -150,7 +224,7 @@ class KernelDatabase:
                 INSERT INTO audit_events (created_at, actor, action, target, permission_tier, status, details_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (utc_now(), actor, action, target, permission_tier, status, json.dumps(details or {}, sort_keys=True)),
+                (utc_now(), actor, action, target, permission_tier, status, json.dumps(_redact_secrets(details or {}), sort_keys=True)),
             )
             return int(cur.lastrowid)
 

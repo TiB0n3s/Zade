@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
 import webbrowser
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -163,8 +164,10 @@ class ActionHandlerRegistry:
         url = str(metadata.get("url") or item.target).strip()
         if not url:
             raise ValueError("local.browser.open requires metadata.url or work item target.")
-        lower = url.lower()
-        is_local = lower.startswith("http://127.0.0.1") or lower.startswith("http://localhost") or lower.startswith("file://")
+        parsed = urllib.parse.urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").lower()
+        is_local = scheme == "file" or (scheme in {"http", "https"} and host in {"127.0.0.1", "localhost", "::1"})
         if not is_local and not bool(metadata.get("allow_external_url")):
             raise ValueError("local.browser.open only opens localhost/file URLs unless allow_external_url is true.")
         opened = False
@@ -204,10 +207,14 @@ def _resolve_allowed_path(raw_path: str, config: KernelConfig) -> Path:
     roots = [
         config.paths.hot_root.resolve(strict=False),
         config.paths.cold_root.resolve(strict=False),
-        config.paths.data_dir.resolve(strict=False),
     ]
     if not any(_is_relative_to(resolved, root) for root in roots):
         raise ValueError(f"Path is outside configured local roots: {resolved}")
+    # The kernel's own state dir (SQLite DB, blobs, backups, voice, supervision)
+    # sits inside hot_root by default; approved writes must never touch it, or a
+    # single mis-scoped approval could overwrite memory or the audit trail.
+    if _is_relative_to(resolved, config.paths.data_dir.resolve(strict=False)):
+        raise ValueError(f"Refusing to write inside the kernel state directory: {resolved}")
     return resolved
 
 

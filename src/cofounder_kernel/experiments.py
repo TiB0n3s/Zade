@@ -192,7 +192,7 @@ class ExperimentService:
         self._attach_evidence_to_experiment(experiment_id, evidence["id"])
         links = self._link_evidence_to_targets(
             experiment=self.get_experiment(experiment_id),
-            evidence_id=evidence["id"],
+            evidence=evidence,
             payload=payload,
         )
         self.db.audit(
@@ -454,12 +454,19 @@ class ExperimentService:
         self,
         *,
         experiment: dict[str, Any],
-        evidence_id: int,
+        evidence: dict[str, Any],
         payload: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        evidence_id = int(evidence["id"])
         targets = list(_experiment_targets(experiment))
         targets.extend(payload.get("link_targets", []))
         seen = set()
+        # The evidence's own named assumption was already Bayesian-updated inside
+        # create_evidence; don't move it a second time if it is also a target.
+        scored: set[tuple[str, int]] = set()
+        own_assumption = evidence.get("linked_assumption_id")
+        if own_assumption is not None:
+            scored.add(("assumption", int(own_assumption)))
         links = []
         for target in targets:
             to_type = _normalize_target_type(str(target["to_type"]))
@@ -469,6 +476,10 @@ class ExperimentService:
                 continue
             seen.add(key)
             self._attach_evidence_id(to_type, to_id, evidence_id, relation=target.get("relation", "informs"))
+            if key not in scored:
+                # Every belief this evidence bears on moves, not just assumptions.
+                self.founder.apply_evidence_confidence_to(to_type, to_id, evidence)
+                scored.add(key)
             link = self.founder.create_link(
                 {
                     "from_type": "evidence",

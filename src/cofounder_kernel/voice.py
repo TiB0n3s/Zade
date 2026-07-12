@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import netguard
 from .config import KernelConfig
 from .db import KernelDatabase
 from .runtime import RuntimeService
@@ -27,6 +28,9 @@ STT_ENGINES = {"command", "deepgram"}
 TTS_ENGINES = {"command", "elevenlabs"}
 DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
 ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+# Voice traffic carries transcripts and spoken text; lock egress to exactly the
+# two cloud hosts so a misconfigured or injected endpoint cannot exfiltrate it.
+_VOICE_ALLOWED_HOSTS = frozenset({"api.deepgram.com", "api.elevenlabs.io"})
 
 
 class VoiceService:
@@ -265,8 +269,9 @@ class VoiceService:
         return api_key
 
     def _http_call(self, request: urllib.request.Request, *, engine: str) -> bytes:
+        netguard.assert_allowed(request.full_url, require_https=True, allowed_hosts=_VOICE_ALLOWED_HOSTS)
         try:
-            with urllib.request.urlopen(request, timeout=self.config.voice.timeout_seconds) as response:  # noqa: S310 - fixed https endpoints
+            with urllib.request.urlopen(request, timeout=self.config.voice.timeout_seconds) as response:  # noqa: S310 - allowlisted https endpoints
                 return response.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:200]

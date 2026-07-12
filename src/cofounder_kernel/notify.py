@@ -5,6 +5,7 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from . import netguard
 from .db import KernelDatabase, utc_now
 
 
@@ -255,6 +256,13 @@ class NotificationBus:
         recipient = str(config.get("to", "")).strip()
         if not gateway_url:
             return "failed", "sms gateway not configured (set config.gateway_url)"
+        # The gateway is a founder-configured device (often a LAN Android phone),
+        # so private IPs are allowed — but the destination must be a well-formed
+        # http(s) URL, not an arbitrary/other-scheme string from a tampered row.
+        try:
+            netguard.assert_allowed(gateway_url, allow_private=True)
+        except netguard.EgressError:
+            return "failed", "sms gateway_url must be a valid http(s) URL"
         if not recipient:
             return "failed", "sms recipient not configured (set config.to)"
         if recipient not in channel["recipients"]:
