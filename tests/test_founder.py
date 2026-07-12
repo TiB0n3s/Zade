@@ -293,6 +293,59 @@ def test_strategy_objects_goals_tasks_integrity_and_kill_criteria(tmp_path: Path
     assert {item["warning_type"] for item in integrity["warnings"]} >= {"missing_owner", "missing_metric"}
 
 
+def test_active_objective_and_decision_engine_create_operating_objects(tmp_path: Path) -> None:
+    founder = make_founder(tmp_path)
+    goal = founder.create_goal(
+        {
+            "name": "Validate Zade as a founder operating system",
+            "metric": "weekly active founder sessions",
+            "target": "5 sessions",
+        }
+    )
+    objective = founder.create_active_objective(
+        {
+            "objective": "Prove Zade can drive founder decisions without becoming a generic assistant",
+            "why_it_matters": "The co-founder layer needs a concrete win condition.",
+            "desired_outcome": "Founder receives a defensible next action every day.",
+            "metric": "weekly active founder sessions",
+            "target": "5 sessions",
+            "deadline": "2026-08-01",
+            "priority": 95,
+            "confidence": 66,
+            "linked_goal_ids": [goal.id],
+            "risks": ["Recommendations become verbose instead of operational."],
+            "next_action": "Run the first decision-engine recommendation against EXP-001.",
+        }
+    )
+
+    recommendation = founder.recommend_decision(
+        {
+            "problem": "Should Zade prioritize evidence intake or UI polish next?",
+            "context": "The system needs to act like a co-founder.",
+            "options": [
+                {"name": "Prioritize evidence intake", "recommended": True, "priority": 90},
+                {"name": "Prioritize UI polish", "priority": 40},
+            ],
+        }
+    )
+    dashboard = founder.dashboard()
+    brief = founder.brief()
+    recs = founder.list_decision_recommendations()
+    active = founder.get_active_objective()
+
+    assert objective.record["is_current"] == 1
+    assert active["objective"].startswith("Prove Zade")
+    assert recommendation["item"]["recommendation"] == "Prioritize evidence intake"
+    assert recommendation["item"]["decision_memo_id"] == recommendation["decision_memo"]["id"]
+    assert recommendation["item"]["next_task_id"] == recommendation["next_task"]["id"]
+    assert recommendation["operating_contract"]["required_evidence"]
+    assert recommendation["operating_contract"]["kill_or_reversal_condition"].startswith("Reverse or revise")
+    assert recs[0]["problem"] == "Should Zade prioritize evidence intake or UI polish next?"
+    assert dashboard["active_objective"]["id"] == objective.id
+    assert dashboard["one_thing_that_matters_most_today"].startswith("Advance active objective:")
+    assert "Active objective: Prove Zade" in brief["brief"]
+
+
 def test_overrides_missed_calls_and_cadence_reviews(tmp_path: Path) -> None:
     founder = make_founder(tmp_path)
     prediction = founder.create_prediction(

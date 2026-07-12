@@ -41,6 +41,7 @@ class IngestFolderRequest(BaseModel):
 class SemanticSearchRequest(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(default=8, ge=1, le=50)
+    mode: str = Field(default="hybrid", min_length=1, max_length=20)
 
 
 class AuthorityEvaluateRequest(BaseModel):
@@ -48,6 +49,39 @@ class AuthorityEvaluateRequest(BaseModel):
     permission_tier: str = Field(default="L0_READ", min_length=1, max_length=80)
     target: str = Field(default="", max_length=1000)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalResolveRequest(BaseModel):
+    resolved_by: str = Field(default="founder", min_length=1, max_length=120)
+    note: str = Field(default="", max_length=1000)
+    dispatch: bool = False
+    typed_confirmation: str = Field(default="", max_length=200)
+
+
+class BackupCreateRequest(BaseModel):
+    label: str = Field(default="manual", min_length=1, max_length=80)
+
+
+class BackupRetentionRequest(BaseModel):
+    keep_last: int = Field(default=10, ge=1, le=500)
+    dry_run: bool = True
+
+
+class ModelBenchmarkRequest(BaseModel):
+    prompt: str = Field(default="State local co-founder readiness in one sentence.", min_length=1, max_length=2000)
+    roles: list[ModelRole] = Field(default_factory=lambda: ["general", "reasoning", "coding"])
+    num_predict: int = Field(default=160, ge=16, le=2048)
+
+
+class SkillScanRequest(BaseModel):
+    source_dir: str | None = None
+    enable_defaults: bool | None = None
+
+
+class SkillRouteRequest(BaseModel):
+    query: str = Field(min_length=1)
+    task_type: ModelRole = "general"
+    limit: int = Field(default=3, ge=0, le=8)
 
 
 class WorkItemCreate(BaseModel):
@@ -83,14 +117,94 @@ class RuntimeRespondRequest(BaseModel):
     use_memory: bool = True
     use_semantic_memory: bool = True
     semantic_limit: int = Field(default=4, ge=0, le=12)
+    use_skills: bool = True
+    skill_limit: int = Field(default=3, ge=0, le=8)
     think: bool | None = None
+    conversation_id: int | None = Field(default=None, ge=1)
+    contrarian: bool | None = None
+
+
+class ConversationCreate(BaseModel):
+    title: str = Field(default="", max_length=240)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SurfacingBriefRequest(BaseModel):
+    narrate: bool = False
+    force: bool = False
+
+
+class EvalCaseUpsert(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    category: str = Field(default="custom", min_length=1, max_length=80)
+    executor: str = Field(default="generate", min_length=1, max_length=40)
+    task_type: ModelRole = "general"
+    description: str = Field(default="", max_length=1000)
+    prompt: str = Field(min_length=1)
+    draft: str = ""
+    checks: list[dict[str, Any]] = Field(default_factory=list)
+    respond_options: dict[str, Any] = Field(default_factory=dict)
+    setup_memories: list[dict[str, Any]] = Field(default_factory=list)
+    enabled: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    connector_type: str = Field(min_length=1, max_length=40)
+    description: str = Field(default="", max_length=1000)
+    config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorItemsImport(BaseModel):
+    item_ids: list[int] = Field(min_length=1)
+    create_evidence: bool = True
+    ingest_documents: bool = True
+    reliability: str = Field(default="C", min_length=1, max_length=2)
+    strength: int = Field(default=60, ge=0, le=100)
+    linked_assumption_id: int | None = None
+    linked_decision_id: int | None = None
+
+
+class ConnectorItemDismiss(BaseModel):
+    reason: str = Field(default="", max_length=500)
+
+
+class VoiceTranscribeRequest(BaseModel):
+    audio_base64: str = Field(min_length=1)
+
+
+class VoiceSpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=8000)
+
+
+class VoiceConverseRequest(BaseModel):
+    audio_base64: str = Field(min_length=1)
+    conversation_id: int | None = Field(default=None, ge=1)
+    task_type: ModelRole = "general"
+    contrarian: bool | None = None
+    use_semantic_memory: bool = True
+    speak_response: bool = True
+    speak_full: bool = False
+
+
+class EvalRunRequest(BaseModel):
+    label: str = Field(default="manual", min_length=1, max_length=120)
+    categories: list[str] = Field(default_factory=list)
+    case_names: list[str] = Field(default_factory=list)
+    max_cases: int = Field(default=50, ge=1, le=200)
 
 
 class RuntimeContextRequest(BaseModel):
     message: str = ""
+    task_type: ModelRole = "general"
     use_memory: bool = True
     use_semantic_memory: bool = True
     semantic_limit: int = Field(default=4, ge=0, le=12)
+    use_skills: bool = True
+    skill_limit: int = Field(default=3, ge=0, le=8)
 
 
 class RuntimeLoopRequest(BaseModel):
@@ -99,6 +213,174 @@ class RuntimeLoopRequest(BaseModel):
     review_type: str = Field(default="daily", min_length=1, max_length=80)
     include_integrity: bool = True
     include_cadence: bool = True
+
+
+class DeepThoughtScanRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list)
+    limit: int = Field(default=25, ge=1, le=200)
+    max_file_bytes: int = Field(default=500_000, ge=1_000, le=5_000_000)
+
+
+class DeepThoughtImportRequest(BaseModel):
+    candidate_ids: list[int] = Field(default_factory=list)
+    import_all_candidates: bool = False
+    limit: int = Field(default=10, ge=1, le=100)
+    ingest_documents: bool = True
+    create_evidence: bool = True
+
+
+class DeepThoughtLinkRequest(BaseModel):
+    evidence_id: int = Field(ge=1)
+    to_type: str = Field(min_length=1, max_length=80)
+    to_id: int = Field(ge=1)
+    relation: str = Field(default="supports", max_length=120)
+    strength: int = Field(default=60, ge=0, le=100)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceLoopRequest(BaseModel):
+    import_candidates: bool = True
+    max_import: int = Field(default=5, ge=0, le=50)
+    link_goals: bool = True
+    clear_resolved_warnings: bool = True
+
+
+class ExperimentLinkTarget(BaseModel):
+    to_type: str = Field(min_length=1, max_length=80)
+    to_id: int = Field(ge=1)
+    relation: str = Field(default="informs", max_length=120)
+    strength: int = Field(default=50, ge=0, le=100)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=240)
+    experiment_type: str = Field(default="validation", max_length=80)
+    hypothesis: str = ""
+    target_persona: str = ""
+    owner: str = ""
+    status: str = Field(default="active", max_length=80)
+    start_date: str | None = None
+    end_date: str | None = None
+    success_metric: str = ""
+    success_threshold: str = ""
+    minimum_evidence: int = Field(default=1, ge=0, le=100)
+    decision_rule: str = ""
+    linked_assumption_ids: list[int] = Field(default_factory=list)
+    linked_bet_ids: list[int] = Field(default_factory=list)
+    linked_goal_ids: list[int] = Field(default_factory=list)
+    linked_prediction_ids: list[int] = Field(default_factory=list)
+    evidence_ids: list[int] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentEvidenceCreate(BaseModel):
+    evidence_type: str = Field(default="experiment_observation", max_length=120)
+    source: str = Field(default="", max_length=500)
+    title: str | None = Field(default=None, max_length=240)
+    content: str = ""
+    file_path: str | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    evidence_date: str | None = None
+    reliability: str = Field(default="C", max_length=2)
+    claim_supported: str = ""
+    claim_contradicted: str = ""
+    strength: int = Field(default=50, ge=0, le=100)
+    linked_assumption_id: int | None = None
+    linked_decision_id: int | None = None
+    link_targets: list[ExperimentLinkTarget] = Field(default_factory=list)
+    notes: str = ""
+    ingest_document: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentReviewCreate(BaseModel):
+    review_type: str = Field(default="weekly", min_length=1, max_length=80)
+    period: str | None = None
+    decision: str = Field(default="continue", max_length=80)
+    outcome_summary: str = ""
+    findings: dict[str, Any] = Field(default_factory=dict)
+    next_actions: list[str] = Field(default_factory=list)
+    evidence_ids: list[int] = Field(default_factory=list)
+    confidence_delta: int = Field(default=0, ge=-100, le=100)
+    status_after: str | None = Field(default=None, max_length=80)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentPushbackCreate(BaseModel):
+    title: str | None = Field(default=None, max_length=240)
+    objection: str = Field(min_length=1)
+    risk: str = ""
+    blind_spots: list[str] = Field(default_factory=list)
+    recommendation: str = Field(default="proceed_with_changes", max_length=80)
+    confidence_adjustment: int = Field(default=-10, ge=-100, le=100)
+    severity: str = Field(default="yellow", max_length=80)
+    strength: int = Field(default=70, ge=0, le=100)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentLoopRequest(BaseModel):
+    review_type: str = Field(default="weekly", min_length=1, max_length=80)
+    period: str | None = None
+    max_reviews: int = Field(default=10, ge=0, le=100)
+
+
+class CadenceRunRequest(BaseModel):
+    run_autonomous: bool = True
+    max_run: int = Field(default=5, ge=0, le=25)
+    review_type: str = Field(default="daily", min_length=1, max_length=80)
+    import_candidates: bool = True
+    max_import: int = Field(default=5, ge=0, le=50)
+    link_goals: bool = True
+    clear_resolved_warnings: bool = True
+    experiment_review_type: str = Field(default="weekly", min_length=1, max_length=80)
+    experiment_period: str | None = None
+    max_experiment_reviews: int = Field(default=10, ge=0, le=100)
+
+
+class ActiveObjectiveCreate(BaseModel):
+    objective: str = Field(min_length=1, max_length=300)
+    why_it_matters: str = ""
+    desired_outcome: str = ""
+    metric: str = ""
+    target: str = ""
+    deadline: str | None = None
+    owner: str = ""
+    priority: int = Field(default=80, ge=0, le=100)
+    confidence: int = Field(default=50, ge=0, le=100)
+    status: str = Field(default="active", max_length=80)
+    activate: bool = True
+    linked_goal_ids: list[int] = Field(default_factory=list)
+    linked_bet_ids: list[int] = Field(default_factory=list)
+    linked_assumption_ids: list[int] = Field(default_factory=list)
+    linked_experiment_ids: list[int] = Field(default_factory=list)
+    linked_decision_ids: list[int] = Field(default_factory=list)
+    evidence_ids: list[int] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    current_bet: str = ""
+    next_action: str = ""
+    review_cadence: str = Field(default="daily", max_length=80)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActiveObjectiveStatusUpdate(BaseModel):
+    status: str = Field(min_length=1, max_length=80)
+    note: str = ""
+
+
+class DecisionEngineRequest(BaseModel):
+    problem: str = Field(min_length=1)
+    context: str = ""
+    objective_id: int | None = None
+    options: list[dict[str, Any]] = Field(default_factory=list)
+    required_evidence: list[str] = Field(default_factory=list)
+    downside_risk: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    force_recommendation: str = ""
+    create_decision_memo: bool = True
+    create_next_task: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class IdentityCharterUpsert(BaseModel):

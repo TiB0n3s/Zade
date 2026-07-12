@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 19
 
 
 def utc_now() -> str:
@@ -48,6 +48,44 @@ class WorkItem:
     result: dict[str, Any]
     metadata: dict[str, Any]
     unique_key: str | None
+
+
+@dataclass(frozen=True)
+class ApprovalRequest:
+    id: int
+    created_at: str
+    updated_at: str
+    source_type: str
+    source_id: int | None
+    title: str
+    detail: str
+    action: str
+    target: str
+    permission_tier: str
+    authority_decision: str
+    authority: dict[str, Any]
+    status: str
+    requested_by: str
+    resolved_by: str
+    resolved_at: str | None
+    resolution_note: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ModelCall:
+    id: int
+    created_at: str
+    operation: str
+    model: str
+    role: str
+    status: str
+    latency_ms: int
+    prompt_chars: int
+    response_chars: int
+    think: bool | None
+    error: str
+    metadata: dict[str, Any]
 
 
 class KernelDatabase:
@@ -218,6 +256,11 @@ class KernelDatabase:
                 ).fetchall()
             return [_work_item_from_row(row) for row in rows]
 
+    def get_work_item(self, item_id: int) -> WorkItem | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM work_items WHERE id = ?", (item_id,)).fetchone()
+            return _work_item_from_row(row) if row else None
+
     def next_work_item(self) -> WorkItem | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -266,6 +309,115 @@ class KernelDatabase:
         with self.connect() as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS count FROM work_items GROUP BY status").fetchall()
             return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def ensure_approval_request(
+        self,
+        *,
+        source_type: str,
+        source_id: int | None,
+        title: str,
+        detail: str,
+        action: str,
+        target: str,
+        permission_tier: str,
+        authority_decision: str,
+        authority: dict[str, Any] | None = None,
+        requested_by: str = "system",
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[ApprovalRequest, bool]:
+        with self.connect() as conn:
+            if source_id is not None:
+                existing = conn.execute(
+                    """
+                    SELECT *
+                    FROM approval_requests
+                    WHERE source_type = ? AND source_id = ? AND status = 'pending'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (source_type, source_id),
+                ).fetchone()
+                if existing:
+                    return _approval_request_from_row(existing), False
+            now = utc_now()
+            cur = conn.execute(
+                """
+                INSERT INTO approval_requests (
+                  created_at, updated_at, source_type, source_id, title, detail, action, target,
+                  permission_tier, authority_decision, authority_json, status, requested_by,
+                  metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    now,
+                    now,
+                    source_type,
+                    source_id,
+                    title,
+                    detail,
+                    action,
+                    target,
+                    permission_tier,
+                    authority_decision,
+                    json.dumps(authority or {}, sort_keys=True),
+                    requested_by,
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            row = conn.execute("SELECT * FROM approval_requests WHERE id = ?", (int(cur.lastrowid),)).fetchone()
+            return _approval_request_from_row(row), True
+
+    def list_approval_requests(self, *, status: str | None = None, limit: int = 50) -> list[ApprovalRequest]:
+        with self.connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM approval_requests WHERE status = ? ORDER BY id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM approval_requests ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [_approval_request_from_row(row) for row in rows]
+
+    def get_approval_request(self, request_id: int) -> ApprovalRequest | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,)).fetchone()
+            return _approval_request_from_row(row) if row else None
+
+    def get_pending_approval_for_source(self, *, source_type: str, source_id: int) -> ApprovalRequest | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM approval_requests
+                WHERE source_type = ? AND source_id = ? AND status = 'pending'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (source_type, source_id),
+            ).fetchone()
+            return _approval_request_from_row(row) if row else None
+
+    def resolve_approval_request(
+        self,
+        request_id: int,
+        *,
+        status: str,
+        resolved_by: str,
+        resolution_note: str = "",
+    ) -> ApprovalRequest:
+        with self.connect() as conn:
+            resolved_at = utc_now()
+            conn.execute(
+                """
+                UPDATE approval_requests
+                SET updated_at = ?, status = ?, resolved_by = ?, resolved_at = ?, resolution_note = ?
+                WHERE id = ?
+                """,
+                (resolved_at, status, resolved_by, resolved_at, resolution_note, request_id),
+            )
+            row = conn.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,)).fetchone()
+            return _approval_request_from_row(row)
 
     def upsert_document(
         self,
@@ -392,6 +544,103 @@ class KernelDatabase:
         scored.sort(key=lambda item: item["score"], reverse=True)
         return scored[:limit]
 
+    def keyword_search_chunks(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
+        query = query.strip()
+        if not query:
+            return []
+        with self.connect() as conn:
+            rows = self._keyword_chunk_fts(conn, query, limit)
+            if not rows:
+                token_query = _token_fts_query(query)
+                if token_query and token_query != query:
+                    rows = self._keyword_chunk_fts(conn, token_query, limit)
+        results = []
+        for rank, row in enumerate(rows, start=1):
+            results.append(
+                {
+                    "keyword_rank": rank,
+                    "search_rank": float(row["search_rank"] or 0.0),
+                    "chunk_id": row["chunk_id"],
+                    "chunk_index": row["chunk_index"],
+                    "text": row["text"],
+                    "char_start": row["char_start"],
+                    "char_end": row["char_end"],
+                    "chunk_metadata": json.loads(row["chunk_metadata_json"] or "{}"),
+                    "document_id": row["document_id"],
+                    "document_title": row["document_title"],
+                    "source_uri": row["source_uri"],
+                    "media_type": row["media_type"],
+                }
+            )
+        return results
+
+    def _keyword_chunk_fts(self, conn: sqlite3.Connection, query: str, limit: int) -> list[sqlite3.Row]:
+        try:
+            return conn.execute(
+                """
+                SELECT
+                  bm25(document_chunk_fts) AS search_rank,
+                  c.id AS chunk_id,
+                  c.chunk_index,
+                  c.text,
+                  c.char_start,
+                  c.char_end,
+                  c.metadata_json AS chunk_metadata_json,
+                  d.id AS document_id,
+                  d.title AS document_title,
+                  d.source_uri,
+                  d.media_type
+                FROM document_chunk_fts f
+                JOIN document_chunks c ON c.id = f.rowid
+                JOIN documents d ON d.id = c.document_id
+                WHERE document_chunk_fts MATCH ?
+                ORDER BY bm25(document_chunk_fts)
+                LIMIT ?
+                """,
+                (query, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    def upsert_skill_embedding(self, *, skill_id: int, model: str, vector: list[float], content_hash: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO skill_embeddings (skill_id, model, dimensions, content_hash, vector_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (skill_id, model, len(vector), content_hash, json.dumps(vector), utc_now()),
+            )
+
+    def get_skill_embedding_hash(self, skill_id: int) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT content_hash FROM skill_embeddings WHERE skill_id = ?",
+                (skill_id,),
+            ).fetchone()
+        return str(row["content_hash"]) if row else None
+
+    def list_skill_embeddings(self, *, enabled_only: bool = True) -> list[dict[str, Any]]:
+        where = "WHERE s.enabled = 1" if enabled_only else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT e.skill_id, e.model, e.vector_json, s.name
+                FROM skill_embeddings e
+                JOIN skill_registry s ON s.id = e.skill_id
+                {where}
+                """
+            ).fetchall()
+        return [
+            {
+                "skill_id": int(row["skill_id"]),
+                "name": str(row["name"]),
+                "model": str(row["model"]),
+                "vector": json.loads(row["vector_json"] or "[]"),
+            }
+            for row in rows
+        ]
+
     def search_memories(self, query: str, limit: int = 8) -> list[MemoryRecord]:
         query = query.strip()
         if not query:
@@ -451,6 +700,370 @@ class KernelDatabase:
             ).fetchall()
             return [dict(row) | {"details": json.loads(row["details_json"] or "{}")} for row in rows]
 
+    def record_model_call(
+        self,
+        *,
+        operation: str,
+        model: str,
+        role: str = "",
+        status: str,
+        latency_ms: int = 0,
+        prompt_chars: int = 0,
+        response_chars: int = 0,
+        think: bool | None = None,
+        error: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO model_calls (
+                  created_at, operation, model, role, status, latency_ms, prompt_chars,
+                  response_chars, think, error, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    operation,
+                    model,
+                    role,
+                    status,
+                    int(latency_ms),
+                    int(prompt_chars),
+                    int(response_chars),
+                    None if think is None else int(bool(think)),
+                    error,
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def list_model_calls(self, *, status: str | None = None, limit: int = 50) -> list[ModelCall]:
+        with self.connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM model_calls WHERE status = ? ORDER BY id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM model_calls ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [_model_call_from_row(row) for row in rows]
+
+    def model_call_summary(self, *, limit: int = 250) -> dict[str, Any]:
+        calls = self.list_model_calls(limit=limit)
+        by_status: dict[str, int] = {}
+        by_operation: dict[str, int] = {}
+        by_role: dict[str, int] = {}
+        latencies = []
+        for call in calls:
+            by_status[call.status] = by_status.get(call.status, 0) + 1
+            by_operation[call.operation] = by_operation.get(call.operation, 0) + 1
+            if call.role:
+                by_role[call.role] = by_role.get(call.role, 0) + 1
+            if call.latency_ms > 0:
+                latencies.append(call.latency_ms)
+        avg_latency = int(sum(latencies) / len(latencies)) if latencies else 0
+        return {
+            "window": len(calls),
+            "by_status": by_status,
+            "by_operation": by_operation,
+            "by_role": by_role,
+            "avg_latency_ms": avg_latency,
+            "latest": _model_call_to_dict(calls[0]) if calls else None,
+        }
+
+    def upsert_skill(
+        self,
+        *,
+        name: str,
+        description: str,
+        body: str,
+        source: str,
+        source_type: str,
+        skill_path: str,
+        local_path: str,
+        content_hash: str,
+        risk_tier: str,
+        risk_reasons: list[str],
+        default_enabled: bool,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[int, bool]:
+        with self.connect() as conn:
+            existing = conn.execute("SELECT * FROM skill_registry WHERE name = ?", (name,)).fetchone()
+            now = utc_now()
+            if existing:
+                skill_id = int(existing["id"])
+                enabled = int(existing["enabled"])
+                conn.execute(
+                    """
+                    UPDATE skill_registry
+                    SET updated_at = ?, description = ?, body = ?, source = ?, source_type = ?,
+                        skill_path = ?, local_path = ?, content_hash = ?, risk_tier = ?,
+                        risk_reasons_json = ?, default_enabled = ?, last_scanned_at = ?,
+                        metadata_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        description,
+                        body,
+                        source,
+                        source_type,
+                        skill_path,
+                        local_path,
+                        content_hash,
+                        risk_tier,
+                        json.dumps(risk_reasons, sort_keys=True),
+                        int(default_enabled),
+                        now,
+                        json.dumps(metadata or {}, sort_keys=True),
+                        skill_id,
+                    ),
+                )
+                created = False
+            else:
+                enabled = int(default_enabled)
+                cur = conn.execute(
+                    """
+                    INSERT INTO skill_registry (
+                      created_at, updated_at, name, description, body, source, source_type,
+                      skill_path, local_path, content_hash, risk_tier, risk_reasons_json,
+                      enabled, default_enabled, last_scanned_at, metadata_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        now,
+                        now,
+                        name,
+                        description,
+                        body,
+                        source,
+                        source_type,
+                        skill_path,
+                        local_path,
+                        content_hash,
+                        risk_tier,
+                        json.dumps(risk_reasons, sort_keys=True),
+                        enabled,
+                        int(default_enabled),
+                        now,
+                        json.dumps(metadata or {}, sort_keys=True),
+                    ),
+                )
+                skill_id = int(cur.lastrowid)
+                created = True
+            conn.execute("DELETE FROM skill_fts WHERE rowid = ?", (skill_id,))
+            conn.execute(
+                "INSERT INTO skill_fts (rowid, name, description, body, source, risk_tier) VALUES (?, ?, ?, ?, ?, ?)",
+                (skill_id, name, description, body, source, risk_tier),
+            )
+            return skill_id, created
+
+    def replace_skill_references(self, skill_id: int, references: list[dict[str, Any]]) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM skill_references WHERE skill_id = ?", (skill_id,))
+            for ref in references:
+                conn.execute(
+                    """
+                    INSERT INTO skill_references (
+                      created_at, skill_id, relative_path, local_path, content_hash,
+                      size_bytes, metadata_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        utc_now(),
+                        skill_id,
+                        str(ref.get("relative_path", "")),
+                        str(ref.get("local_path", "")),
+                        str(ref.get("content_hash", "")),
+                        int(ref.get("size_bytes", 0)),
+                        json.dumps(ref.get("metadata", {}) or {}, sort_keys=True),
+                    ),
+                )
+
+    def get_skill(self, name: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM skill_registry WHERE name = ?", (name,)).fetchone()
+            if not row:
+                return None
+            refs = conn.execute(
+                "SELECT * FROM skill_references WHERE skill_id = ? ORDER BY relative_path ASC",
+                (int(row["id"]),),
+            ).fetchall()
+        return _skill_from_row(row) | {"references": [_skill_reference_from_row(ref) for ref in refs]}
+
+    def list_skills(
+        self,
+        *,
+        enabled: bool | None = None,
+        risk_tier: str | None = None,
+        source: str | None = None,
+        limit: int = 250,
+    ) -> list[dict[str, Any]]:
+        clauses = []
+        params: list[Any] = []
+        if enabled is not None:
+            clauses.append("enabled = ?")
+            params.append(int(enabled))
+        if risk_tier:
+            clauses.append("risk_tier = ?")
+            params.append(risk_tier)
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM skill_registry
+                {where}
+                ORDER BY enabled DESC, default_enabled DESC, name ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [_skill_from_row(row) for row in rows]
+
+    def search_skills(self, query: str, *, enabled: bool | None = True, limit: int = 5) -> list[dict[str, Any]]:
+        query = query.strip()
+        if not query:
+            return []
+        rows: list[sqlite3.Row] = []
+        token_query = _token_fts_query(query)
+        if token_query:
+            clauses = ["skill_fts MATCH ?"]
+            params: list[Any] = [token_query]
+            if enabled is not None:
+                clauses.append("s.enabled = ?")
+                params.append(int(enabled))
+            params.append(limit)
+            try:
+                with self.connect() as conn:
+                    rows = conn.execute(
+                        f"""
+                        SELECT s.*, bm25(skill_fts) AS search_rank
+                        FROM skill_fts
+                        JOIN skill_registry s ON s.id = skill_fts.rowid
+                        WHERE {' AND '.join(clauses)}
+                        ORDER BY search_rank ASC
+                        LIMIT ?
+                        """,
+                        params,
+                    ).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+        if not rows:
+            tokens = _query_tokens(query)
+            if not tokens:
+                return []
+            clauses = []
+            params = []
+            for token in tokens[:8]:
+                clauses.append("(name LIKE ? OR description LIKE ? OR body LIKE ? OR source LIKE ?)")
+                params.extend([f"%{token}%", f"%{token}%", f"%{token}%", f"%{token}%"])
+            enabled_clause = ""
+            if enabled is not None:
+                enabled_clause = "AND enabled = ?"
+                params.append(int(enabled))
+            params.append(limit)
+            with self.connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT *, 0.0 AS search_rank
+                    FROM skill_registry
+                    WHERE ({' OR '.join(clauses)}) {enabled_clause}
+                    ORDER BY default_enabled DESC, name ASC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+        return [_skill_from_row(row) | {"search_rank": float(row["search_rank"] or 0.0)} for row in rows]
+
+    def set_skill_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE skill_registry SET updated_at = ?, enabled = ? WHERE name = ?",
+                (utc_now(), int(enabled), name),
+            )
+            row = conn.execute("SELECT * FROM skill_registry WHERE name = ?", (name,)).fetchone()
+        if not row:
+            raise ValueError(f"Unknown skill: {name}")
+        return _skill_from_row(row)
+
+    def record_skill_invocation(
+        self,
+        *,
+        skill_id: int,
+        name: str,
+        query: str,
+        score: float,
+        task_type: str = "",
+        runtime_event_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO skill_invocations (
+                  created_at, skill_id, name, query, score, task_type, runtime_event_id, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    skill_id,
+                    name,
+                    query,
+                    float(score),
+                    task_type,
+                    runtime_event_id,
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def recent_skill_invocations(self, *, limit: int = 25) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM skill_invocations ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = json.loads(str(item.pop("metadata_json", "{}")) or "{}")
+            items.append(item)
+        return items
+
+    def skill_summary(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            total = conn.execute("SELECT COUNT(*) AS count FROM skill_registry").fetchone()
+            enabled = conn.execute("SELECT COUNT(*) AS count FROM skill_registry WHERE enabled = 1").fetchone()
+            by_risk = conn.execute(
+                "SELECT risk_tier AS key, COUNT(*) AS count FROM skill_registry GROUP BY risk_tier ORDER BY count DESC"
+            ).fetchall()
+            by_source = conn.execute(
+                "SELECT source AS key, COUNT(*) AS count FROM skill_registry GROUP BY source ORDER BY count DESC, source ASC"
+            ).fetchall()
+            recently_used = conn.execute(
+                """
+                SELECT name, COUNT(*) AS count, MAX(created_at) AS last_used_at
+                FROM skill_invocations
+                GROUP BY name
+                ORDER BY last_used_at DESC
+                LIMIT 10
+                """
+            ).fetchall()
+        return {
+            "total": int(total["count"] or 0) if total else 0,
+            "enabled": int(enabled["count"] or 0) if enabled else 0,
+            "by_risk_tier": {str(row["key"] or "unknown"): int(row["count"]) for row in by_risk},
+            "by_source": {str(row["key"] or "unknown"): int(row["count"]) for row in by_source},
+            "recently_used": [dict(row) for row in recently_used],
+        }
+
     def daily_brief_inputs(self) -> dict[str, list[dict[str, Any]]]:
         with self.connect() as conn:
             return {
@@ -459,6 +1072,137 @@ class KernelDatabase:
                 "open_decisions": [dict(row) for row in conn.execute("SELECT * FROM decisions WHERE status = 'open' ORDER BY id DESC LIMIT 8")],
                 "recent_disagreements": [dict(row) for row in conn.execute("SELECT * FROM disagreements ORDER BY id DESC LIMIT 5")],
             }
+
+    def create_conversation(self, *, title: str = "", metadata: dict[str, Any] | None = None) -> int:
+        now = utc_now()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO conversations (created_at, updated_at, title, status, metadata_json)
+                VALUES (?, ?, ?, 'active', ?)
+                """,
+                (now, now, title, json.dumps(metadata or {}, sort_keys=True)),
+            )
+            return int(cur.lastrowid)
+
+    def get_conversation(self, conversation_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        return _conversation_from_row(row) if row else None
+
+    def list_conversations(self, *, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM conversations WHERE status = ? ORDER BY COALESCE(last_message_at, updated_at) DESC, id DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM conversations ORDER BY COALESCE(last_message_at, updated_at) DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [_conversation_from_row(row) for row in rows]
+
+    def add_conversation_turn(
+        self,
+        *,
+        conversation_id: int,
+        role: str,
+        content: str,
+        task_type: str = "",
+        model: str = "",
+        authority_decision: str = "",
+        runtime_event_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        now = utc_now()
+        with self.connect() as conn:
+            exists = conn.execute("SELECT title FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+            if not exists:
+                raise ValueError(f"Conversation not found: {conversation_id}")
+            cur = conn.execute(
+                """
+                INSERT INTO conversation_turns (
+                  created_at, conversation_id, role, content, task_type, model,
+                  authority_decision, runtime_event_id, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    conversation_id,
+                    role,
+                    content,
+                    task_type,
+                    model,
+                    authority_decision,
+                    runtime_event_id,
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            turn_id = int(cur.lastrowid)
+            derived_title = ""
+            if not str(exists["title"]).strip() and role == "user":
+                derived_title = _conversation_title_from_message(content)
+            conn.execute(
+                """
+                UPDATE conversations
+                SET updated_at = ?,
+                    last_message_at = ?,
+                    turn_count = turn_count + 1,
+                    title = CASE WHEN title = '' AND ? != '' THEN ? ELSE title END
+                WHERE id = ?
+                """,
+                (now, now, derived_title, derived_title, conversation_id),
+            )
+            return turn_id
+
+    def list_conversation_turns(
+        self,
+        conversation_id: int,
+        *,
+        limit: int = 50,
+        newest_first: bool = False,
+    ) -> list[dict[str, Any]]:
+        order = "DESC" if newest_first else "ASC"
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM conversation_turns WHERE conversation_id = ? ORDER BY id {order} LIMIT ?",
+                (conversation_id, limit),
+            ).fetchall()
+        return [_conversation_turn_from_row(row) for row in rows]
+
+    def recent_conversation_turns(self, conversation_id: int, *, window: int = 12) -> list[dict[str, Any]]:
+        turns = self.list_conversation_turns(conversation_id, limit=window, newest_first=True)
+        return list(reversed(turns))
+
+    def count_conversation_turns_after(self, conversation_id: int, *, after_turn_id: int | None) -> int:
+        with self.connect() as conn:
+            if after_turn_id is None:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM conversation_turns WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM conversation_turns WHERE conversation_id = ? AND id > ?",
+                    (conversation_id, after_turn_id),
+                ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def update_conversation_summary(
+        self,
+        conversation_id: int,
+        *,
+        summary: str,
+        summary_through_turn_id: int,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ?, summary = ?, summary_through_turn_id = ? WHERE id = ?",
+                (utc_now(), summary, summary_through_turn_id, conversation_id),
+            )
 
 
 def _memory_from_row(row: sqlite3.Row) -> MemoryRecord:
@@ -494,6 +1238,137 @@ def _work_item_from_row(row: sqlite3.Row) -> WorkItem:
         metadata=json.loads(row["metadata_json"] or "{}"),
         unique_key=str(row["unique_key"]) if row["unique_key"] else None,
     )
+
+
+def _approval_request_from_row(row: sqlite3.Row) -> ApprovalRequest:
+    return ApprovalRequest(
+        id=int(row["id"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        source_type=str(row["source_type"]),
+        source_id=int(row["source_id"]) if row["source_id"] is not None else None,
+        title=str(row["title"]),
+        detail=str(row["detail"]),
+        action=str(row["action"]),
+        target=str(row["target"]),
+        permission_tier=str(row["permission_tier"]),
+        authority_decision=str(row["authority_decision"]),
+        authority=json.loads(row["authority_json"] or "{}"),
+        status=str(row["status"]),
+        requested_by=str(row["requested_by"]),
+        resolved_by=str(row["resolved_by"]),
+        resolved_at=str(row["resolved_at"]) if row["resolved_at"] else None,
+        resolution_note=str(row["resolution_note"]),
+        metadata=json.loads(row["metadata_json"] or "{}"),
+    )
+
+
+def _model_call_from_row(row: sqlite3.Row) -> ModelCall:
+    think = row["think"]
+    return ModelCall(
+        id=int(row["id"]),
+        created_at=str(row["created_at"]),
+        operation=str(row["operation"]),
+        model=str(row["model"]),
+        role=str(row["role"]),
+        status=str(row["status"]),
+        latency_ms=int(row["latency_ms"]),
+        prompt_chars=int(row["prompt_chars"]),
+        response_chars=int(row["response_chars"]),
+        think=None if think is None else bool(think),
+        error=str(row["error"]),
+        metadata=json.loads(row["metadata_json"] or "{}"),
+    )
+
+
+def _model_call_to_dict(call: ModelCall) -> dict[str, Any]:
+    return {
+        "id": call.id,
+        "created_at": call.created_at,
+        "operation": call.operation,
+        "model": call.model,
+        "role": call.role,
+        "status": call.status,
+        "latency_ms": call.latency_ms,
+        "prompt_chars": call.prompt_chars,
+        "response_chars": call.response_chars,
+        "think": call.think,
+        "error": call.error,
+        "metadata": call.metadata,
+    }
+
+
+def _skill_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+        "name": str(row["name"]),
+        "description": str(row["description"]),
+        "body": str(row["body"]),
+        "source": str(row["source"]),
+        "source_type": str(row["source_type"]),
+        "skill_path": str(row["skill_path"]),
+        "local_path": str(row["local_path"]),
+        "content_hash": str(row["content_hash"]),
+        "risk_tier": str(row["risk_tier"]),
+        "risk_reasons": json.loads(row["risk_reasons_json"] or "[]"),
+        "enabled": bool(row["enabled"]),
+        "default_enabled": bool(row["default_enabled"]),
+        "last_scanned_at": str(row["last_scanned_at"]) if row["last_scanned_at"] else None,
+        "last_used_at": str(row["last_used_at"]) if "last_used_at" in row.keys() and row["last_used_at"] else None,
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+    }
+
+
+def _skill_reference_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "created_at": str(row["created_at"]),
+        "skill_id": int(row["skill_id"]),
+        "relative_path": str(row["relative_path"]),
+        "local_path": str(row["local_path"]),
+        "content_hash": str(row["content_hash"]),
+        "size_bytes": int(row["size_bytes"]),
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+    }
+
+
+def _conversation_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+        "title": str(row["title"]),
+        "status": str(row["status"]),
+        "summary": str(row["summary"]),
+        "summary_through_turn_id": int(row["summary_through_turn_id"]) if row["summary_through_turn_id"] is not None else None,
+        "turn_count": int(row["turn_count"]),
+        "last_message_at": str(row["last_message_at"]) if row["last_message_at"] else None,
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+    }
+
+
+def _conversation_turn_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "created_at": str(row["created_at"]),
+        "conversation_id": int(row["conversation_id"]),
+        "role": str(row["role"]),
+        "content": str(row["content"]),
+        "task_type": str(row["task_type"]),
+        "model": str(row["model"]),
+        "authority_decision": str(row["authority_decision"]),
+        "runtime_event_id": int(row["runtime_event_id"]) if row["runtime_event_id"] is not None else None,
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+    }
+
+
+def _conversation_title_from_message(message: str) -> str:
+    cleaned = re.sub(r"\s+", " ", message).strip()
+    if len(cleaned) <= 60:
+        return cleaned
+    return cleaned[:57].rstrip() + "..."
 
 
 def _query_tokens(query: str) -> list[str]:
@@ -678,6 +1553,58 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings (
   PRIMARY KEY(chunk_id, model)
 );
 
+CREATE TABLE IF NOT EXISTS skill_registry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT '',
+  skill_path TEXT NOT NULL DEFAULT '',
+  local_path TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL DEFAULT '',
+  risk_tier TEXT NOT NULL DEFAULT 'read_only',
+  risk_reasons_json TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER NOT NULL DEFAULT 0,
+  default_enabled INTEGER NOT NULL DEFAULT 0,
+  last_scanned_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS skill_references (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  skill_id INTEGER NOT NULL REFERENCES skill_registry(id) ON DELETE CASCADE,
+  relative_path TEXT NOT NULL,
+  local_path TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(skill_id, relative_path)
+);
+
+CREATE TABLE IF NOT EXISTS skill_invocations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  skill_id INTEGER NOT NULL REFERENCES skill_registry(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  query TEXT NOT NULL DEFAULT '',
+  score REAL NOT NULL DEFAULT 0,
+  task_type TEXT NOT NULL DEFAULT '',
+  runtime_event_id INTEGER,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS skill_fts USING fts5(
+  name,
+  description,
+  body,
+  source,
+  risk_tier
+);
+
 CREATE TABLE IF NOT EXISTS ingestion_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
@@ -712,6 +1639,27 @@ CREATE TABLE IF NOT EXISTS work_items (
   unique_key TEXT UNIQUE
 );
 
+CREATE TABLE IF NOT EXISTS approval_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_id INTEGER,
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  permission_tier TEXT NOT NULL,
+  authority_decision TEXT NOT NULL,
+  authority_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_by TEXT NOT NULL DEFAULT 'system',
+  resolved_by TEXT NOT NULL DEFAULT '',
+  resolved_at TEXT,
+  resolution_note TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS runtime_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
@@ -722,6 +1670,37 @@ CREATE TABLE IF NOT EXISTS runtime_events (
   model TEXT NOT NULL DEFAULT '',
   authority_decision TEXT NOT NULL DEFAULT '',
   details_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS model_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  model TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  prompt_chars INTEGER NOT NULL DEFAULT 0,
+  response_chars INTEGER NOT NULL DEFAULT 0,
+  think INTEGER,
+  error TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS teaching_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  source_system TEXT NOT NULL,
+  source_uri TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  excerpt TEXT NOT NULL DEFAULT '',
+  candidate_type TEXT NOT NULL DEFAULT 'document',
+  reliability TEXT NOT NULL DEFAULT 'C',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  suggested_links_json TEXT NOT NULL DEFAULT '[]',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS identity_charter (
@@ -1001,6 +1980,58 @@ CREATE TABLE IF NOT EXISTS founder_goals (
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS active_objectives (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  why_it_matters TEXT NOT NULL DEFAULT '',
+  desired_outcome TEXT NOT NULL DEFAULT '',
+  metric TEXT NOT NULL DEFAULT '',
+  target TEXT NOT NULL DEFAULT '',
+  deadline TEXT,
+  owner TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 80,
+  confidence INTEGER NOT NULL DEFAULT 50,
+  status TEXT NOT NULL DEFAULT 'active',
+  is_current INTEGER NOT NULL DEFAULT 0,
+  linked_goal_ids_json TEXT NOT NULL DEFAULT '[]',
+  linked_bet_ids_json TEXT NOT NULL DEFAULT '[]',
+  linked_assumption_ids_json TEXT NOT NULL DEFAULT '[]',
+  linked_experiment_ids_json TEXT NOT NULL DEFAULT '[]',
+  linked_decision_ids_json TEXT NOT NULL DEFAULT '[]',
+  evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+  constraints_json TEXT NOT NULL DEFAULT '[]',
+  risks_json TEXT NOT NULL DEFAULT '[]',
+  current_bet TEXT NOT NULL DEFAULT '',
+  next_action TEXT NOT NULL DEFAULT '',
+  review_cadence TEXT NOT NULL DEFAULT 'daily',
+  last_reviewed_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS decision_recommendations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  objective_id INTEGER,
+  problem TEXT NOT NULL,
+  context TEXT NOT NULL DEFAULT '',
+  options_json TEXT NOT NULL DEFAULT '[]',
+  recommendation TEXT NOT NULL,
+  rationale TEXT NOT NULL DEFAULT '',
+  confidence INTEGER NOT NULL DEFAULT 50,
+  required_evidence_json TEXT NOT NULL DEFAULT '[]',
+  downside_risk_json TEXT NOT NULL DEFAULT '[]',
+  kill_or_reversal_condition TEXT NOT NULL DEFAULT '',
+  next_action TEXT NOT NULL DEFAULT '',
+  decision_memo_id INTEGER,
+  next_task_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'proposed',
+  authority_note TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS founder_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
@@ -1095,6 +2126,48 @@ CREATE TABLE IF NOT EXISTS cadence_reviews (
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS founder_experiments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  title TEXT NOT NULL,
+  experiment_type TEXT NOT NULL DEFAULT 'validation',
+  hypothesis TEXT NOT NULL DEFAULT '',
+  target_persona TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  start_date TEXT,
+  end_date TEXT,
+  success_metric TEXT NOT NULL DEFAULT '',
+  success_threshold TEXT NOT NULL DEFAULT '',
+  minimum_evidence INTEGER NOT NULL DEFAULT 1,
+  decision_rule TEXT NOT NULL DEFAULT '',
+  linked_assumption_ids_json TEXT NOT NULL DEFAULT '[]',
+  linked_bet_ids_json TEXT NOT NULL DEFAULT '[]',
+  linked_goal_ids_json TEXT NOT NULL DEFAULT '[]',
+  linked_prediction_ids_json TEXT NOT NULL DEFAULT '[]',
+  evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+  result TEXT NOT NULL DEFAULT '',
+  recommendation TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS experiment_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  experiment_id INTEGER NOT NULL REFERENCES founder_experiments(id) ON DELETE CASCADE,
+  review_type TEXT NOT NULL DEFAULT 'weekly',
+  period TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  outcome_summary TEXT NOT NULL DEFAULT '',
+  findings_json TEXT NOT NULL DEFAULT '{}',
+  next_actions_json TEXT NOT NULL DEFAULT '[]',
+  evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+  confidence_delta INTEGER NOT NULL DEFAULT 0,
+  status_after TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS integrity_warnings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
@@ -1106,5 +2179,126 @@ CREATE TABLE IF NOT EXISTS integrity_warnings (
   recommendation TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'open',
   metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  summary TEXT NOT NULL DEFAULT '',
+  summary_through_turn_id INTEGER,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  last_message_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS conversation_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  task_type TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  authority_decision TEXT NOT NULL DEFAULT '',
+  runtime_event_id INTEGER,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
+  ON conversation_turns(conversation_id, id);
+
+CREATE TABLE IF NOT EXISTS eval_cases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  name TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL DEFAULT 'custom',
+  executor TEXT NOT NULL DEFAULT 'generate',
+  task_type TEXT NOT NULL DEFAULT 'general',
+  description TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL,
+  draft TEXT NOT NULL DEFAULT '',
+  checks_json TEXT NOT NULL DEFAULT '[]',
+  respond_options_json TEXT NOT NULL DEFAULT '{}',
+  setup_memories_json TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS eval_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT 'manual',
+  total INTEGER NOT NULL DEFAULT 0,
+  passed INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  errors INTEGER NOT NULL DEFAULT 0,
+  pass_rate REAL NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  model_roles_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS eval_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  run_id INTEGER NOT NULL REFERENCES eval_runs(id) ON DELETE CASCADE,
+  case_id INTEGER NOT NULL,
+  case_name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '',
+  executor TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  score REAL NOT NULL DEFAULT 0,
+  checks_json TEXT NOT NULL DEFAULT '[]',
+  response_excerpt TEXT NOT NULL DEFAULT '',
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  model TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_eval_results_run ON eval_results(run_id, id);
+
+CREATE TABLE IF NOT EXISTS skill_embeddings (
+  skill_id INTEGER PRIMARY KEY REFERENCES skill_registry(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  vector_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS connectors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  name TEXT NOT NULL UNIQUE,
+  connector_type TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  config_json TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_sync_at TEXT,
+  last_sync_status TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS connector_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  connector_id INTEGER NOT NULL REFERENCES connectors(id) ON DELETE CASCADE,
+  external_id TEXT NOT NULL,
+  item_type TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  sender TEXT NOT NULL DEFAULT '',
+  occurred_at TEXT,
+  excerpt TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(connector_id, external_id)
 );
 """

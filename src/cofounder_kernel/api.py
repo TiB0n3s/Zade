@@ -1,26 +1,58 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
+from .approval import ApprovalService
 from .authority import AuthorityPolicy, AuthorityRequest, build_self_inventory
 from .autonomy import WorkQueueService
 from .brief import build_daily_brief
 from .config import KernelConfig, ensure_local_paths, load_config
-from .db import KernelDatabase
+from .connectors import ConnectorService
+from .conversation import ConversationService
+from .critic import ContrarianCritic
+from .db import KernelDatabase, utc_now
+from .evals import EvalService
+from .experiments import ExperimentService
 from .founder import FounderService
+from .handlers import ActionHandlerRegistry
 from .ingestion import IngestionService
 from .models import (
+    ActiveObjectiveCreate,
+    ActiveObjectiveStatusUpdate,
     AssumptionCreate,
+    ApprovalResolveRequest,
     AuthorityEvaluateRequest,
+    BackupCreateRequest,
+    BackupRetentionRequest,
     CadenceReviewCreate,
+    CadenceRunRequest,
     ChatRequest,
     ChatResponse,
     CompanyThesisUpsert,
+    ConnectorCreate,
+    ConnectorItemDismiss,
+    ConnectorItemsImport,
     ContrarianReviewCreate,
+    ConversationCreate,
+    DeepThoughtImportRequest,
+    DeepThoughtLinkRequest,
+    DeepThoughtScanRequest,
+    DecisionEngineRequest,
     DecisionMemoCreate,
+    EvalCaseUpsert,
+    EvalRunRequest,
     EvidenceCreate,
+    EvidenceLoopRequest,
+    ExperimentCreate,
+    ExperimentEvidenceCreate,
+    ExperimentLoopRequest,
+    ExperimentPushbackCreate,
+    ExperimentReviewCreate,
     FounderGoalCreate,
     FounderOverrideCreate,
     FounderPredictionCreate,
@@ -35,20 +67,39 @@ from .models import (
     MemoryCreate,
     MemorySearch,
     MissedCallReviewCreate,
+    ModelBenchmarkRequest,
     ObjectLinkCreate,
     ReflectionCreate,
     RelationshipCharterUpsert,
+    RuntimeContextRequest,
+    RuntimeLoopRequest,
+    RuntimeRespondRequest,
     SemanticSearchRequest,
+    SkillRouteRequest,
+    SkillScanRequest,
     StrategyEntryCreate,
+    SurfacingBriefRequest,
     StrategyObjectCreate,
     ThesisConflictCreate,
     VoiceCharterUpsert,
+    VoiceConverseRequest,
+    VoiceSpeakRequest,
+    VoiceTranscribeRequest,
     WorkItemCreate,
     WorkRunRequest,
     WorkScanRequest,
 )
 from .ollama import OllamaClient, OllamaError
+from .ops import KernelOpsService
+from .runtime import RuntimeService
+from .skills import SkillService
+from .surfacing import SurfacingService
+from .voice import VoiceNotConfigured, VoiceService
+from .teaching import DeepThoughtTeachingBridge
 from .tools import ToolRegistry
+
+
+UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 
 
 def create_app(config: KernelConfig | None = None) -> FastAPI:
@@ -62,6 +113,8 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     tools = ToolRegistry(db, authority=authority)
     ingestion = IngestionService(config=cfg, db=db, embedder=ollama)
     founder = FounderService(config=cfg, db=db)
+    skills = SkillService(config=cfg, db=db, embedder=ollama)
+    handlers = ActionHandlerRegistry(db=db, config=cfg)
     work_queue = WorkQueueService(
         config=cfg,
         db=db,
@@ -69,8 +122,40 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         ingestion=ingestion,
         inventory_provider=lambda: _inventory_payload(cfg, authority, tools, db, founder),
     )
+    approvals = ApprovalService(
+        db=db,
+        handlers=handlers,
+        typed_confirmation_phrase=authority.summary()["typed_confirmation_phrase"],
+    )
+    conversations = ConversationService(config=cfg, db=db, ollama=ollama)
+    critic = ContrarianCritic(config=cfg, db=db, ollama=ollama, founder=founder)
+    runtime = RuntimeService(
+        config=cfg,
+        db=db,
+        authority=authority,
+        founder=founder,
+        ingestion=ingestion,
+        work_queue=work_queue,
+        ollama=ollama,
+        skills=skills,
+        conversations=conversations,
+        critic=critic,
+    )
+    teaching = DeepThoughtTeachingBridge(config=cfg, db=db, founder=founder, ingestion=ingestion)
+    experiments = ExperimentService(config=cfg, db=db, founder=founder, ingestion=ingestion)
+    connectors = ConnectorService(config=cfg, db=db, founder=founder, ingestion=ingestion, work_queue=work_queue)
+    handlers.register(
+        "external.connector.sync",
+        "Read-only sync of an approved external connector into staged candidate items.",
+        connectors.sync_from_work_item,
+    )
+    surfacing = SurfacingService(config=cfg, db=db, ollama=ollama)
+    ops = KernelOpsService(config=cfg, db=db, ollama=ollama, ui_dir=UI_DIR)
+    evals = EvalService(config=cfg, db=db, ollama=ollama, runtime=runtime, critic=critic)
+    voice = VoiceService(config=cfg, db=db, runtime=runtime)
 
     app = FastAPI(title=f"{cfg.identity.name} Local AI Co-founder Kernel", version="0.1.0")
+    app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
     app.state.config = cfg
     app.state.db = db
     app.state.ollama = ollama
@@ -78,7 +163,34 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     app.state.tools = tools
     app.state.ingestion = ingestion
     app.state.founder = founder
+    app.state.skills = skills
+    app.state.handlers = handlers
     app.state.work_queue = work_queue
+    app.state.approvals = approvals
+    app.state.conversations = conversations
+    app.state.critic = critic
+    app.state.runtime = runtime
+    app.state.teaching = teaching
+    app.state.experiments = experiments
+    app.state.connectors = connectors
+    app.state.surfacing = surfacing
+    app.state.ops = ops
+    app.state.evals = evals
+    app.state.voice = voice
+
+    @app.middleware("http")
+    async def local_mutation_guard(request: Request, call_next):
+        if _mutation_requires_token(cfg, request):
+            supplied = request.headers.get("x-zade-token", "")
+            if supplied != cfg.security.local_token:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "detail": "Local mutation token required.",
+                        "hint": "Set localStorage.zadeKernelToken in /ui or send X-Zade-Token.",
+                    },
+                )
+        return await call_next(request)
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -91,6 +203,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             "ok": True,
             "name": cfg.identity.name,
             "local_only": True,
+            "uptime_seconds": ops.uptime_seconds(),
             "database": str(cfg.paths.database_path),
             "hot_root": str(cfg.paths.hot_root),
             "cold_root": str(cfg.paths.cold_root),
@@ -103,6 +216,8 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
                 "policy_version": authority.summary()["policy_version"],
                 "typed_confirmation_phrase": authority.summary()["typed_confirmation_phrase"],
             },
+            "security": _security_summary(cfg),
+            "skills": db.skill_summary(),
             "tools": tools.list_tools(),
         }
 
@@ -121,6 +236,107 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
                 role: model for role, model in roles.items() if not _model_is_installed(model, installed_names)
             },
         }
+
+    @app.get("/models/telemetry")
+    def model_telemetry(limit: int = 250) -> dict[str, Any]:
+        return db.model_call_summary(limit=limit)
+
+    @app.get("/models/telemetry/calls")
+    def model_telemetry_calls(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"items": [call.__dict__ for call in db.list_model_calls(status=status, limit=limit)]}
+
+    @app.get("/skills/summary")
+    def skills_summary() -> dict[str, Any]:
+        return db.skill_summary() | {"source_dir": str(cfg.skills.source_dir), "lock_file": str(cfg.skills.lock_file)}
+
+    @app.get("/skills")
+    def list_skills(
+        enabled: bool | None = None,
+        risk_tier: str | None = None,
+        source: str | None = None,
+        limit: int = 250,
+    ) -> dict[str, Any]:
+        return skills.list_skills(enabled=enabled, risk_tier=risk_tier, source=source, limit=limit)
+
+    @app.post("/skills/scan")
+    def scan_skills(payload: SkillScanRequest | None = None) -> dict[str, Any]:
+        request = payload or SkillScanRequest()
+        try:
+            return skills.scan(source_dir=request.source_dir, enable_defaults=request.enable_defaults)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/skills/route")
+    def route_skills(payload: SkillRouteRequest) -> dict[str, Any]:
+        routed = skills.route(query=payload.query, task_type=payload.task_type, limit=payload.limit)
+        audit_id = db.audit(
+            actor="skills",
+            action="skills.route",
+            target=payload.query[:240],
+            permission_tier="L0_READ",
+            status="ok",
+            details=routed.summary(),
+        )
+        return routed.summary() | {"audit_id": audit_id}
+
+    @app.get("/skills/invocations")
+    def skill_invocations(limit: int = 25) -> dict[str, Any]:
+        return {"items": db.recent_skill_invocations(limit=limit)}
+
+    @app.get("/skills/{name}")
+    def get_skill(name: str) -> dict[str, Any]:
+        try:
+            return {"item": skills.get_skill(name)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/skills/{name}/enable")
+    def enable_skill(name: str) -> dict[str, Any]:
+        try:
+            return {"item": skills.enable(name)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/skills/{name}/disable")
+    def disable_skill(name: str) -> dict[str, Any]:
+        try:
+            return {"item": skills.disable(name)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/models/benchmark")
+    def model_benchmark(payload: ModelBenchmarkRequest | None = None) -> dict[str, Any]:
+        request = payload or ModelBenchmarkRequest()
+        return ops.benchmark_models(**request.model_dump())
+
+    @app.get("/ops/health-check")
+    def ops_health_check(max_cadence_age_hours: int = 30, require_recent_cadence: bool = False) -> dict[str, Any]:
+        return ops.health_check(
+            max_cadence_age_hours=max_cadence_age_hours,
+            require_recent_cadence=require_recent_cadence,
+        )
+
+    @app.get("/ops/security")
+    def ops_security() -> dict[str, Any]:
+        return _security_summary(cfg)
+
+    @app.get("/ops/supervision")
+    def ops_supervision(limit: int = 50) -> dict[str, Any]:
+        return ops.supervision(limit=limit)
+
+    @app.post("/ops/backup")
+    def ops_backup(payload: BackupCreateRequest | None = None) -> dict[str, Any]:
+        request = payload or BackupCreateRequest()
+        return ops.create_backup(label=request.label)
+
+    @app.get("/ops/backups")
+    def ops_backups(limit: int = 25) -> dict[str, Any]:
+        return {"items": ops.list_backups(limit=limit)}
+
+    @app.post("/ops/backups/prune")
+    def ops_prune_backups(payload: BackupRetentionRequest | None = None) -> dict[str, Any]:
+        request = payload or BackupRetentionRequest()
+        return ops.prune_backups(**request.model_dump())
 
     @app.get("/tools")
     def list_tools() -> list[dict[str, Any]]:
@@ -182,6 +398,335 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     def upsert_voice_charter(payload: VoiceCharterUpsert) -> dict[str, Any]:
         return {"charter": founder.upsert_voice_charter(payload.model_dump())}
 
+    @app.get("/runtime/charter-stack")
+    def runtime_charter_stack() -> dict[str, Any]:
+        return runtime.charter_stack()
+
+    @app.get("/runtime/context")
+    def runtime_context(
+        message: str = "",
+        task_type: str = "general",
+        use_memory: bool = True,
+        use_semantic_memory: bool = True,
+        semantic_limit: int = 4,
+        use_skills: bool = True,
+        skill_limit: int = 3,
+    ) -> dict[str, Any]:
+        return runtime.context(
+            message=message,
+            task_type=task_type,  # type: ignore[arg-type]
+            use_memory=use_memory,
+            use_semantic_memory=use_semantic_memory,
+            semantic_limit=semantic_limit,
+            use_skills=use_skills,
+            skill_limit=skill_limit,
+        )
+
+    @app.post("/runtime/context")
+    def runtime_context_post(payload: RuntimeContextRequest) -> dict[str, Any]:
+        return runtime.context(**payload.model_dump())
+
+    @app.post("/runtime/respond")
+    def runtime_respond(payload: RuntimeRespondRequest) -> dict[str, Any]:
+        try:
+            return runtime.respond(**payload.model_dump())
+        except OllamaError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/conversations")
+    def create_conversation(payload: ConversationCreate | None = None) -> dict[str, Any]:
+        request = payload or ConversationCreate()
+        return {"conversation": conversations.create(title=request.title, metadata=request.metadata)}
+
+    @app.get("/conversations")
+    def list_conversations(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"conversations": conversations.list(status=status, limit=limit)}
+
+    @app.get("/conversations/{conversation_id}")
+    def get_conversation(conversation_id: int, turn_limit: int = 50) -> dict[str, Any]:
+        try:
+            return {"conversation": conversations.get(conversation_id, turn_limit=turn_limit)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/conversations/{conversation_id}/turns")
+    def get_conversation_turns(conversation_id: int, limit: int = 100) -> dict[str, Any]:
+        try:
+            return {"turns": conversations.list_turns(conversation_id, limit=limit)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/surface/attention")
+    def surface_attention() -> dict[str, Any]:
+        return surfacing.scan()
+
+    @app.post("/surface/brief")
+    def surface_brief(payload: SurfacingBriefRequest | None = None) -> dict[str, Any]:
+        request = payload or SurfacingBriefRequest()
+        return surfacing.brief(narrate=request.narrate, force=request.force)
+
+    @app.get("/evals/cases")
+    def list_eval_cases(category: str | None = None, enabled: bool | None = None) -> dict[str, Any]:
+        evals.ensure_default_cases()
+        return {"items": evals.list_cases(category=category, enabled=enabled)}
+
+    @app.post("/evals/cases")
+    def upsert_eval_case(payload: EvalCaseUpsert) -> dict[str, Any]:
+        try:
+            return {"item": evals.upsert_case(payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/evals/run")
+    def run_evals(payload: EvalRunRequest | None = None) -> dict[str, Any]:
+        request = payload or EvalRunRequest()
+        return evals.run(
+            label=request.label,
+            categories=request.categories or None,
+            case_names=request.case_names or None,
+            max_cases=request.max_cases,
+        )
+
+    @app.get("/evals/runs")
+    def list_eval_runs(limit: int = 25) -> dict[str, Any]:
+        return {"items": evals.list_runs(limit=limit)}
+
+    @app.get("/evals/runs/{run_id}")
+    def get_eval_run(run_id: int) -> dict[str, Any]:
+        try:
+            return {"item": evals.get_run(run_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/connectors")
+    def list_connectors(enabled: bool | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"items": connectors.list_connectors(enabled=enabled, limit=limit)}
+
+    @app.post("/connectors")
+    def create_connector(payload: ConnectorCreate) -> dict[str, Any]:
+        try:
+            return {"item": connectors.create_connector(payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/connectors/items")
+    def list_connector_items(
+        status: str | None = None,
+        connector: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return {"items": connectors.list_items(status=status, connector=connector, limit=limit)}
+
+    @app.post("/connectors/items/import")
+    def import_connector_items(payload: ConnectorItemsImport) -> dict[str, Any]:
+        try:
+            return connectors.import_items(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/connectors/items/{item_id}/dismiss")
+    def dismiss_connector_item(item_id: int, payload: ConnectorItemDismiss | None = None) -> dict[str, Any]:
+        request = payload or ConnectorItemDismiss()
+        try:
+            return {"item": connectors.dismiss_item(item_id, reason=request.reason)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/connectors/{name}")
+    def get_connector(name: str) -> dict[str, Any]:
+        try:
+            return {"item": connectors.get_connector(name)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/connectors/{name}/sync")
+    def queue_connector_sync(name: str) -> dict[str, Any]:
+        try:
+            result = connectors.queue_sync(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return result | {
+            "note": (
+                "Connector sync is an external action: approve and dispatch the work item "
+                "with the typed confirmation phrase to run it."
+            ),
+        }
+
+    @app.get("/voice/status")
+    def voice_status() -> dict[str, Any]:
+        return voice.status()
+
+    @app.post("/voice/transcribe")
+    def voice_transcribe(payload: VoiceTranscribeRequest) -> dict[str, Any]:
+        try:
+            return voice.transcribe(audio_base64=payload.audio_base64)
+        except VoiceNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/voice/speak")
+    def voice_speak(payload: VoiceSpeakRequest) -> dict[str, Any]:
+        try:
+            return voice.speak(text=payload.text)
+        except VoiceNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/voice/converse")
+    def voice_converse(payload: VoiceConverseRequest) -> dict[str, Any]:
+        try:
+            return voice.converse(**payload.model_dump())
+        except VoiceNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except OllamaError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/runtime/operating-loop")
+    def runtime_operating_loop(payload: RuntimeLoopRequest | None = None) -> dict[str, Any]:
+        request = payload or RuntimeLoopRequest()
+        return runtime.operating_loop(**request.model_dump())
+
+    @app.post("/runtime/evidence-loop")
+    def runtime_evidence_loop(payload: EvidenceLoopRequest | None = None) -> dict[str, Any]:
+        request = payload or EvidenceLoopRequest()
+        return teaching.evidence_loop(**request.model_dump())
+
+    @app.post("/runtime/experiment-loop")
+    def runtime_experiment_loop(payload: ExperimentLoopRequest | None = None) -> dict[str, Any]:
+        request = payload or ExperimentLoopRequest()
+        return experiments.run_loop(**request.model_dump())
+
+    @app.post("/runtime/cadence")
+    def runtime_cadence(payload: CadenceRunRequest | None = None) -> dict[str, Any]:
+        request = payload or CadenceRunRequest()
+        operating = runtime.operating_loop(
+            run_autonomous=request.run_autonomous,
+            max_run=request.max_run,
+            review_type=request.review_type,
+            include_integrity=True,
+            include_cadence=True,
+        )
+        evidence = teaching.evidence_loop(
+            import_candidates=request.import_candidates,
+            max_import=request.max_import,
+            link_goals=request.link_goals,
+            clear_resolved_warnings=request.clear_resolved_warnings,
+        )
+        experiment = experiments.run_loop(
+            review_type=request.experiment_review_type,
+            period=request.experiment_period,
+            max_reviews=request.max_experiment_reviews,
+        )
+        surface = surfacing.brief()
+        next_action = (
+            surface["one_thing"]
+            if surface["count"]
+            else experiment.get("next_action") or operating.get("next_action")
+        )
+        audit_id = db.audit(
+            actor="runtime",
+            action="runtime.cadence",
+            target=request.review_type,
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={
+                "operating_event_id": operating.get("event_id"),
+                "evidence_event_id": evidence.get("event_id"),
+                "experiment_event_id": experiment.get("event_id"),
+                "surfacing_event_id": surface.get("event_id"),
+                "surfacing_item_count": surface.get("count"),
+                "next_action": next_action,
+            },
+        )
+        return {
+            "generated_at": operating.get("generated_at"),
+            "operating": operating,
+            "evidence": evidence,
+            "experiment": experiment,
+            "surfacing": surface,
+            "audit_id": audit_id,
+            "next_action": next_action,
+        }
+
+    @app.get("/runtime/events")
+    def runtime_events(limit: int = 25) -> dict[str, Any]:
+        return {"events": runtime.recent_events(limit=limit)}
+
+    @app.post("/teach/deepthought/scan")
+    def teach_deepthought_scan(payload: DeepThoughtScanRequest | None = None) -> dict[str, Any]:
+        request = payload or DeepThoughtScanRequest()
+        return teaching.scan(**request.model_dump())
+
+    @app.get("/teach/deepthought/candidates")
+    def teach_deepthought_candidates(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"candidates": teaching.list_candidates(status=status, limit=limit)}
+
+    @app.post("/teach/deepthought/import")
+    def teach_deepthought_import(payload: DeepThoughtImportRequest) -> dict[str, Any]:
+        return teaching.import_candidates(**payload.model_dump())
+
+    @app.post("/teach/deepthought/link")
+    def teach_deepthought_link(payload: DeepThoughtLinkRequest) -> dict[str, Any]:
+        return teaching.link_evidence(**payload.model_dump())
+
+    @app.post("/teach/deepthought/auto-link")
+    def teach_deepthought_auto_link(limit: int = 50) -> dict[str, Any]:
+        return teaching.auto_link_imported(limit=limit)
+
+    @app.get("/evidence/gaps")
+    def evidence_gaps() -> dict[str, Any]:
+        return teaching.evidence_gaps()
+
+    @app.get("/experiments")
+    def list_experiments(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"items": experiments.list_experiments(status=status, limit=limit)}
+
+    @app.post("/experiments")
+    def create_experiment(payload: ExperimentCreate) -> dict[str, Any]:
+        return {"item": experiments.create_experiment(payload.model_dump())}
+
+    @app.get("/experiments/dashboard")
+    def experiments_dashboard() -> dict[str, Any]:
+        return experiments.dashboard()
+
+    @app.get("/experiments/reviews")
+    def list_experiment_reviews(experiment_id: int | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"items": experiments.list_reviews(experiment_id=experiment_id, limit=limit)}
+
+    @app.get("/experiments/{experiment_id}")
+    def get_experiment(experiment_id: int) -> dict[str, Any]:
+        try:
+            return {"item": experiments.get_experiment(experiment_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/experiments/{experiment_id}/evidence")
+    def add_experiment_evidence(experiment_id: int, payload: ExperimentEvidenceCreate) -> dict[str, Any]:
+        try:
+            return experiments.add_evidence(experiment_id, payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/experiments/{experiment_id}/review")
+    def review_experiment(experiment_id: int, payload: ExperimentReviewCreate) -> dict[str, Any]:
+        try:
+            return experiments.review_experiment(experiment_id, payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/experiments/{experiment_id}/pushback")
+    def pushback_experiment(experiment_id: int, payload: ExperimentPushbackCreate) -> dict[str, Any]:
+        try:
+            return experiments.pushback(experiment_id, payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/work/queue")
     def list_work_queue(status: str | None = None, limit: int = 50) -> dict[str, Any]:
         return {"items": work_queue.list_items(status=status, limit=limit), "counts": db.work_queue_counts()}
@@ -217,6 +762,73 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         request = payload or WorkRunRequest()
         return {"results": [result.as_dict() for result in work_queue.run_due(max_items=request.max_items)]}
 
+    @app.get("/approval-requests")
+    def list_approval_requests(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"items": approvals.list_requests(status=status, limit=limit)}
+
+    @app.get("/action-handlers")
+    def list_action_handlers() -> dict[str, Any]:
+        return {"items": approvals.list_handlers()}
+
+    @app.get("/approval-requests/{request_id}")
+    def get_approval_request(request_id: int) -> dict[str, Any]:
+        try:
+            return {"item": approvals.get_request(request_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/approval-requests/{request_id}/approve")
+    def approve_request(request_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalResolveRequest()
+        try:
+            return approvals.approve_request(
+                request_id,
+                resolved_by=request.resolved_by,
+                note=request.note,
+                dispatch=request.dispatch,
+                typed_confirmation=request.typed_confirmation,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/approval-requests/{request_id}/deny")
+    def deny_request(request_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalResolveRequest()
+        try:
+            return approvals.deny_request(request_id, resolved_by=request.resolved_by, note=request.note)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/work/items/{item_id}/approve")
+    def approve_work_item(item_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalResolveRequest()
+        try:
+            return approvals.approve_work_item(
+                item_id,
+                resolved_by=request.resolved_by,
+                note=request.note,
+                dispatch=request.dispatch,
+                typed_confirmation=request.typed_confirmation,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/work/items/{item_id}/dispatch")
+    def dispatch_work_item(item_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalResolveRequest()
+        try:
+            return approvals.dispatch_work_item(item_id, typed_confirmation=request.typed_confirmation)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/work/items/{item_id}/deny")
+    def deny_work_item(item_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalResolveRequest()
+        try:
+            return approvals.deny_work_item(item_id, resolved_by=request.resolved_by, note=request.note)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/founder/mental-models")
     def founder_mental_models() -> dict[str, Any]:
         return {"models": founder.mental_models()}
@@ -233,9 +845,62 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     def founder_dashboard() -> dict[str, Any]:
         return founder.dashboard()
 
+    @app.get("/founder/metrics")
+    def founder_metrics() -> dict[str, Any]:
+        return _founder_metrics(db)
+
     @app.get("/founder/brief")
     def founder_brief() -> dict[str, Any]:
         return founder.brief()
+
+    @app.get("/founder/active-objective")
+    def founder_active_objective() -> dict[str, Any]:
+        return {"item": founder.get_active_objective()}
+
+    @app.get("/founder/active-objectives")
+    def list_founder_active_objectives(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return {"items": founder.list_active_objectives(status=status, limit=limit)}
+
+    @app.post("/founder/active-objectives")
+    def create_founder_active_objective(payload: ActiveObjectiveCreate) -> dict[str, Any]:
+        result = founder.create_active_objective(payload.model_dump())
+        return {"id": result.id, "item": result.record}
+
+    @app.post("/founder/active-objectives/{objective_id}/activate")
+    def activate_founder_active_objective(objective_id: int) -> dict[str, Any]:
+        try:
+            return {"item": founder.activate_objective(objective_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/founder/active-objectives/{objective_id}/status")
+    def update_founder_active_objective_status(objective_id: int, payload: ActiveObjectiveStatusUpdate) -> dict[str, Any]:
+        try:
+            return {"item": founder.update_active_objective_status(objective_id, status=payload.status, note=payload.note)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/founder/decision-recommendations")
+    def list_founder_decision_recommendations(
+        status: str | None = None,
+        objective_id: int | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return {"items": founder.list_decision_recommendations(status=status, objective_id=objective_id, limit=limit)}
+
+    @app.get("/founder/decision-recommendations/{recommendation_id}")
+    def get_founder_decision_recommendation(recommendation_id: int) -> dict[str, Any]:
+        try:
+            return {"item": founder.get_decision_recommendation(recommendation_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/founder/decision-engine/recommend")
+    def founder_decision_engine_recommend(payload: DecisionEngineRequest) -> dict[str, Any]:
+        try:
+            return founder.recommend_decision(payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/founder/strategy")
     def list_founder_strategy(status: str | None = None, limit: int = 50) -> dict[str, Any]:
@@ -469,7 +1134,9 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     @app.post("/memory/semantic-search")
     def semantic_search(payload: SemanticSearchRequest) -> dict[str, Any]:
         try:
-            matches = ingestion.semantic_search(query=payload.query, limit=payload.limit)
+            matches = ingestion.semantic_search(query=payload.query, limit=payload.limit, mode=payload.mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OllamaError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"matches": matches}
@@ -573,6 +1240,106 @@ def _model_is_installed(model: str, installed_names: set[str | None]) -> bool:
     if ":" not in model and f"{model}:latest" in installed_names:
         return True
     return False
+
+
+def _mutation_requires_token(cfg: KernelConfig, request: Request) -> bool:
+    if not cfg.security.local_token or not cfg.security.protect_mutations:
+        return False
+    if request.method.upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return False
+    return True
+
+
+def _security_summary(cfg: KernelConfig) -> dict[str, Any]:
+    return {
+        "local_only": True,
+        "host": cfg.app.host,
+        "port": cfg.app.port,
+        "mutation_token_required": bool(cfg.security.local_token and cfg.security.protect_mutations),
+        "token_header": "X-Zade-Token",
+        "ui_token_storage": "localStorage.zadeKernelToken",
+    }
+
+
+def _founder_metrics(db: KernelDatabase) -> dict[str, Any]:
+    with db.connect() as conn:
+        counts = {
+            "assumptions": _count(conn, "founder_assumptions"),
+            "evidence": _count(conn, "founder_evidence"),
+            "links": _count(conn, "founder_links"),
+            "goals": _count(conn, "founder_goals"),
+            "tasks": _count(conn, "founder_tasks"),
+            "initiatives": _count(conn, "founder_initiatives"),
+            "decisions": _count(conn, "decision_memos"),
+            "active_objectives": _count(conn, "active_objectives"),
+            "decision_recommendations": _count(conn, "decision_recommendations"),
+            "predictions": _count(conn, "founder_predictions"),
+            "experiments": _count(conn, "founder_experiments"),
+            "cadence_reviews": _count(conn, "cadence_reviews"),
+        }
+        calibration = conn.execute(
+            """
+            SELECT COUNT(*) AS scored, AVG(calibration_error) AS mean_error
+            FROM founder_predictions
+            WHERE calibration_error IS NOT NULL
+            """
+        ).fetchone()
+        evidence_strength = conn.execute(
+            "SELECT AVG(strength) AS average_strength FROM founder_evidence"
+        ).fetchone()
+    return {
+        "generated_at": utc_now(),
+        "counts": counts,
+        "queue": db.work_queue_counts(),
+        "assumptions": {
+            "by_status": _count_by(db, "founder_assumptions", "status"),
+        },
+        "evidence": {
+            "by_reliability": _count_by(db, "founder_evidence", "reliability"),
+            "by_type": _count_by(db, "founder_evidence", "evidence_type"),
+            "average_strength": round(float(evidence_strength["average_strength"]), 2)
+            if evidence_strength and evidence_strength["average_strength"] is not None
+            else None,
+        },
+        "predictions": {
+            "by_result": _count_by(db, "founder_predictions", "result"),
+            "scored_count": int(calibration["scored"] or 0) if calibration else 0,
+            "mean_calibration_error": round(float(calibration["mean_error"]), 4)
+            if calibration and calibration["mean_error"] is not None
+            else None,
+        },
+        "initiatives": {
+            "by_status": _count_by(db, "founder_initiatives", "status"),
+            "by_risk": _count_by(db, "founder_initiatives", "current_risk"),
+        },
+        "experiments": {
+            "by_status": _count_by(db, "founder_experiments", "status"),
+        },
+        "integrity": {
+            "by_status": _count_by(db, "integrity_warnings", "status"),
+            "by_severity": _count_by(db, "integrity_warnings", "severity"),
+        },
+        "approvals": {
+            "by_status": _count_by(db, "approval_requests", "status"),
+        },
+        "models": {
+            "calls_by_status": _count_by(db, "model_calls", "status"),
+            "calls_by_operation": _count_by(db, "model_calls", "operation"),
+        },
+    }
+
+
+def _count(db_conn: Any, table: str) -> int:
+    row = db_conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+    return int(row["count"] if row else 0)
+
+
+def _count_by(db: KernelDatabase, table: str, field: str) -> dict[str, int]:
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"SELECT {field} AS key, COUNT(*) AS count FROM {table} GROUP BY {field} ORDER BY count DESC, key ASC"
+        ).fetchall()
+    return {str(row["key"] or "unknown"): int(row["count"]) for row in rows}
 
 
 def _build_prompt(
@@ -772,12 +1539,287 @@ def _inventory_payload(
             "POST /work/scan",
             "POST /work/run-next",
             "POST /work/run-due",
+            "GET /approval-requests",
+            "GET /action-handlers",
+            "GET /approval-requests/{request_id}",
+            "POST /approval-requests/{request_id}/approve",
+            "POST /approval-requests/{request_id}/deny",
+            "POST /work/items/{item_id}/approve",
+            "POST /work/items/{item_id}/deny",
+            "POST /work/items/{item_id}/dispatch",
         ],
         "autonomous_handlers": [
             "brief.daily.prepare",
             "self.inventory.snapshot",
             "ingest.file",
             "goal.review",
+        ],
+        "approved_local_dispatch_handlers": [
+            "local.noop",
+            "local.audit.record",
+            "local.memory.write",
+            "local.file.write",
+            "local.report.write",
+            "local.vault.organize",
+            "local.browser.open",
+        ],
+        "approval_contract": [
+            "Approval records founder authorization without bypassing denied boundaries.",
+            "Approved work items can dispatch only when the action has a registered local handler.",
+            "Dispatch of approved local handlers requires the typed confirmation phrase.",
+            "Unmanaged external actions remain approved-for-record only and are not run by the kernel.",
+        ],
+    }
+    inventory["runtime_layer"] = {
+        "routes": [
+            "GET /runtime/charter-stack",
+            "GET /runtime/context",
+            "POST /runtime/context",
+            "POST /runtime/respond",
+            "POST /runtime/operating-loop",
+            "POST /runtime/evidence-loop",
+            "POST /runtime/experiment-loop",
+            "POST /runtime/cadence",
+            "GET /runtime/events",
+            "GET /models/telemetry",
+            "GET /models/telemetry/calls",
+            "POST /models/benchmark",
+        ],
+        "artifacts": [
+            "runtime_events",
+            "model_calls",
+            "governed_responses",
+            "operating_loop_runs",
+            "charter_stack",
+            "evidence_loop_runs",
+            "experiment_loop_runs",
+            "cadence_runs",
+            "model_benchmarks",
+        ],
+        "operating_rules": [
+            "Assemble identity, relationship, voice, authority, founder, memory, and queue context before responding.",
+            "Use decisive style without false certainty.",
+            "Apply authority policy before implying action.",
+            "Keep voice charter read-only unless explicitly updated through /identity/voice.",
+            "Recommendation-shaped responses get an automatic contrarian pass through the reasoning model.",
+            "Contrarian challenges attach visibly to the response and persist as contrarian reviews; they never silently rewrite the draft.",
+        ],
+        "contrarian_pass": {
+            "trigger": "Deterministic recommendation heuristic on the founder message, or the explicit contrarian request flag.",
+            "model_role": "reasoning",
+            "artifact": "contrarian_reviews (subject_type runtime_event)",
+            "non_blocking": True,
+        },
+    }
+    inventory["voice_layer"] = {
+        "routes": [
+            "GET /voice/status",
+            "POST /voice/transcribe",
+            "POST /voice/speak",
+            "POST /voice/converse",
+        ],
+        "engines": {
+            "stt_configured": cfg.voice.stt_configured,
+            "tts_configured": cfg.voice.tts_configured,
+        },
+        "operating_rules": [
+            "Voice engines are founder-configured local commands run without a shell; spoken text reaches TTS via stdin, never a command line.",
+            "Voice conversations run through the governed runtime: authority, charters, episodic memory, and the contrarian pass all apply.",
+            "When engines are not configured, voice endpoints report unavailable instead of degrading silently.",
+            "Audio and transcripts are stored under the local data dir for the audit trail.",
+        ],
+    }
+    inventory["connector_layer"] = {
+        "routes": [
+            "GET /connectors",
+            "POST /connectors",
+            "GET /connectors/{name}",
+            "POST /connectors/{name}/sync",
+            "GET /connectors/items",
+            "POST /connectors/items/import",
+            "POST /connectors/items/{item_id}/dismiss",
+        ],
+        "artifacts": [
+            "connectors",
+            "connector_items",
+        ],
+        "connector_types": ["imap", "ics"],
+        "operating_rules": [
+            "Connectors are read-only situational awareness: IMAP mailboxes open readonly, calendars parse from exports or feeds; nothing is sent or mutated.",
+            "Sync executes only through the approved dispatch flow with the typed confirmation phrase.",
+            "Credentials live in environment variables referenced by name; connector configs that contain secrets are rejected.",
+            "Synced items land as staged candidates and are imported as graded evidence, never as native certainty.",
+        ],
+    }
+    inventory["eval_layer"] = {
+        "routes": [
+            "GET /evals/cases",
+            "POST /evals/cases",
+            "POST /evals/run",
+            "GET /evals/runs",
+            "GET /evals/runs/{run_id}",
+        ],
+        "artifacts": [
+            "eval_cases",
+            "eval_runs",
+            "eval_results",
+        ],
+        "categories": [
+            "instruction_probe",
+            "critic_contract",
+            "governed_contract",
+            "grounding",
+        ],
+        "operating_rules": [
+            "Eval grading is deterministic; no model judges another model's output.",
+            "Each run records the active model roles so model swaps show up in run history.",
+            "Every run is compared against the previous run: newly failing cases are regressions.",
+            "Run evals after changing models, prompts, or routing before trusting the new configuration.",
+        ],
+    }
+    inventory["surfacing_layer"] = {
+        "routes": [
+            "GET /surface/attention",
+            "POST /surface/brief",
+        ],
+        "artifacts": [
+            "initiated_briefs",
+            "attention_items",
+        ],
+        "signal_sources": [
+            "kill_criteria",
+            "integrity_warnings",
+            "founder_experiments",
+            "thesis_conflicts",
+            "founder_predictions",
+            "decision_memos",
+            "confidence_events",
+            "founder_overrides",
+            "founder_assumptions",
+            "approval_requests",
+            "connector_items",
+        ],
+        "operating_rules": [
+            "Attention detection is deterministic; no model call decides what needs founder attention.",
+            "Initiated briefs are persisted as memories only when something needs attention.",
+            "The cadence loop generates an initiated brief so Zade initiates instead of waiting to be asked.",
+            "Surfacing reads state; it never mutates operating objects or takes action on them.",
+        ],
+    }
+    inventory["conversation_layer"] = {
+        "routes": [
+            "POST /conversations",
+            "GET /conversations",
+            "GET /conversations/{conversation_id}",
+            "GET /conversations/{conversation_id}/turns",
+        ],
+        "artifacts": [
+            "conversations",
+            "conversation_turns",
+        ],
+        "active_conversations": len(db.list_conversations(status="active", limit=1000)),
+        "operating_rules": [
+            "Governed responses can carry a conversation_id to persist and recall thread continuity.",
+            "Recent turns are folded into the governed prompt; older turns roll into a bounded summary.",
+            "Conversation memory never overrides authority, voice charter, or evidence honesty.",
+        ],
+    }
+    inventory["skill_layer"] = {
+        "routes": [
+            "GET /skills/summary",
+            "GET /skills",
+            "POST /skills/scan",
+            "POST /skills/route",
+            "GET /skills/invocations",
+            "GET /skills/{name}",
+            "POST /skills/{name}/enable",
+            "POST /skills/{name}/disable",
+        ],
+        "artifacts": [
+            "skill_registry",
+            "skill_references",
+            "skill_invocations",
+            "skill_fts",
+        ],
+        "summary": db.skill_summary(),
+        "operating_rules": [
+            "Skills are retrieved as bounded procedural guidance, not as authority grants.",
+            "Only enabled skills are eligible for runtime routing.",
+            "External effects implied by a skill remain governed by the approval and action-handler contracts.",
+            "Every runtime skill use is logged to skill_invocations.",
+            "Routing blends keyword scoring with local embedding similarity; keyword routing keeps working when embeddings are unavailable.",
+        ],
+    }
+    inventory["ops_layer"] = {
+        "routes": [
+            "GET /ops/health-check",
+            "GET /ops/security",
+            "GET /ops/supervision",
+            "POST /ops/backup",
+            "GET /ops/backups",
+            "POST /ops/backups/prune",
+        ],
+        "artifacts": [
+            "database_backups",
+            "health_checks",
+            "startup_smoke_logs",
+            "backup_retention_audits",
+            "supervision_log",
+        ],
+        "operating_rules": [
+            "Ops endpoints inspect local posture or create local backups only.",
+            "Health checks distinguish kernel/UI/Ollama readiness from cadence freshness.",
+            "Restores remain an operator script action, not an autonomous API action.",
+            "The supervisor script owns the supervision log and restarts the kernel; the kernel only reads that history.",
+        ],
+    }
+    inventory["teaching_layer"] = {
+        "routes": [
+            "POST /teach/deepthought/scan",
+            "GET /teach/deepthought/candidates",
+            "POST /teach/deepthought/import",
+            "POST /teach/deepthought/link",
+            "POST /teach/deepthought/auto-link",
+            "GET /evidence/gaps",
+        ],
+        "artifacts": [
+            "teaching_candidates",
+            "founder_evidence",
+            "documents",
+            "founder_links",
+            "teaching_auto_links",
+        ],
+        "operating_rules": [
+            "Import Deep Thought material as sourced evidence, not native Zade certainty.",
+            "Preserve source_system, source_uri, reliability, and entity-boundary metadata.",
+            "Link evidence to assumptions, goals, bets, and predictions before treating it as operational support.",
+        ],
+    }
+    inventory["experiment_layer"] = {
+        "routes": [
+            "GET /experiments",
+            "POST /experiments",
+            "GET /experiments/dashboard",
+            "GET /experiments/reviews",
+            "GET /experiments/{experiment_id}",
+            "POST /experiments/{experiment_id}/evidence",
+            "POST /experiments/{experiment_id}/review",
+            "POST /experiments/{experiment_id}/pushback",
+            "POST /runtime/experiment-loop",
+            "POST /runtime/cadence",
+        ],
+        "artifacts": [
+            "founder_experiments",
+            "experiment_reviews",
+            "founder_evidence",
+            "founder_links",
+            "contrarian_reviews",
+        ],
+        "operating_rules": [
+            "Every experiment tests a linked assumption, bet, goal, or prediction.",
+            "Experiment evidence remains in the shared founder_evidence ledger.",
+            "Reviews must force one of: continue, revise, kill, or escalate.",
+            "Pushback logs disagreement without blocking execution.",
         ],
     }
     inventory["founder_operating_layer"] = {
@@ -786,7 +1828,16 @@ def _inventory_payload(
             "GET /founder/thesis",
             "POST /founder/thesis",
             "GET /founder/dashboard",
+            "GET /founder/metrics",
             "GET /founder/brief",
+            "GET /founder/active-objective",
+            "GET /founder/active-objectives",
+            "POST /founder/active-objectives",
+            "POST /founder/active-objectives/{objective_id}/activate",
+            "POST /founder/active-objectives/{objective_id}/status",
+            "GET /founder/decision-recommendations",
+            "GET /founder/decision-recommendations/{recommendation_id}",
+            "POST /founder/decision-engine/recommend",
             "GET /founder/strategy",
             "POST /founder/strategy",
             "GET /founder/initiatives",
@@ -826,6 +1877,9 @@ def _inventory_payload(
             "GET /founder/cadence-reviews",
             "POST /founder/cadence-reviews",
             "POST /founder/cadence-reviews/generate/{review_type}",
+            "GET /experiments",
+            "POST /experiments",
+            "POST /runtime/experiment-loop",
         ],
         "artifacts": [
             "company_thesis",
@@ -837,7 +1891,11 @@ def _inventory_payload(
             "reflections",
             "mental_models",
             "dashboard",
+            "metrics",
             "brief",
+            "active_objectives",
+            "decision_recommendations",
+            "decision_engine_contracts",
             "assumptions",
             "evidence",
             "object_links",
@@ -851,6 +1909,13 @@ def _inventory_payload(
             "missed_call_reviews",
             "cadence_reviews",
             "integrity_warnings",
+            "experiments",
+            "experiment_reviews",
+        ],
+        "operating_rules": [
+            "One current active objective anchors Zade's default strategic focus.",
+            "Decision-engine recommendations must name rationale, confidence, required evidence, downside risk, reversal condition, and next action.",
+            "Recommendations may create local decision memos and founder tasks, but do not execute external actions.",
         ],
     }
     return inventory

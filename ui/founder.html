@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Founder Ops</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506;
+      --panel: #0c0c0e;
+      --line: rgba(255,255,255,0.08);
+      --text: #eeeae5;
+      --muted: #8a8a91;
+      --accent: #b0473f;
+      --accent-2: #d07d74;
+      --ok: #5a8a72;
+      --warn: #c69b5f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      padding: 22px 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.78);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    h2 { margin: 0 0 12px; font-size: 15px; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { padding: 24px 28px 36px; display: grid; gap: 16px; }
+    .grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 16px; align-items: start; }
+    .panel {
+      background: rgba(12,12,14,0.92);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .metric-row { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; }
+    .metric { padding: 14px; background: rgba(255,255,255,0.025); }
+    .metric strong { display: block; font-size: 22px; line-height: 1; margin-bottom: 5px; }
+    .metric span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea {
+      width: 100%;
+      background: #09090b;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 9px 10px;
+      outline: none;
+      font: inherit;
+    }
+    input:focus, textarea:focus { border-color: rgba(208,125,116,0.65); }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5);
+      color: var(--text);
+      background: rgba(176,71,63,0.12);
+      border-radius: 4px;
+      padding: 9px 12px;
+      cursor: pointer;
+      text-decoration: none;
+      font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .objective-title { font-size: 18px; font-weight: 650; margin-bottom: 6px; }
+    .pill {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: var(--muted);
+      font-size: 11px;
+      margin: 0 6px 6px 0;
+    }
+    .pill.current { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .list { display: grid; gap: 10px; }
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 12px;
+      background: rgba(255,255,255,0.02);
+    }
+    .item strong { display: block; margin-bottom: 5px; }
+    .muted { color: var(--muted); }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow: auto;
+      background: #070708;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 12px;
+      color: #d8d3cb;
+    }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .grid, .row, .metric-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Founder Ops</h1>
+      <div class="sub">Active objective and decision engine. Local records only. Authority still governs action.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/skills.html">Skills</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="metric-row" id="metrics"></section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Current Objective</h2>
+        <div id="activeObjective"></div>
+      </div>
+      <div class="panel">
+        <h2>Create Objective</h2>
+        <div class="form">
+          <label>Objective <textarea id="objective" rows="2" placeholder="What are we trying to win right now?"></textarea></label>
+          <label>Desired outcome <textarea id="desiredOutcome" rows="2"></textarea></label>
+          <div class="row">
+            <label>Metric <input id="metric" placeholder="activation, calls booked, revenue"></label>
+            <label>Target <input id="target" placeholder="5 calls, 20%, $1k"></label>
+          </div>
+          <label>Next action <input id="nextAction" placeholder="The next thing Zade should push"></label>
+          <label>Risks <input id="risks" placeholder="Comma-separated"></label>
+          <button id="createObjectiveBtn">Create and Activate</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Decision Engine</h2>
+        <div class="form">
+          <label>Problem <textarea id="problem" rows="3" placeholder="What decision does Zade need to make?"></textarea></label>
+          <label>Context <textarea id="context" rows="3"></textarea></label>
+          <label>Options <textarea id="options" rows="3" placeholder="One option per line. Prefix the recommended one with * if you already know."></textarea></label>
+          <div class="actions">
+            <button id="recommendBtn">Recommend</button>
+            <button class="secondary" id="recommendNoTaskBtn">Recommend Without Task</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Latest Recommendation</h2>
+        <pre id="recommendationOut">No recommendation yet.</pre>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Objectives</h2>
+        <div class="list" id="objectives"></div>
+      </div>
+      <div class="panel">
+        <h2>Recommendations</h2>
+        <div class="list" id="recommendations"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    let state = { dashboard: {}, metrics: {}, active: {}, objectives: [], recommendations: [] };
+
+    async function load() {
+      const [dashboard, metrics, active, objectives, recommendations] = await Promise.all([
+        api('/founder/dashboard'),
+        api('/founder/metrics'),
+        api('/founder/active-objective'),
+        api('/founder/active-objectives?limit=25'),
+        api('/founder/decision-recommendations?limit=25')
+      ]);
+      state = { dashboard, metrics, active: active.item || {}, objectives: objectives.items || [], recommendations: recommendations.items || [] };
+      render();
+    }
+
+    function render() {
+      renderMetrics();
+      renderActive();
+      byId('objectives').innerHTML = state.objectives.map(renderObjective).join('') || '<div class="muted">No objectives yet.</div>';
+      byId('recommendations').innerHTML = state.recommendations.map(renderRecommendation).join('') || '<div class="muted">No recommendations yet.</div>';
+      document.querySelectorAll('[data-activate]').forEach((el) => el.addEventListener('click', () => activateObjective(el.dataset.activate)));
+    }
+
+    function renderMetrics() {
+      const counts = state.metrics.counts || {};
+      byId('metrics').innerHTML = [
+        metric(counts.active_objectives || 0, 'Objectives'),
+        metric(counts.decision_recommendations || 0, 'Recommendations'),
+        metric(counts.decisions || 0, 'Decision memos'),
+        metric(state.dashboard.company_health || 'unknown', 'Health')
+      ].join('');
+    }
+
+    function metric(value, label) {
+      return '<div class="metric"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+
+    function renderActive() {
+      const item = state.active;
+      if (!item.id) {
+        byId('activeObjective').innerHTML = '<div class="muted">No active objective. Create one.</div>';
+        return;
+      }
+      byId('activeObjective').innerHTML = `
+        <div class="objective-title">${esc(item.objective)}</div>
+        <span class="pill current">current</span><span class="pill">${esc(item.status)}</span><span class="pill">confidence ${esc(item.confidence)}</span>
+        <p class="muted">${esc(item.desired_outcome || item.why_it_matters || '')}</p>
+        <div><strong>Metric</strong><div class="muted">${esc(item.metric || 'missing')} / ${esc(item.target || 'missing')}</div></div>
+        <div style="margin-top:10px;"><strong>Next action</strong><div>${esc(item.next_action || 'Define the next action.')}</div></div>
+      `;
+    }
+
+    function renderObjective(item) {
+      return `
+        <div class="item">
+          <strong>${esc(item.objective)}</strong>
+          <div class="muted">${esc(item.metric || 'no metric')} / ${esc(item.target || 'no target')}</div>
+          <div style="margin-top:8px;">
+            <span class="pill ${item.is_current ? 'current' : ''}">${item.is_current ? 'current' : item.status}</span>
+            <span class="pill">priority ${esc(item.priority)}</span>
+            <span class="pill">confidence ${esc(item.confidence)}</span>
+          </div>
+          ${item.is_current ? '' : '<button class="secondary" data-activate="' + esc(item.id) + '">Activate</button>'}
+        </div>
+      `;
+    }
+
+    function renderRecommendation(item) {
+      return `
+        <div class="item">
+          <strong>${esc(item.recommendation)}</strong>
+          <div class="muted">${esc(item.problem)}</div>
+          <div style="margin-top:8px;">
+            <span class="pill">confidence ${esc(item.confidence)}</span>
+            <span class="pill">${esc(item.status)}</span>
+          </div>
+          <div style="margin-top:8px;">${esc(item.next_action || '')}</div>
+        </div>
+      `;
+    }
+
+    function splitCsv(value) {
+      return value.split(',').map((item) => item.trim()).filter(Boolean);
+    }
+
+    function parseOptions(value) {
+      return value.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+        const recommended = line.startsWith('*');
+        const name = recommended ? line.slice(1).trim() : line;
+        return { name, recommended };
+      });
+    }
+
+    async function createObjective() {
+      const body = {
+        objective: byId('objective').value.trim(),
+        desired_outcome: byId('desiredOutcome').value.trim(),
+        metric: byId('metric').value.trim(),
+        target: byId('target').value.trim(),
+        next_action: byId('nextAction').value.trim(),
+        risks: splitCsv(byId('risks').value),
+        activate: true
+      };
+      if (!body.objective) return;
+      await api('/founder/active-objectives', { method: 'POST', body: JSON.stringify(body) });
+      ['objective', 'desiredOutcome', 'metric', 'target', 'nextAction', 'risks'].forEach((id) => byId(id).value = '');
+      await load();
+    }
+
+    async function recommend(createTask) {
+      const body = {
+        problem: byId('problem').value.trim(),
+        context: byId('context').value.trim(),
+        options: parseOptions(byId('options').value),
+        create_next_task: createTask
+      };
+      if (!body.problem) return;
+      const result = await api('/founder/decision-engine/recommend', { method: 'POST', body: JSON.stringify(body) });
+      byId('recommendationOut').textContent = JSON.stringify(result.operating_contract, null, 2);
+      await load();
+    }
+
+    async function activateObjective(id) {
+      await api('/founder/active-objectives/' + encodeURIComponent(id) + '/activate', { method: 'POST', body: '{}' });
+      await load();
+    }
+
+    byId('refreshBtn').addEventListener('click', load);
+    byId('createObjectiveBtn').addEventListener('click', createObjective);
+    byId('recommendBtn').addEventListener('click', () => recommend(true));
+    byId('recommendNoTaskBtn').addEventListener('click', () => recommend(false));
+    load().catch((err) => { byId('activeObjective').textContent = 'Load failed: ' + err.message; });
+  </script>
+</body>
+</html>

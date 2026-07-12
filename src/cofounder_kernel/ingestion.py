@@ -30,6 +30,58 @@ class Embedder(Protocol):
         ...
 
 
+RETRIEVAL_MODES = {"hybrid", "vector", "keyword"}
+RRF_K = 60
+
+
+def _rrf(rank: int) -> float:
+    return round(1.0 / (RRF_K + rank), 6)
+
+
+def _fuse_rankings(
+    vector_hits: list[dict],
+    keyword_hits: list[dict],
+    *,
+    limit: int,
+    degraded: bool,
+) -> list[dict]:
+    fused: dict[int, dict] = {}
+    for rank, hit in enumerate(vector_hits, start=1):
+        chunk_id = int(hit["chunk_id"])
+        fused[chunk_id] = hit | {
+            "retrieval": {
+                "mode": "hybrid",
+                "vector_rank": rank,
+                "keyword_rank": None,
+                "rrf_score": _rrf(rank),
+                "degraded_to_keyword": degraded,
+            }
+        }
+    for hit in keyword_hits:
+        chunk_id = int(hit["chunk_id"])
+        keyword_rank = int(hit["keyword_rank"])
+        if chunk_id in fused:
+            retrieval = fused[chunk_id]["retrieval"]
+            retrieval["keyword_rank"] = keyword_rank
+            retrieval["rrf_score"] = round(retrieval["rrf_score"] + _rrf(keyword_rank), 6)
+        else:
+            fused[chunk_id] = hit | {
+                "score": 0.0,
+                "retrieval": {
+                    "mode": "hybrid",
+                    "vector_rank": None,
+                    "keyword_rank": keyword_rank,
+                    "rrf_score": _rrf(keyword_rank),
+                    "degraded_to_keyword": degraded,
+                },
+            }
+    ranked = sorted(
+        fused.values(),
+        key=lambda item: (-item["retrieval"]["rrf_score"], -float(item.get("score", 0.0)), int(item["chunk_id"])),
+    )
+    return ranked[:limit]
+
+
 @dataclass(frozen=True)
 class TextChunk:
     text: str
@@ -202,16 +254,60 @@ class IngestionService:
             )
             return {"job_id": job_id, "status": "error", "files_count": files_count, "documents_count": 0, "chunks_count": 0, "errors": [{"error": str(exc)}]}
 
-    def semantic_search(self, *, query: str, limit: int = 8) -> list[dict]:
-        vector = self.embedder.embed(text=query, model=self.config.ollama.embedding_model)
-        matches = self.db.semantic_search_chunks(vector, limit=limit)
+    def semantic_search(self, *, query: str, limit: int = 8, mode: str = "hybrid") -> list[dict]:
+        """Retrieve document chunks by hybrid keyword+vector fusion.
+
+        Modes: "hybrid" (default) fuses FTS BM25 and embedding cosine rankings
+        with reciprocal rank fusion; "vector" and "keyword" run a single
+        ranking. Hybrid degrades to keyword-only when the embedder is
+        unavailable instead of failing the request.
+        """
+        mode = (mode or "hybrid").strip().lower()
+        if mode not in RETRIEVAL_MODES:
+            raise ValueError(f"Retrieval mode must be one of: {', '.join(sorted(RETRIEVAL_MODES))}")
+        pool = max(limit, min(limit * 3, 24))
+        vector_hits: list[dict] = []
+        vector_error = ""
+        if mode in {"hybrid", "vector"}:
+            try:
+                vector = self.embedder.embed(text=query, model=self.config.ollama.embedding_model)
+                vector_hits = self.db.semantic_search_chunks(vector, limit=pool)
+            except Exception as exc:
+                if mode == "vector":
+                    raise
+                vector_error = str(exc)
+        keyword_hits = self.db.keyword_search_chunks(query, limit=pool) if mode in {"hybrid", "keyword"} else []
+
+        if mode == "vector":
+            matches = [
+                hit | {"retrieval": {"mode": "vector", "vector_rank": rank, "rrf_score": _rrf(rank)}}
+                for rank, hit in enumerate(vector_hits[:limit], start=1)
+            ]
+        elif mode == "keyword":
+            matches = [
+                hit
+                | {
+                    "score": 0.0,
+                    "retrieval": {"mode": "keyword", "keyword_rank": hit["keyword_rank"], "rrf_score": _rrf(hit["keyword_rank"])},
+                }
+                for hit in keyword_hits[:limit]
+            ]
+        else:
+            matches = _fuse_rankings(vector_hits, keyword_hits, limit=limit, degraded=bool(vector_error))
         self.db.audit(
             actor="ingestion",
             action="memory.semantic_search",
             target="document_chunks",
             permission_tier="L0_READ",
-            status="ok",
-            details={"query": query, "matches": len(matches)},
+            status="ok" if not vector_error else "degraded",
+            details={
+                "query": query,
+                "mode": mode,
+                "matches": len(matches),
+                "vector_candidates": len(vector_hits),
+                "keyword_candidates": len(keyword_hits),
+                "vector_error": vector_error,
+            },
         )
         return matches
 

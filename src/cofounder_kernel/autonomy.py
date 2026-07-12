@@ -113,13 +113,36 @@ class WorkQueueService:
                 result={},
                 error="",
             )
+            if authority.decision == AuthorityDecision.APPROVAL_REQUIRED:
+                approval, approval_created = self.db.ensure_approval_request(
+                    source_type="work_item",
+                    source_id=item_id,
+                    title=title,
+                    detail=detail,
+                    action=action,
+                    target=target,
+                    permission_tier=permission_tier,
+                    authority_decision=authority.decision.value,
+                    authority=authority.as_dict(),
+                    requested_by=source,
+                    metadata={"work_item_unique_key": unique_key, **(metadata or {})},
+                )
+            else:
+                approval = None
+                approval_created = False
             self.db.audit(
                 actor="work.queue",
                 action="work.enqueue",
                 target=action,
                 permission_tier=permission_tier,
                 status=status,
-                details={"item_id": item_id, "authority": authority.as_dict(), "unique_key": unique_key},
+                details={
+                    "item_id": item_id,
+                    "authority": authority.as_dict(),
+                    "unique_key": unique_key,
+                    "approval_request_id": approval.id if approval else None,
+                    "approval_request_created": approval_created,
+                },
             )
         return QueueResult(
             item_id=item_id,

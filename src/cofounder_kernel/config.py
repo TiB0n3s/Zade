@@ -10,6 +10,8 @@ from typing import Literal
 DEFAULT_HOT_ROOT = Path(r"C:\AI Brain")
 DEFAULT_COLD_ROOT = Path(r"D:\AI Brain-Cold")
 DEFAULT_DATA_DIR = DEFAULT_HOT_ROOT / "memory-hot" / "cofounder-kernel"
+DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SKILLS_DIR = DEFAULT_PROJECT_ROOT / ".agents" / "skills"
 
 
 @dataclass(frozen=True)
@@ -82,11 +84,50 @@ ModelRole = Literal["general", "reasoning", "coding", "embedding"]
 
 
 @dataclass(frozen=True)
+class SecurityConfig:
+    local_token: str = ""
+    protect_mutations: bool = True
+
+
+@dataclass(frozen=True)
+class SkillConfig:
+    source_dir: Path = DEFAULT_SKILLS_DIR
+    lock_file: Path = DEFAULT_PROJECT_ROOT / "skills-lock.json"
+    enable_defaults: bool = True
+    max_prompt_chars: int = 1800
+
+
+@dataclass(frozen=True)
+class VoiceConfig:
+    """Founder-configured local speech engines (e.g. whisper.cpp and piper).
+
+    Commands are argv arrays run without a shell. STT commands may use the
+    placeholders {audio}, {transcript}, and {transcript_base}; TTS commands may
+    use {output} and receive the text to speak on stdin.
+    """
+
+    stt_command: tuple[str, ...] = ()
+    tts_command: tuple[str, ...] = ()
+    timeout_seconds: float = 120.0
+
+    @property
+    def stt_configured(self) -> bool:
+        return bool(self.stt_command)
+
+    @property
+    def tts_configured(self) -> bool:
+        return bool(self.tts_command)
+
+
+@dataclass(frozen=True)
 class KernelConfig:
     app: AppConfig = AppConfig()
     identity: IdentityConfig = IdentityConfig()
     paths: PathConfig = PathConfig()
     ollama: OllamaConfig = OllamaConfig()
+    security: SecurityConfig = SecurityConfig()
+    skills: SkillConfig = SkillConfig()
+    voice: VoiceConfig = VoiceConfig()
 
 
 def _read_toml(path: Path) -> dict:
@@ -108,6 +149,8 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
     identity_raw = raw.get("identity", {})
     paths_raw = raw.get("paths", {})
     ollama_raw = raw.get("ollama", {})
+    security_raw = raw.get("security", {})
+    skills_raw = raw.get("skills", {})
 
     app = AppConfig(
         host=os.getenv("COFOUNDER_HOST", app_raw.get("host", "127.0.0.1")),
@@ -134,7 +177,23 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         think=_bool(os.getenv("COFOUNDER_THINK", ollama_raw.get("think", False))),
         temperature=float(os.getenv("COFOUNDER_TEMPERATURE", ollama_raw.get("temperature", 0.2))),
     )
-    return KernelConfig(app=app, identity=identity, paths=paths, ollama=ollama)
+    security = SecurityConfig(
+        local_token=str(os.getenv("COFOUNDER_LOCAL_TOKEN", security_raw.get("local_token", "")) or ""),
+        protect_mutations=_bool(os.getenv("COFOUNDER_PROTECT_MUTATIONS", security_raw.get("protect_mutations", True))),
+    )
+    skills = SkillConfig(
+        source_dir=_path(os.getenv("COFOUNDER_SKILLS_DIR", skills_raw.get("source_dir")), DEFAULT_SKILLS_DIR),
+        lock_file=_path(os.getenv("COFOUNDER_SKILLS_LOCK", skills_raw.get("lock_file")), DEFAULT_PROJECT_ROOT / "skills-lock.json"),
+        enable_defaults=_bool(os.getenv("COFOUNDER_SKILLS_ENABLE_DEFAULTS", skills_raw.get("enable_defaults", True))),
+        max_prompt_chars=int(os.getenv("COFOUNDER_SKILLS_MAX_PROMPT_CHARS", skills_raw.get("max_prompt_chars", 1800))),
+    )
+    voice_raw = raw.get("voice", {})
+    voice = VoiceConfig(
+        stt_command=_command(voice_raw.get("stt_command")),
+        tts_command=_command(voice_raw.get("tts_command")),
+        timeout_seconds=float(voice_raw.get("timeout_seconds", 120.0)),
+    )
+    return KernelConfig(app=app, identity=identity, paths=paths, ollama=ollama, security=security, skills=skills, voice=voice)
 
 
 def ensure_local_paths(config: KernelConfig) -> None:
@@ -150,3 +209,11 @@ def _bool(value: object) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _command(value: object) -> tuple[str, ...]:
+    if not value:
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item) for item in value if str(item).strip())
+    raise ValueError("Voice commands must be TOML arrays of argv strings (no shell parsing).")

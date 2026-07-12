@@ -101,3 +101,88 @@ def test_work_item_status_update_and_counts(tmp_path: Path) -> None:
     assert len(items) == 1
     assert items[0].result["memory_id"] == 7
     assert counts["done"] == 1
+
+
+def test_approval_request_lifecycle(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    item_id, _created = db.enqueue_work_item(
+        kind="external",
+        title="Send founder email",
+        detail="Outbound email needs approval.",
+        action="email.send",
+        target="founder@example.com",
+        permission_tier="L3_EXTERNAL_ACTION",
+    )
+
+    request, created = db.ensure_approval_request(
+        source_type="work_item",
+        source_id=item_id,
+        title="Send founder email",
+        detail="Outbound email needs approval.",
+        action="email.send",
+        target="founder@example.com",
+        permission_tier="L3_EXTERNAL_ACTION",
+        authority_decision="approval_required",
+        authority={"decision": "approval_required"},
+        requested_by="test",
+    )
+    duplicate, duplicate_created = db.ensure_approval_request(
+        source_type="work_item",
+        source_id=item_id,
+        title="Send founder email",
+        detail="Outbound email needs approval.",
+        action="email.send",
+        target="founder@example.com",
+        permission_tier="L3_EXTERNAL_ACTION",
+        authority_decision="approval_required",
+        authority={"decision": "approval_required"},
+        requested_by="test",
+    )
+    resolved = db.resolve_approval_request(request.id, status="approved", resolved_by="founder", resolution_note="ok")
+
+    assert created is True
+    assert duplicate_created is False
+    assert duplicate.id == request.id
+    assert request.source_id == item_id
+    assert db.get_pending_approval_for_source(source_type="work_item", source_id=item_id) is None
+    assert resolved.status == "approved"
+    assert resolved.resolved_by == "founder"
+
+
+def test_model_call_telemetry_records_and_summarizes(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+
+    call_id = db.record_model_call(
+        operation="runtime.respond",
+        model="qwen3:14b",
+        role="general",
+        status="ok",
+        latency_ms=1234,
+        prompt_chars=500,
+        response_chars=50,
+        think=False,
+        metadata={"event_id": 7},
+    )
+    db.record_model_call(
+        operation="runtime.respond",
+        model="deepseek-r1:14b",
+        role="reasoning",
+        status="error",
+        latency_ms=25,
+        prompt_chars=100,
+        error="timeout",
+    )
+
+    calls = db.list_model_calls(limit=10)
+    errors = db.list_model_calls(status="error", limit=10)
+    summary = db.model_call_summary(limit=10)
+
+    assert call_id > 0
+    assert len(calls) == 2
+    assert calls[-1].model == "qwen3:14b"
+    assert errors[0].error == "timeout"
+    assert summary["by_status"] == {"error": 1, "ok": 1}
+    assert summary["by_role"]["general"] == 1
+    assert summary["avg_latency_ms"] == 629

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Any
 from .config import KernelConfig
 
 
-POLICY_VERSION = "2026-07-11.local-first.v1"
+POLICY_VERSION = "2026-07-12.local-first.v2"
 
 
 class AuthorityDecision(StrEnum):
@@ -68,21 +69,73 @@ class AuthorityPolicy:
         )
 
     def evaluate(self, request: AuthorityRequest) -> AuthorityResult:
-        tier = request.permission_tier.upper()
+        """Decide from the action taxonomy and target — never from metadata.
+
+        Order: deny taxonomy on the action, then known-local allow (L0/L1),
+        then deny phrases on the target, then external approval taxonomy, then
+        tier defaults. The action string is authoritative; request metadata is
+        payload and must not flip a decision.
+        """
+        action = request.action.strip().lower()
+        target = request.target.strip().lower()
+        tier = request.permission_tier.strip().upper()
+
+        deny_token = _first_token_match(action, DENY_ACTION_TOKENS)
+        if deny_token:
+            return AuthorityResult(
+                decision=AuthorityDecision.DENY,
+                reason=f"Blocked by hard safety boundary: action names a denied capability ({deny_token}).",
+                matched_rule="deny.action_token",
+            )
+        deny_phrase = _first_keyword_match(action, DENY_PHRASES)
+        if deny_phrase:
+            return AuthorityResult(
+                decision=AuthorityDecision.DENY,
+                reason=f"Blocked by hard safety boundary: {deny_phrase}",
+                matched_rule="deny.action_phrase",
+            )
+
+        if tier in {"L0_READ", "L1_MEMORY_WRITE"} and _is_local_memory_action(action):
+            return AuthorityResult(
+                decision=AuthorityDecision.ALLOW,
+                reason="Known local read/memory/ingestion action is autonomous.",
+                matched_rule="local_action.autonomous",
+            )
+
+        deny_target = _first_keyword_match(target, DENY_PHRASES)
+        if deny_target:
+            return AuthorityResult(
+                decision=AuthorityDecision.DENY,
+                reason=f"Blocked by hard safety boundary: {deny_target}",
+                matched_rule="deny.target_phrase",
+            )
+
+        approval_token = _first_token_match(action, APPROVAL_ACTION_TOKENS)
+        if approval_token:
+            return AuthorityResult(
+                decision=AuthorityDecision.APPROVAL_REQUIRED,
+                reason=f"Action touches files, systems, or external services: {approval_token}",
+                requires_typed_phrase=True,
+                typed_phrase=self.typed_confirmation_phrase,
+                matched_rule="approval.action_token",
+            )
+        approval_phrase = _first_keyword_match(f"{action} {target}", APPROVAL_PHRASES)
+        if approval_phrase:
+            return AuthorityResult(
+                decision=AuthorityDecision.APPROVAL_REQUIRED,
+                reason=f"Action touches files, systems, or external services: {approval_phrase}",
+                requires_typed_phrase=True,
+                typed_phrase=self.typed_confirmation_phrase,
+                matched_rule="approval.phrase",
+            )
+
         if tier == "L0_READ":
             return AuthorityResult(
                 decision=AuthorityDecision.ALLOW,
-                reason="Local read/search/generation actions are autonomous.",
-                matched_rule="tier.L0_READ.autonomous",
+                reason="Unrecognized action presumed local read; execution still requires a registered handler.",
+                matched_rule="tier.L0_READ.default",
             )
-
         if tier == "L1_MEMORY_WRITE":
-            if _is_local_memory_action(request.action):
-                return AuthorityResult(
-                    decision=AuthorityDecision.ALLOW,
-                    reason="Local memory and local ingestion writes are autonomous.",
-                    matched_rule="tier.L1_MEMORY_WRITE.local_memory",
-                )
             return AuthorityResult(
                 decision=AuthorityDecision.APPROVAL_REQUIRED,
                 reason="Memory write tier is not a known local-memory action.",
@@ -90,26 +143,6 @@ class AuthorityPolicy:
                 typed_phrase=self.typed_confirmation_phrase,
                 matched_rule="tier.L1_MEMORY_WRITE.unknown",
             )
-
-        normalized = _search_text(request)
-        deny_match = _first_keyword_match(normalized, DENY_KEYWORDS)
-        if deny_match:
-            return AuthorityResult(
-                decision=AuthorityDecision.DENY,
-                reason=f"Blocked by hard safety boundary: {deny_match}",
-                matched_rule="deny.keyword",
-            )
-
-        approval_match = _first_keyword_match(normalized, APPROVAL_KEYWORDS)
-        if approval_match:
-            return AuthorityResult(
-                decision=AuthorityDecision.APPROVAL_REQUIRED,
-                reason=f"Action changes files, systems, or external services: {approval_match}",
-                requires_typed_phrase=True,
-                typed_phrase=self.typed_confirmation_phrase,
-                matched_rule="approval.keyword",
-            )
-
         if tier == "L2_FILE_WRITE":
             return AuthorityResult(
                 decision=AuthorityDecision.APPROVAL_REQUIRED,
@@ -118,7 +151,6 @@ class AuthorityPolicy:
                 typed_phrase=self.typed_confirmation_phrase,
                 matched_rule="tier.L2_FILE_WRITE.default",
             )
-
         if tier == "L3_EXTERNAL_ACTION":
             return AuthorityResult(
                 decision=AuthorityDecision.APPROVAL_REQUIRED,
@@ -127,7 +159,6 @@ class AuthorityPolicy:
                 typed_phrase=self.typed_confirmation_phrase,
                 matched_rule="tier.L3_EXTERNAL_ACTION.default",
             )
-
         return AuthorityResult(
             decision=AuthorityDecision.APPROVAL_REQUIRED,
             reason=f"Unknown permission tier: {request.permission_tier}",
@@ -144,6 +175,22 @@ class AuthorityPolicy:
                 "hot_root": str(self.hot_root),
                 "cold_root": str(self.cold_root),
                 "data_dir": str(self.data_dir),
+            },
+            "evaluation": {
+                "order": [
+                    "deny taxonomy on the action (tokens and phrases)",
+                    "known-local action allow for L0/L1 tiers",
+                    "deny phrases on the target",
+                    "external approval taxonomy on the action",
+                    "approval phrases on action and target",
+                    "tier defaults",
+                ],
+                "metadata_scanned": False,
+                "notes": (
+                    "The action string is authoritative. Request metadata never changes a decision, "
+                    "so payload content cannot trip or evade the safety boundary. "
+                    "Deny screening runs before any tier-based allow, so a claimed tier cannot bypass it."
+                ),
             },
             "autonomous": [
                 "Local model chat and reasoning through Ollama",
@@ -207,30 +254,41 @@ def build_self_inventory(
     }
 
 
+LOCAL_ACTION_PREFIXES = (
+    "memory.",
+    "ingest.",
+    "work.",
+    "brief.",
+    "goal.",
+    "self.",
+    "founder.",
+    "experiments.",
+    "teach.",
+    "evidence.",
+    "runtime.",
+    "skills.",
+    "conversation.",
+    "surface.",
+    "evals.",
+    "tool.memory.",
+    "tool.audit.",
+)
+
+
 def _is_local_memory_action(action: str) -> bool:
     normalized = action.lower()
-    return (
-        normalized.startswith("memory.")
-        or normalized.startswith("ingest.")
-        or normalized.startswith("work.")
-        or normalized.startswith("brief.")
-        or normalized.startswith("goal.")
-        or normalized.startswith("self.")
-        or normalized.startswith("founder.")
-        or normalized.startswith("tool.memory.")
-        or normalized.startswith("tool.audit.")
-    )
+    return normalized.startswith(LOCAL_ACTION_PREFIXES)
 
 
-def _search_text(request: AuthorityRequest) -> str:
-    return " ".join(
-        [
-            request.action,
-            request.permission_tier,
-            request.target,
-            str(request.metadata),
-        ]
-    ).lower()
+def _action_tokens(action: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", action)
+
+
+def _first_token_match(action: str, tokens: frozenset[str]) -> str:
+    for token in _action_tokens(action):
+        if token in tokens:
+            return token
+    return ""
 
 
 def _first_keyword_match(text: str, keywords: tuple[str, ...]) -> str:
@@ -240,8 +298,40 @@ def _first_keyword_match(text: str, keywords: tuple[str, ...]) -> str:
     return ""
 
 
-DENY_KEYWORDS = (
-    "broker",
+# Denied capabilities named in the action itself. Tokenized matching (split on
+# . _ -) so file paths or notes mentioning these words elsewhere cannot trip
+# the boundary, while any action *named* for a denied capability always does.
+DENY_ACTION_TOKENS = frozenset(
+    {
+        "broker",
+        "brokerage",
+        "trade",
+        "trades",
+        "trading",
+        "order",
+        "orders",
+        "payment",
+        "payments",
+        "pay",
+        "payout",
+        "purchase",
+        "purchases",
+        "buy",
+        "sell",
+        "wire",
+        "transfer",
+        "transfers",
+        "exfiltrate",
+        "exfiltration",
+        "steal",
+    }
+)
+
+
+# High-signal multi-word phrases. Checked against the action always, and
+# against the target only for actions that are not known-local (so a local
+# ingest of a file that merely mentions one of these is not blocked).
+DENY_PHRASES = (
     "place order",
     "order placement",
     "live order",
@@ -254,7 +344,6 @@ DENY_KEYWORDS = (
     "wire transfer",
     "bank transfer",
     "send payment",
-    "purchase",
     "credential exfiltration",
     "exfiltrate",
     "dump secrets",
@@ -272,29 +361,51 @@ DENY_KEYWORDS = (
 )
 
 
-APPROVAL_KEYWORDS = (
-    "shell",
-    "powershell",
-    "command",
-    "process",
-    "service",
-    "install",
-    "uninstall",
+# External or system-touching capabilities named in the action.
+APPROVAL_ACTION_TOKENS = frozenset(
+    {
+        "email",
+        "mail",
+        "smtp",
+        "browser",
+        "calendar",
+        "slack",
+        "teams",
+        "discord",
+        "sms",
+        "whatsapp",
+        "github",
+        "gitlab",
+        "deploy",
+        "deployment",
+        "publish",
+        "release",
+        "shell",
+        "powershell",
+        "cmd",
+        "command",
+        "process",
+        "service",
+        "install",
+        "uninstall",
+        "download",
+        "upload",
+        "network",
+        "http",
+        "https",
+        "api",
+        "external",
+    }
+)
+
+
+APPROVAL_PHRASES = (
     "edit file",
     "write file",
     "move file",
     "delete file",
     "remove file",
-    "browser",
-    "email",
-    "calendar",
-    "slack",
-    "teams",
-    "github",
-    "deploy",
-    "publish",
+    "api call",
     "http://",
     "https://",
-    "api call",
-    "external",
 )

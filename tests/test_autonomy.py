@@ -89,3 +89,7 @@ def test_enqueue_external_action_stops_at_approval_required(tmp_path: Path) -> N
     assert queued.status == "approval_required"
     assert run.status == "empty"
     assert db.work_queue_counts()["approval_required"] == 1
+    approvals = db.list_approval_requests(status="pending")
+    assert len(approvals) == 1
+    assert approvals[0].action == "email.send"
+    assert approvals[0].source_id == queued.item_id

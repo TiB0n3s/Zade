@@ -19,3 +19,25 @@ coding_model = "qwen2.5-coder:14b"
 embedding_model = "nomic-embed-text"
 think = false
 temperature = 0.2
+
+[security]
+local_token = ""
+protect_mutations = true
+
+[skills]
+source_dir = "C:\\LocalAICofounder\\.agents\\skills"
+lock_file = "C:\\LocalAICofounder\\skills-lock.json"
+enable_defaults = true
+max_prompt_chars = 1800
+
+[voice]
+# Local speech engines as argv arrays (no shell). Leave empty to disable voice.
+# STT placeholders: {audio} (input wav), {transcript} (output .txt), {transcript_base} ({transcript} minus .txt).
+# TTS placeholders: {output} (output wav); the text to speak arrives on stdin.
+# whisper.cpp example:
+# stt_command = ["C:\\tools\\whisper\\whisper-cli.exe", "-m", "C:\\models\\ggml-base.en.bin", "-f", "{audio}", "-otxt", "-of", "{transcript_base}"]
+# piper example:
+# tts_command = ["C:\\tools\\piper\\piper.exe", "--model", "C:\\models\\en_US-lessac-medium.onnx", "--output_file", "{output}"]
+stt_command = []
+tts_command = []
+timeout_seconds = 120.0
