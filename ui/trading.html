@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Trading Intelligence</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506;
+      --panel: #0d0d0f;
+      --line: rgba(255,255,255,0.09);
+      --text: #eeeae5;
+      --muted: #8c8c94;
+      --accent: #b0473f;
+      --accent-2: #d07d74;
+      --ok: #5a8a72;
+      --warn: #c69b5f;
+      --bad: #a84a4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #070708 0%, #0d0c0c 46%, var(--bg) 100%);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.86);
+      backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; }
+    h2 { margin: 0 0 12px; font-size: 15px; }
+    h3 { margin: 0 0 6px; font-size: 14px; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { display: grid; gap: 16px; padding: 24px 28px 36px; }
+    .metrics { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; }
+    .metric { padding: 14px; background: rgba(255,255,255,0.025); }
+    .metric strong { display: block; font-size: 22px; line-height: 1; margin-bottom: 5px; }
+    .metric span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .grid { display: grid; grid-template-columns: 420px minmax(0, 1fr); gap: 16px; align-items: start; }
+    .panel, .item {
+      background: rgba(13,13,15,0.94);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+    .panel { padding: 16px; }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #09090b;
+      color: var(--text);
+      padding: 9px 10px;
+      outline: none;
+      font: inherit;
+    }
+    textarea { resize: vertical; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.7); }
+    .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .check { display: flex; align-items: center; gap: 8px; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 8px; background: rgba(255,255,255,0.025); }
+    .check input { width: 16px; height: 16px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.55);
+      color: var(--text);
+      background: rgba(176,71,63,0.14);
+      border-radius: 4px;
+      padding: 9px 12px;
+      cursor: pointer;
+      text-decoration: none;
+      font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button:disabled { cursor: not-allowed; opacity: 0.5; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .toolbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 12px; }
+    .list { display: grid; gap: 10px; }
+    .item { padding: 12px; display: grid; gap: 8px; }
+    .topline { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .pill {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .pill.hit { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.miss { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .pill.pending { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    .pill.observed { color: #d7cff0; border-color: rgba(128,107,184,0.55); background: rgba(128,107,184,0.14); }
+    .muted { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      max-height: 560px;
+      overflow: auto;
+      background: #070708;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 12px;
+      color: #d8d3cb;
+    }
+    .error { color: #f0c4c4; white-space: pre-wrap; }
+    @media (max-width: 1100px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .grid, .row, .metrics, .checks { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Trading Intelligence</h1>
+      <div class="sub">Read-only diagnostics. Local judgment. Approval-gated proposals.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/approvals.html">Approvals</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="metrics" id="metrics"></section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Daily Brief</h2>
+        <div class="form">
+          <div class="row">
+            <label>Date <input id="briefDate" type="date"></label>
+            <label>Max judgments <input id="maxRecommendations" type="number" min="0" max="50" value="10"></label>
+          </div>
+          <label>Symbols <input id="symbols" placeholder="AAPL, MSFT, SPY"></label>
+          <label>Snapshot tables <input id="tables" value="auto_buy_candidates,trades,rejected_signal_outcomes,dt_recommendations"></label>
+          <div class="checks">
+            <label class="check"><input id="storeEvidence" type="checkbox" checked> Evidence</label>
+            <label class="check"><input id="createJudgments" type="checkbox" checked> Judgments</label>
+            <label class="check"><input id="scoreOutcomes" type="checkbox" checked> Score</label>
+            <label class="check"><input id="exportVault" type="checkbox"> Vault export</label>
+          </div>
+          <div class="actions">
+            <button id="runBriefBtn">Run Brief</button>
+            <button class="secondary" id="dryBriefBtn">Dry Run</button>
+          </div>
+          <div class="error" id="briefError"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="toolbar">
+          <h2>Brief Output</h2>
+          <span class="muted mono" id="briefMeta"></span>
+        </div>
+        <pre id="briefOutput">No brief loaded.</pre>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Judgments</h2>
+        <div class="form">
+          <div class="row">
+            <label>Date <input id="judgmentDate" type="date"></label>
+            <label>Symbol <input id="judgmentSymbol" placeholder="optional"></label>
+          </div>
+          <div class="row">
+            <label>Status
+              <select id="outcomeStatus">
+                <option value="">All</option>
+                <option value="pending">Pending</option>
+                <option value="hit">Hit</option>
+                <option value="miss">Miss</option>
+                <option value="observed">Observed</option>
+                <option value="insufficient_evidence">Insufficient</option>
+              </select>
+            </label>
+            <label>Limit <input id="judgmentLimit" type="number" min="1" max="500" value="50"></label>
+          </div>
+          <div class="actions">
+            <button id="loadJudgmentsBtn">Load</button>
+            <button class="secondary" id="scoreJudgmentsBtn">Score Direct</button>
+          </div>
+          <div class="error" id="judgmentError"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="toolbar">
+          <h2>Ledger</h2>
+          <span class="muted mono" id="loadedAt"></span>
+        </div>
+        <div class="list" id="judgmentList"></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>dt_trigger Proposal</h2>
+        <div class="form">
+          <div class="row">
+            <label>Operation <input id="proposalOperation" value="paper-session-review"></label>
+            <label>Date <input id="proposalDate" type="date"></label>
+          </div>
+          <label>Reason <textarea id="proposalReason" rows="3">Review the paper-session evidence before any future promotion discussion.</textarea></label>
+          <label>Params JSON <textarea id="proposalParams" rows="4">{"mode":"review_only"}</textarea></label>
+          <button id="queueProposalBtn">Queue Proposal</button>
+          <div class="error" id="proposalError"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Last Action</h2>
+        <pre id="lastAction">No action yet.</pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const csv = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
+    const today = () => new Date().toISOString().slice(0, 10);
+
+    let state = { status: {}, replacement: {}, judgments: [] };
+
+    function setDates() {
+      for (const id of ['briefDate', 'judgmentDate', 'proposalDate']) byId(id).value = byId(id).value || today();
+    }
+
+    async function load() {
+      setDates();
+      const [status, replacement] = await Promise.all([
+        api('/trading-bot/status'),
+        api('/trading-bot/deep-thought-replacement')
+      ]);
+      state.status = status;
+      state.replacement = replacement;
+      await loadJudgments();
+      renderMetrics();
+    }
+
+    function renderMetrics() {
+      const counts = state.judgments.reduce((acc, item) => {
+        acc[item.outcome_status || 'pending'] = (acc[item.outcome_status || 'pending'] || 0) + 1;
+        return acc;
+      }, {});
+      byId('metrics').innerHTML = [
+        metric(state.status.ok ? 'ok' : 'fail', 'Bridge'),
+        metric(state.replacement.active_count || 0, 'Active seams'),
+        metric(state.replacement.planned_count || 0, 'Planned seams'),
+        metric(state.judgments.length, 'Loaded'),
+        metric(counts.pending || 0, 'Pending'),
+        metric(counts.miss || 0, 'Misses')
+      ].join('');
+    }
+
+    function metric(value, label) {
+      return '<div class="metric"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+
+    async function runBrief(dry) {
+      byId('briefError').textContent = '';
+      const body = {
+        target_date: byId('briefDate').value,
+        symbols: csv(byId('symbols').value),
+        snapshot_tables: csv(byId('tables').value),
+        max_recommendations: Number(byId('maxRecommendations').value || 10),
+        store_evidence: dry ? false : byId('storeEvidence').checked,
+        create_judgments: dry ? false : byId('createJudgments').checked,
+        score_outcomes: dry ? false : byId('scoreOutcomes').checked,
+        export_vault: dry ? false : byId('exportVault').checked
+      };
+      const result = await api('/trading-bot/daily-brief', { method: 'POST', body: JSON.stringify(body) });
+      byId('briefOutput').textContent = result.brief && result.brief.text ? result.brief.text : JSON.stringify(result, null, 2);
+      byId('briefMeta').textContent = [
+        'audit ' + result.audit_id,
+        result.evidence && result.evidence.evidence_id ? 'evidence ' + result.evidence.evidence_id : '',
+        result.vault_export && result.vault_export.path ? 'exported' : ''
+      ].filter(Boolean).join(' / ');
+      byId('lastAction').textContent = JSON.stringify({
+        audit_id: result.audit_id,
+        evidence: result.evidence,
+        judgments: (result.judgments || []).length,
+        direct_score: result.direct_score && result.direct_score.updates ? result.direct_score.updates.length : 0,
+        vault_export: result.vault_export || {}
+      }, null, 2);
+      byId('judgmentDate').value = body.target_date;
+      await loadJudgments();
+    }
+
+    async function loadJudgments() {
+      byId('judgmentError').textContent = '';
+      const params = new URLSearchParams();
+      if (byId('judgmentDate').value) params.set('market_date', byId('judgmentDate').value);
+      if (byId('judgmentSymbol').value.trim()) params.set('symbol', byId('judgmentSymbol').value.trim());
+      if (byId('outcomeStatus').value) params.set('outcome_status', byId('outcomeStatus').value);
+      params.set('limit', byId('judgmentLimit').value || '50');
+      const data = await api('/trading-bot/judgments?' + params.toString());
+      state.judgments = data.items || [];
+      renderJudgments();
+      renderMetrics();
+    }
+
+    function renderJudgments() {
+      byId('loadedAt').textContent = new Date().toLocaleTimeString();
+      byId('judgmentList').innerHTML = state.judgments.length ? state.judgments.map(renderJudgment).join('') : '<div class="muted">No judgments in this view.</div>';
+    }
+
+    function renderJudgment(item) {
+      return `
+        <article class="item">
+          <div class="topline">
+            <div>
+              <h3>${esc(item.symbol)} ${esc(item.action)} ${esc(item.verdict)}</h3>
+              <div class="muted">${esc(item.market_date)} · conviction ${esc(item.conviction)}</div>
+            </div>
+            <span class="pill ${esc(item.outcome_status)}">${esc(item.outcome_status)}</span>
+          </div>
+          <div>${esc(item.outcome_summary || item.rationale || '')}</div>
+          <div class="muted">${esc(item.lesson || '')}</div>
+          <div class="mono muted">#${esc(item.id)} · score ${esc(item.score == null ? '-' : item.score)}</div>
+        </article>
+      `;
+    }
+
+    async function scoreJudgments() {
+      byId('judgmentError').textContent = '';
+      const result = await api('/trading-bot/judgments/score', {
+        method: 'POST',
+        body: JSON.stringify({
+          target_date: byId('judgmentDate').value,
+          symbols: byId('judgmentSymbol').value.trim() ? [byId('judgmentSymbol').value.trim()] : [],
+          store_evidence: true
+        })
+      });
+      byId('lastAction').textContent = JSON.stringify({
+        audit_id: result.audit_id,
+        updates: (result.updates || []).length,
+        missed_calls: (result.missed_calls || []).length,
+        evidence: result.evidence
+      }, null, 2);
+      await loadJudgments();
+    }
+
+    async function queueProposal() {
+      byId('proposalError').textContent = '';
+      let params = {};
+      try {
+        params = JSON.parse(byId('proposalParams').value || '{}');
+      } catch (err) {
+        byId('proposalError').textContent = 'Invalid params JSON.';
+        return;
+      }
+      const result = await api('/trading-bot/dt-trigger/proposals', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation: byId('proposalOperation').value,
+          target_date: byId('proposalDate').value || null,
+          reason: byId('proposalReason').value,
+          params
+        })
+      });
+      byId('lastAction').textContent = JSON.stringify(result, null, 2);
+    }
+
+    byId('runBriefBtn').addEventListener('click', () => runBrief(false).catch((err) => { byId('briefError').textContent = err.message; }));
+    byId('dryBriefBtn').addEventListener('click', () => runBrief(true).catch((err) => { byId('briefError').textContent = err.message; }));
+    byId('loadJudgmentsBtn').addEventListener('click', () => loadJudgments().catch((err) => { byId('judgmentError').textContent = err.message; }));
+    byId('scoreJudgmentsBtn').addEventListener('click', () => scoreJudgments().catch((err) => { byId('judgmentError').textContent = err.message; }));
+    byId('queueProposalBtn').addEventListener('click', () => queueProposal().catch((err) => { byId('proposalError').textContent = err.message; }));
+    byId('refreshBtn').addEventListener('click', () => load().catch((err) => { byId('lastAction').textContent = err.message; }));
+    setDates();
+    load().catch((err) => { byId('lastAction').textContent = err.message; });
+  </script>
+</body>
+</html>

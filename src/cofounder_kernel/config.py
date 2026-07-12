@@ -99,24 +99,50 @@ class SkillConfig:
 
 @dataclass(frozen=True)
 class VoiceConfig:
-    """Founder-configured local speech engines (e.g. whisper.cpp and piper).
+    """Founder-configured speech engines.
 
-    Commands are argv arrays run without a shell. STT commands may use the
-    placeholders {audio}, {transcript}, and {transcript_base}; TTS commands may
-    use {output} and receive the text to speak on stdin.
+    Engine "command" runs local argv arrays without a shell (e.g. whisper.cpp
+    and piper). STT commands may use the placeholders {audio}, {transcript},
+    and {transcript_base}; TTS commands may use {output} and receive the text
+    to speak on stdin.
+
+    Engines "deepgram" (STT) and "elevenlabs" (TTS) call the founder's cloud
+    speech APIs. Selecting one is an explicit standing grant: audio and reply
+    text leave the machine. API keys are read from the referenced environment
+    variables and are never stored in config files or the database.
     """
 
+    stt_engine: str = "command"
+    tts_engine: str = "command"
     stt_command: tuple[str, ...] = ()
     tts_command: tuple[str, ...] = ()
+    stt_api_key_env: str = "DEEPGRAM_API_KEY"
+    tts_api_key_env: str = "ELEVENLABS_API_KEY"
+    stt_model: str = "nova-2"
+    tts_model: str = "eleven_turbo_v2_5"
+    tts_voice: str = "21m00Tcm4TlvDq8ikWAM"
     timeout_seconds: float = 120.0
 
     @property
     def stt_configured(self) -> bool:
-        return bool(self.stt_command)
+        if self.stt_engine == "command":
+            return bool(self.stt_command)
+        return True
 
     @property
     def tts_configured(self) -> bool:
-        return bool(self.tts_command)
+        if self.tts_engine == "command":
+            return bool(self.tts_command)
+        return True
+
+
+@dataclass(frozen=True)
+class TradingBotConfig:
+    enabled: bool = True
+    wsl_distro: str = "Ubuntu-TradingBot-C"
+    repo_path: str = "/home/tradingbot/trading-bot"
+    python: str = "./venv/bin/python"
+    timeout_seconds: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -128,6 +154,7 @@ class KernelConfig:
     security: SecurityConfig = SecurityConfig()
     skills: SkillConfig = SkillConfig()
     voice: VoiceConfig = VoiceConfig()
+    trading_bot: TradingBotConfig = TradingBotConfig()
 
 
 def _read_toml(path: Path) -> dict:
@@ -189,11 +216,35 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
     )
     voice_raw = raw.get("voice", {})
     voice = VoiceConfig(
+        stt_engine=str(voice_raw.get("stt_engine", "command")).strip().lower(),
+        tts_engine=str(voice_raw.get("tts_engine", "command")).strip().lower(),
         stt_command=_command(voice_raw.get("stt_command")),
         tts_command=_command(voice_raw.get("tts_command")),
+        stt_api_key_env=str(voice_raw.get("stt_api_key_env", "DEEPGRAM_API_KEY")).strip(),
+        tts_api_key_env=str(voice_raw.get("tts_api_key_env", "ELEVENLABS_API_KEY")).strip(),
+        stt_model=str(voice_raw.get("stt_model", "nova-2")).strip(),
+        tts_model=str(voice_raw.get("tts_model", "eleven_turbo_v2_5")).strip(),
+        tts_voice=str(voice_raw.get("tts_voice", "21m00Tcm4TlvDq8ikWAM")).strip(),
         timeout_seconds=float(voice_raw.get("timeout_seconds", 120.0)),
     )
-    return KernelConfig(app=app, identity=identity, paths=paths, ollama=ollama, security=security, skills=skills, voice=voice)
+    trading_bot_raw = raw.get("trading_bot", {})
+    trading_bot = TradingBotConfig(
+        enabled=_bool(os.getenv("ZADE_TRADING_BOT_ENABLED", trading_bot_raw.get("enabled", True))),
+        wsl_distro=str(os.getenv("ZADE_TRADING_BOT_WSL_DISTRO", trading_bot_raw.get("wsl_distro", "Ubuntu-TradingBot-C"))),
+        repo_path=str(os.getenv("ZADE_TRADING_BOT_REPO_PATH", trading_bot_raw.get("repo_path", "/home/tradingbot/trading-bot"))),
+        python=str(os.getenv("ZADE_TRADING_BOT_PYTHON", trading_bot_raw.get("python", "./venv/bin/python"))),
+        timeout_seconds=float(os.getenv("ZADE_TRADING_BOT_TIMEOUT_SECONDS", trading_bot_raw.get("timeout_seconds", 120.0))),
+    )
+    return KernelConfig(
+        app=app,
+        identity=identity,
+        paths=paths,
+        ollama=ollama,
+        security=security,
+        skills=skills,
+        voice=voice,
+        trading_bot=trading_bot,
+    )
 
 
 def ensure_local_paths(config: KernelConfig) -> None:

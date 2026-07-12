@@ -128,6 +128,20 @@ POST /approval-requests/{request_id}/deny
 POST /work/items/{item_id}/approve
 POST /work/items/{item_id}/deny
 POST /work/items/{item_id}/dispatch
+GET  /trading-bot/status
+GET  /trading-bot/safe-ops-checks
+GET  /trading-bot/deep-thought-replacement
+GET  /trading-bot/sqlite/schema
+POST /trading-bot/sqlite/query
+POST /trading-bot/evidence/snapshot
+POST /trading-bot/ops-check
+POST /trading-bot/recommendations
+POST /trading-bot/advisory/generate
+POST /trading-bot/advisory/score
+POST /trading-bot/daily-brief
+GET  /trading-bot/judgments
+POST /trading-bot/judgments/score
+POST /trading-bot/dt-trigger/proposals
 GET  /founder/mental-models
 GET  /founder/thesis
 POST /founder/thesis
@@ -265,6 +279,145 @@ GET  /action-handlers
 ```
 
 `/chat` calls Ollama with `think=false` by default so Qwen3 does not spend the response budget in the hidden thinking field.
+
+## Trading-Bot Bridge
+
+Zade integrates with the trading-bot through the existing observe-only Deep Thought recommendation lane:
+
+- `GET /trading-bot/status` checks the local WSL checkout and advisory lane files.
+- `POST /trading-bot/ops-check` runs only allowlisted read-only diagnostics.
+- `GET /trading-bot/sqlite/schema` inspects the bot database schema through the read-only adapter.
+- `POST /trading-bot/sqlite/query` runs a capped read-only SQLite query against the allowlisted bot database.
+- `POST /trading-bot/evidence/snapshot` captures date/symbol-scoped evidence rows from known diagnostic tables.
+- `POST /trading-bot/recommendations` queues an approval-required work item.
+- `POST /trading-bot/advisory/generate` collects real bot diagnostics, records them as Zade evidence, generates conservative symbol-scoped advisory candidates, and optionally queues them for approval.
+- `POST /trading-bot/advisory/score` runs the bot-owned outcome report and stores the scorecard as founder evidence.
+- `POST /trading-bot/daily-brief` runs the local daily trading intelligence loop, writes a Zade evidence brief, records `trading_judgments`, scores available outcomes, and optionally exports markdown to the Trading Project raw folder.
+- `GET /trading-bot/judgments` lists Zade's stored trading judgment ledger with date, symbol, and outcome filters.
+- `POST /trading-bot/judgments/score` directly scores stored judgments against read-only realized outcome rows.
+- `POST /trading-bot/dt-trigger/proposals` queues a proposal-only `dt_trigger` work item; approved dispatch records the proposal locally and does not run the bot.
+- `GET /trading-bot/deep-thought-replacement` shows which Deep Thought trading-bot seams Zade has replaced and which remain planned.
+- Approved dispatch calls the bot-owned `scripts/dt_recommendation_ingest.py` CLI.
+
+The bridge cannot approve, block, size, route, place, or cancel trades. It writes only local Zade evidence, local Zade trading judgments, missed-call reviews, optional local vault brief exports, proposal-only dt_trigger records, and approval-gated advisory rows with `runtime_effect = "advisory_only_no_trade_authority"`. Dispatch requires the normal approval-console typed confirmation phrase.
+
+The SQLite adapter opens only the allowlisted bot database with `mode=ro`, sets `PRAGMA query_only = ON`, blocks write/schema/attachment tokens before WSL execution, permits only `SELECT`, `WITH`, `EXPLAIN`, and narrow read-only `PRAGMA` statements, and caps rows/timeouts on every call.
+
+Inspect a table:
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/sqlite/schema?table=auto_buy_candidates"
+```
+
+Run a capped read-only query:
+
+```powershell
+$body = @{
+  sql = "SELECT symbol, decision, score FROM auto_buy_candidates WHERE substr(timestamp, 1, 10) = ? LIMIT 5"
+  params = @("2026-07-10")
+  limit = 5
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/sqlite/query" -Method Post -Body $body -ContentType "application/json"
+```
+
+Capture a symbol-scoped evidence snapshot:
+
+```powershell
+$body = @{
+  target_date = "2026-07-10"
+  symbols = @("AAPL")
+  tables = @("auto_buy_candidates", "trades", "dt_recommendations")
+  store_evidence = $true
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/evidence/snapshot" -Method Post -Body $body -ContentType "application/json"
+```
+
+Generate advisory candidates without queueing them:
+
+```powershell
+$body = @{
+  target_date = "2026-07-10"
+  symbols = @("AAPL", "MSFT")
+  queue = $false
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/advisory/generate" -Method Post -Body $body -ContentType "application/json"
+```
+
+Queue advisory candidates for approval:
+
+```powershell
+$body = @{
+  target_date = "2026-07-10"
+  symbols = @("AAPL", "MSFT")
+  queue = $true
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/advisory/generate" -Method Post -Body $body -ContentType "application/json"
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/approval-console"
+```
+
+Score the advisory track record against bot outcomes:
+
+```powershell
+$body = @{ target_date = "2026-07-10" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/advisory/score" -Method Post -Body $body -ContentType "application/json"
+```
+
+Run the daily trading intelligence loop:
+
+```powershell
+cd C:\LocalAICofounder
+.\scripts\run-trading-brief.ps1 -TargetDate "2026-07-10"
+```
+
+Run it and export the markdown artifact into `C:\AI Brain\Trading Project\01-raw`:
+
+```powershell
+cd C:\LocalAICofounder
+.\scripts\run-trading-brief.ps1 -TargetDate "2026-07-10" -ExportVault
+```
+
+Install it as a daily Windows scheduled task:
+
+```powershell
+cd C:\LocalAICofounder
+.\scripts\install-trading-brief-task.ps1 -At "5:30PM"
+```
+
+Inspect the judgment ledger:
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/judgments?market_date=2026-07-10"
+```
+
+Score stored judgments directly against read-only realized outcomes:
+
+```powershell
+$body = @{ target_date = "2026-07-10"; symbols = @(); store_evidence = $true } | ConvertTo-Json -Depth 8
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/judgments/score" -Method Post -Body $body -ContentType "application/json"
+```
+
+Queue a proposal-only `dt_trigger` review:
+
+```powershell
+$body = @{
+  operation = "paper-session-review"
+  target_date = "2026-07-10"
+  reason = "Review the paper-session evidence before any future promotion discussion."
+  params = @{ mode = "review_only" }
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/trading-bot/dt-trigger/proposals" -Method Post -Body $body -ContentType "application/json"
+```
+
+Open the local trading console:
+
+```powershell
+Start-Process "http://127.0.0.1:8787/ui/trading.html"
+```
 
 ## Conversation Memory
 
@@ -502,16 +655,35 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8787/notifications?unread_only=true"
 
 ## Voice Loop
 
-The voice loop wraps the governed runtime in local speech: Whisper-family STT and Piper-family TTS run as founder-configured local commands. Voice is an interface, not a bypass — `/voice/converse` transcribes, answers through `runtime.respond` (authority, charters, episodic memory, and the contrarian pass all apply), then synthesizes the reply.
+The voice loop wraps the governed runtime in speech. Voice is an interface, not a bypass — `/voice/converse` transcribes, answers through `runtime.respond` (authority, charters, episodic memory, and the contrarian pass all apply), then synthesizes the reply.
+
+Two engine families per direction:
+
+- **`command`** (local-first default): Whisper-family STT and Piper-family TTS as founder-configured argv arrays run without a shell; text to speak reaches TTS via stdin, never a command line.
+- **`deepgram`** (STT) and **`elevenlabs`** (TTS): the founder's cloud speech APIs. Selecting a cloud engine in `config.toml` is an explicit standing grant — audio and reply text leave the machine. API keys are read from environment variables (`DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`) and are never stored in config files or the database.
 
 The contract:
 
-- engines are argv arrays in `config.toml` run without a shell; text to speak reaches TTS via stdin, never a command line
-- audio travels as base64 JSON; recordings and transcripts are stored under the local data dir for the audit trail
-- unconfigured engines report unavailable (`503`) instead of degrading silently; a TTS failure still returns the text answer with a `speech_error` note
+- audio travels as base64 JSON; recordings and transcripts are stored under the local data dir for the audit trail regardless of engine
+- unconfigured engines and missing API keys report unavailable (`503`) naming exactly what to set; cloud HTTP failures return `400` with the status code
+- a TTS failure still returns the text answer with a `speech_error` note
 - by default the spoken reply omits the appended `Contrarian check` block (pass `speak_full = true` to hear it)
 
-Configure engines in `config.toml` (see `config.example.toml` for whisper.cpp and piper examples):
+Cloud engine setup (Deepgram transcription + ElevenLabs voice):
+
+```toml
+[voice]
+stt_engine = "deepgram"
+tts_engine = "elevenlabs"
+tts_voice = "21m00Tcm4TlvDq8ikWAM"   # any ElevenLabs voice id
+```
+
+```powershell
+[Environment]::SetEnvironmentVariable("DEEPGRAM_API_KEY", "your-key", "User")
+[Environment]::SetEnvironmentVariable("ELEVENLABS_API_KEY", "your-key", "User")
+```
+
+Local engine setup (see `config.example.toml` for whisper.cpp and piper examples):
 
 ```toml
 [voice]

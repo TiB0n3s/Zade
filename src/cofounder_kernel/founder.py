@@ -312,7 +312,7 @@ class FounderService:
     def upsert_thesis(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
         with self.db.connect() as conn:
-            existing = conn.execute("SELECT id FROM company_thesis WHERE id = 1").fetchone()
+            existing = conn.execute("SELECT created_at FROM company_thesis WHERE id = 1").fetchone()
             created_at = str(existing["created_at"]) if existing else now
             conn.execute(
                 """

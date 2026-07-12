@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 def utc_now() -> str:
@@ -2485,6 +2485,29 @@ CREATE TABLE IF NOT EXISTS missed_call_reviews (
   what_changes_now TEXT NOT NULL DEFAULT '',
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS trading_judgments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  market_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  action TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  conviction REAL,
+  rationale TEXT NOT NULL DEFAULT '',
+  evidence_hash TEXT NOT NULL DEFAULT '',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  outcome_status TEXT NOT NULL DEFAULT 'pending',
+  outcome_summary TEXT NOT NULL DEFAULT '',
+  score REAL,
+  lesson TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'zade_daily_loop',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(market_date, symbol, action, verdict, evidence_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trading_judgments_date_symbol
+  ON trading_judgments (market_date, symbol);
 
 CREATE TABLE IF NOT EXISTS cadence_reviews (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

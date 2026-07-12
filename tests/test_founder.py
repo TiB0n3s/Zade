@@ -163,6 +163,30 @@ def test_company_thesis_dashboard_and_brief(tmp_path: Path) -> None:
     assert "One thing that matters most today" in brief["brief"]
 
 
+def test_company_thesis_upsert_preserves_created_at(tmp_path: Path) -> None:
+    founder = make_founder(tmp_path)
+
+    first = founder.upsert_thesis(
+        {
+            "vision": "First vision.",
+            "mission": "First mission.",
+            "status": "draft",
+        }
+    )
+    second = founder.upsert_thesis(
+        {
+            "vision": "Updated vision.",
+            "mission": "Updated mission.",
+            "status": "active",
+        }
+    )
+
+    assert second["created_at"] == first["created_at"]
+    assert second["updated_at"] >= first["updated_at"]
+    assert second["mission"] == "Updated mission."
+    assert second["status"] == "active"
+
+
 def test_decision_prediction_scoring_and_reflection_loop(tmp_path: Path) -> None:
     founder = make_founder(tmp_path)
 

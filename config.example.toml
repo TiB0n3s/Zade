@@ -31,7 +31,21 @@ enable_defaults = true
 max_prompt_chars = 1800
 
 [voice]
-# Local speech engines as argv arrays (no shell). Leave empty to disable voice.
+# Engines: "command" runs local argv arrays (no shell); "deepgram" (STT) and
+# "elevenlabs" (TTS) call your cloud speech APIs. Selecting a cloud engine is a
+# standing grant: audio and reply text leave the machine. API keys are read
+# from the environment variables below and are never stored in this file.
+stt_engine = "command"   # "command" | "deepgram"
+tts_engine = "command"   # "command" | "elevenlabs"
+
+# Cloud engine settings (used when the engine above is deepgram/elevenlabs):
+stt_api_key_env = "DEEPGRAM_API_KEY"
+stt_model = "nova-2"
+tts_api_key_env = "ELEVENLABS_API_KEY"
+tts_model = "eleven_turbo_v2_5"
+tts_voice = "21m00Tcm4TlvDq8ikWAM"
+
+# Local command engines as argv arrays. Leave empty to disable.
 # STT placeholders: {audio} (input wav), {transcript} (output .txt), {transcript_base} ({transcript} minus .txt).
 # TTS placeholders: {output} (output wav); the text to speak arrives on stdin.
 # whisper.cpp example:
@@ -40,4 +54,14 @@ max_prompt_chars = 1800
 # tts_command = ["C:\\tools\\piper\\piper.exe", "--model", "C:\\models\\en_US-lessac-medium.onnx", "--output_file", "{output}"]
 stt_command = []
 tts_command = []
+timeout_seconds = 120.0
+
+[trading_bot]
+# Local, authority-safe bridge into the existing bot advisory lane.
+# Zade can run a small allowlist of read-only ops checks and can queue
+# approval-gated advisory recommendations into dt_recommendations.
+enabled = true
+wsl_distro = "Ubuntu-TradingBot-C"
+repo_path = "/home/tradingbot/trading-bot"
+python = "./venv/bin/python"
 timeout_seconds = 120.0

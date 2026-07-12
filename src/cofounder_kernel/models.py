@@ -127,6 +127,94 @@ class WorkRunRequest(BaseModel):
     max_items: int = Field(default=5, ge=1, le=25)
 
 
+class TradingBotOpsCheckRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=80)
+    target_date: str | None = Field(default=None, max_length=20)
+    limit_output_chars: int = Field(default=12000, ge=100, le=50000)
+
+
+class TradingBotRecommendationCreate(BaseModel):
+    market_date: str = Field(min_length=10, max_length=10)
+    symbol: str = Field(min_length=1, max_length=16)
+    action: str = Field(min_length=1, max_length=12)
+    verdict: str = Field(min_length=1, max_length=16)
+    reason: str = Field(min_length=1, max_length=2000)
+    conviction: float | None = Field(default=None)
+    context_hash: str | None = Field(default=None, max_length=128)
+    agent_version: str = Field(default="zade-local-cofounder-v1", min_length=1, max_length=120)
+    idempotency_key: str | None = Field(default=None, max_length=64)
+    evidence: list[Any] = Field(default_factory=list)
+    risks: list[Any] = Field(default_factory=list)
+    priority: int = Field(default=90, ge=0, le=100)
+
+
+class TradingBotAdvisoryGenerateRequest(BaseModel):
+    target_date: str = Field(min_length=10, max_length=10)
+    symbols: list[str] = Field(default_factory=list)
+    queue: bool = True
+    max_recommendations: int = Field(default=10, ge=0, le=50)
+    include_ops_checks: list[str] = Field(default_factory=list)
+    limit_output_chars: int = Field(default=12000, ge=100, le=50000)
+    priority: int = Field(default=90, ge=0, le=100)
+    use_sqlite_snapshot: bool = True
+    snapshot_tables: list[str] = Field(default_factory=list)
+    snapshot_limit_per_table: int = Field(default=25, ge=1, le=200)
+
+
+class TradingBotAdvisoryScoreRequest(BaseModel):
+    target_date: str = Field(min_length=10, max_length=10)
+    store_evidence: bool = True
+    limit_output_chars: int = Field(default=12000, ge=100, le=50000)
+
+
+class TradingBotJudgmentScoreRequest(BaseModel):
+    target_date: str = Field(min_length=10, max_length=10)
+    symbols: list[str] = Field(default_factory=list)
+    store_evidence: bool = True
+    limit_per_symbol: int = Field(default=25, ge=1, le=100)
+
+
+class TradingBotTriggerProposalRequest(BaseModel):
+    operation: str = Field(min_length=1, max_length=160)
+    target_date: str | None = Field(default=None, max_length=10)
+    reason: str = Field(min_length=1, max_length=3000)
+    params: dict[str, Any] = Field(default_factory=dict)
+    evidence: list[Any] = Field(default_factory=list)
+    risks: list[Any] = Field(default_factory=list)
+    priority: int = Field(default=80, ge=0, le=100)
+    idempotency_key: str | None = Field(default=None, max_length=64)
+
+
+class TradingBotSQLiteQueryRequest(BaseModel):
+    sql: str = Field(min_length=1, max_length=20000)
+    params: list[Any] | dict[str, Any] = Field(default_factory=list)
+    limit: int = Field(default=100, ge=1, le=1000)
+    timeout_seconds: float = Field(default=5.0, ge=0.1, le=30.0)
+    database: str = Field(default="trades.db", min_length=1, max_length=80)
+
+
+class TradingBotEvidenceSnapshotRequest(BaseModel):
+    target_date: str = Field(min_length=10, max_length=10)
+    symbols: list[str] = Field(default_factory=list)
+    tables: list[str] = Field(default_factory=list)
+    limit_per_table: int = Field(default=25, ge=1, le=200)
+    store_evidence: bool = True
+
+
+class TradingBotDailyBriefRequest(BaseModel):
+    target_date: str = Field(min_length=10, max_length=10)
+    symbols: list[str] = Field(default_factory=list)
+    snapshot_tables: list[str] = Field(default_factory=list)
+    limit_per_table: int = Field(default=25, ge=1, le=200)
+    max_recommendations: int = Field(default=10, ge=0, le=50)
+    include_ops_checks: list[str] = Field(default_factory=list)
+    store_evidence: bool = True
+    create_judgments: bool = True
+    score_outcomes: bool = True
+    export_vault: bool = False
+    limit_output_chars: int = Field(default=12000, ge=100, le=50000)
+
+
 class RuntimeRespondRequest(BaseModel):
     message: str = Field(min_length=1)
     model: str | None = None

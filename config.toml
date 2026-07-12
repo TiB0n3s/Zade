@@ -1,0 +1,10 @@
+# Zade local overrides. Only sections present here override built-in defaults;
+# see config.example.toml for everything that can be configured.
+
+[voice]
+# Cloud speech engines (standing grant: audio and reply text leave the machine).
+# API keys are read from the DEEPGRAM_API_KEY and ELEVENLABS_API_KEY environment
+# variables and must never be written into this file.
+stt_engine = "deepgram"
+tts_engine = "elevenlabs"
+tts_voice = "ZthjuvLPty3kTMaNKVKb"

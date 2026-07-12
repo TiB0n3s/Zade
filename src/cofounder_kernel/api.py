@@ -95,6 +95,15 @@ from .models import (
     SurfacingBriefRequest,
     StrategyObjectCreate,
     ThesisConflictCreate,
+    TradingBotAdvisoryGenerateRequest,
+    TradingBotAdvisoryScoreRequest,
+    TradingBotDailyBriefRequest,
+    TradingBotEvidenceSnapshotRequest,
+    TradingBotJudgmentScoreRequest,
+    TradingBotOpsCheckRequest,
+    TradingBotRecommendationCreate,
+    TradingBotSQLiteQueryRequest,
+    TradingBotTriggerProposalRequest,
     VoiceCharterUpsert,
     VoiceConverseRequest,
     VoiceSpeakRequest,
@@ -113,6 +122,7 @@ from .skills import SkillService
 from .surfacing import SurfacingService
 from .voice import VoiceNotConfigured, VoiceService
 from .teaching import DeepThoughtTeachingBridge
+from .trading_bot import TradingBotBridge
 from .tools import ToolRegistry
 
 
@@ -132,6 +142,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     founder = FounderService(config=cfg, db=db)
     skills = SkillService(config=cfg, db=db, embedder=ollama)
     handlers = ActionHandlerRegistry(db=db, config=cfg)
+    trading_bot = TradingBotBridge(config=cfg, db=db, founder=founder)
     work_queue = WorkQueueService(
         config=cfg,
         db=db,
@@ -167,6 +178,16 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         "Read-only sync of an approved external connector into staged candidate items.",
         connectors.sync_from_work_item,
     )
+    handlers.register(
+        "external.dt_recommendation.ingest",
+        "Append an observe-only Zade/DT advisory recommendation to the trading-bot dt_recommendations lane.",
+        trading_bot.ingest_recommendation_from_work_item,
+    )
+    handlers.register(
+        "external.dt_trigger.propose",
+        "Record an approved dt_trigger proposal locally without running the trading bot.",
+        trading_bot.record_dt_trigger_proposal_from_work_item,
+    )
     ops = KernelOpsService(config=cfg, db=db, ollama=ollama, ui_dir=UI_DIR)
     evals = EvalService(config=cfg, db=db, ollama=ollama, runtime=runtime, critic=critic)
     voice = VoiceService(config=cfg, db=db, runtime=runtime)
@@ -186,6 +207,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     app.state.founder = founder
     app.state.skills = skills
     app.state.handlers = handlers
+    app.state.trading_bot = trading_bot
     app.state.work_queue = work_queue
     app.state.approvals = approvals
     app.state.conversations = conversations
@@ -990,6 +1012,117 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     @app.get("/action-handlers")
     def list_action_handlers() -> dict[str, Any]:
         return {"items": approvals.list_handlers()}
+
+    @app.get("/trading-bot/status")
+    def trading_bot_status() -> dict[str, Any]:
+        return trading_bot.status()
+
+    @app.get("/trading-bot/safe-ops-checks")
+    def trading_bot_safe_ops_checks() -> dict[str, Any]:
+        return {"items": trading_bot.safe_ops_checks()}
+
+    @app.get("/trading-bot/deep-thought-replacement")
+    def trading_bot_deep_thought_replacement() -> dict[str, Any]:
+        return trading_bot.deep_thought_replacement_map()
+
+    @app.get("/trading-bot/sqlite/schema")
+    def trading_bot_sqlite_schema(
+        database: str = "trades.db",
+        table: str | None = None,
+        include_counts: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            return trading_bot.sqlite_schema(database=database, table=table, include_counts=include_counts)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/sqlite/query")
+    def trading_bot_sqlite_query(payload: TradingBotSQLiteQueryRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.run_sqlite_query(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/evidence/snapshot")
+    def trading_bot_evidence_snapshot(payload: TradingBotEvidenceSnapshotRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.evidence_snapshot(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/ops-check")
+    def trading_bot_ops_check(payload: TradingBotOpsCheckRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.run_ops_check(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/recommendations")
+    def queue_trading_bot_recommendation(payload: TradingBotRecommendationCreate) -> dict[str, Any]:
+        try:
+            return trading_bot.queue_advisory_recommendation(
+                work_queue=work_queue,
+                payload=payload.model_dump(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/advisory/generate")
+    def generate_trading_bot_advisory(payload: TradingBotAdvisoryGenerateRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.generate_advisory_recommendations(
+                work_queue=work_queue,
+                **payload.model_dump(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/advisory/score")
+    def score_trading_bot_advisory(payload: TradingBotAdvisoryScoreRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.score_advisory_outcomes(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/judgments/score")
+    def score_trading_bot_judgments(payload: TradingBotJudgmentScoreRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.score_judgments_against_outcomes(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/dt-trigger/proposals")
+    def queue_trading_bot_dt_trigger_proposal(payload: TradingBotTriggerProposalRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.queue_dt_trigger_proposal(work_queue=work_queue, payload=payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/daily-brief")
+    def trading_bot_daily_brief(payload: TradingBotDailyBriefRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.daily_trading_brief(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/trading-bot/judgments")
+    def trading_bot_judgments(
+        market_date: str | None = None,
+        symbol: str | None = None,
+        outcome_status: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "items": trading_bot.list_trading_judgments(
+                    market_date=market_date,
+                    symbol=symbol,
+                    outcome_status=outcome_status,
+                    limit=limit,
+                )
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/approval-requests/{request_id}")
     def get_approval_request(request_id: int) -> dict[str, Any]:
@@ -1859,6 +1992,8 @@ def _inventory_payload(
             "local.report.write",
             "local.vault.organize",
             "local.browser.open",
+            "external.connector.sync",
+            "external.dt_recommendation.ingest",
         ],
         "approval_contract": [
             "Approval records founder authorization without bypassing denied boundaries.",
@@ -2111,6 +2246,59 @@ def _inventory_payload(
             "External effects implied by a skill remain governed by the approval and action-handler contracts.",
             "Every runtime skill use is logged to skill_invocations.",
             "Routing blends keyword scoring with local embedding similarity; keyword routing keeps working when embeddings are unavailable.",
+        ],
+    }
+    inventory["trading_bot_layer"] = {
+        "routes": [
+            "GET /trading-bot/status",
+            "GET /trading-bot/safe-ops-checks",
+            "GET /trading-bot/deep-thought-replacement",
+            "GET /trading-bot/sqlite/schema",
+            "POST /trading-bot/sqlite/query",
+            "POST /trading-bot/evidence/snapshot",
+            "POST /trading-bot/ops-check",
+            "POST /trading-bot/recommendations",
+            "POST /trading-bot/advisory/generate",
+            "POST /trading-bot/advisory/score",
+            "POST /trading-bot/daily-brief",
+            "GET /trading-bot/judgments",
+            "POST /trading-bot/judgments/score",
+            "POST /trading-bot/dt-trigger/proposals",
+        ],
+        "artifacts": [
+            "approval_requests",
+            "work_queue",
+            "approval_training_events",
+            "founder_evidence",
+            "memories",
+            "trading_judgments",
+            "missed_call_reviews",
+            "read-only SQLite query audit events",
+            "trading-bot evidence snapshots",
+            "trading-bot dt_recommendations",
+            "trading-bot dt recommendation outcome reports",
+            "trading-bot direct outcome score reports",
+            "Trading Project raw vault exports",
+            "dt_trigger proposal records",
+        ],
+        "runtime_effect": "advisory_only_no_trade_authority",
+        "safe_write_path": "external.dt_recommendation.ingest -> scripts/dt_recommendation_ingest.py",
+        "deep_thought_replacement": TradingBotBridge(config=cfg, db=db).deep_thought_replacement_map(),
+        "operating_rules": [
+            "Zade may run only allowlisted read-only bot diagnostics through this layer.",
+            "Zade may query only the allowlisted trading-bot SQLite database in mode=ro with PRAGMA query_only enabled.",
+            "SQLite queries are limited to SELECT, WITH, EXPLAIN, and narrow read-only PRAGMA statements; write/schema/attachment tokens are blocked before WSL execution.",
+            "Evidence snapshots query only known diagnostic tables with date and optional symbol scopes.",
+            "Zade may generate advisory recommendations only from real diagnostic evidence and supplied or discovered symbols.",
+            "Zade may run a daily trading intelligence brief that writes only local evidence, judgment, and missed-call learning records.",
+            "Zade may score judgments directly against read-only realized outcome rows without bot mutation.",
+            "Zade may export an explicitly requested daily brief markdown file under the local Trading Project raw folder.",
+            "Zade may queue dt_trigger proposals; approved dispatch records the proposal locally and does not run dt_trigger.",
+            "Zade may propose bot advisory recommendations only as approval-gated work items.",
+            "Approved dispatch appends to the bot-owned dt_recommendations lane; the bot architecture forbids runtime reads from that table.",
+            "Outcome scoring runs the bot-owned read-only dt-recommendation-outcomes report and stores the score as founder evidence.",
+            "The bridge does not touch broker, order, sizing, gate, execution, account-risk, or runtime decision paths.",
+            "Any future promotion from advisory evidence to runtime context is a separate explicit operator decision.",
         ],
     }
     inventory["ops_layer"] = {

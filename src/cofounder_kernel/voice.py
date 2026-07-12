@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
+import os
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +22,11 @@ from .runtime import RuntimeService
 CONTRARIAN_MARKER = "\n---\nContrarian check"
 STDERR_EXCERPT_CHARS = 400
 SPOKEN_TEXT_MAX_CHARS = 4000
+
+STT_ENGINES = {"command", "deepgram"}
+TTS_ENGINES = {"command", "elevenlabs"}
+DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
+ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 
 
 class VoiceService:
@@ -39,25 +49,41 @@ class VoiceService:
         return self.config.paths.data_dir / "voice"
 
     def status(self) -> dict[str, Any]:
-        stt = self.config.voice.stt_command
-        tts = self.config.voice.tts_command
+        voice = self.config.voice
+        stt: dict[str, Any] = {"engine": voice.stt_engine, "configured": voice.stt_configured}
+        if voice.stt_engine == "command":
+            stt |= {"command": list(voice.stt_command), "binary_found": _binary_found(voice.stt_command)}
+        else:
+            stt |= {
+                "model": voice.stt_model,
+                "credential_env": voice.stt_api_key_env,
+                "credential_set": bool(os.environ.get(voice.stt_api_key_env)),
+                "cloud": True,
+            }
+        tts: dict[str, Any] = {"engine": voice.tts_engine, "configured": voice.tts_configured}
+        if voice.tts_engine == "command":
+            tts |= {"command": list(voice.tts_command), "binary_found": _binary_found(voice.tts_command)}
+        else:
+            tts |= {
+                "model": voice.tts_model,
+                "voice_id": voice.tts_voice,
+                "credential_env": voice.tts_api_key_env,
+                "credential_set": bool(os.environ.get(voice.tts_api_key_env)),
+                "cloud": True,
+            }
         return {
-            "stt": {
-                "configured": bool(stt),
-                "command": list(stt),
-                "binary_found": _binary_found(stt),
-            },
-            "tts": {
-                "configured": bool(tts),
-                "command": list(tts),
-                "binary_found": _binary_found(tts),
-            },
-            "ready": bool(stt) and bool(tts),
+            "stt": stt,
+            "tts": tts,
+            "ready": voice.stt_configured and voice.tts_configured,
+            "cloud_engines_in_use": voice.stt_engine != "command" or voice.tts_engine != "command",
             "voice_dir": str(self.voice_dir),
-            "timeout_seconds": self.config.voice.timeout_seconds,
+            "timeout_seconds": voice.timeout_seconds,
         }
 
     def transcribe(self, *, audio_base64: str) -> dict[str, Any]:
+        engine = self.config.voice.stt_engine
+        if engine not in STT_ENGINES:
+            raise ValueError(f"Unknown STT engine: {engine}. Supported: {', '.join(sorted(STT_ENGINES))}")
         if not self.config.voice.stt_configured:
             raise VoiceNotConfigured("STT engine is not configured; set [voice] stt_command in config.toml.")
         audio_bytes = _decode_audio(audio_base64)
@@ -65,16 +91,20 @@ class VoiceService:
         audio_path = self._write_artifact(f"{stamp}-in.wav", audio_bytes)
         transcript_path = self.voice_dir / f"{stamp}-transcript.txt"
         started = time.perf_counter()
-        self._run_engine(
-            self.config.voice.stt_command,
-            replacements={
-                "{audio}": str(audio_path),
-                "{transcript}": str(transcript_path),
-                "{transcript_base}": str(transcript_path.with_suffix("")),
-            },
-            engine="stt",
-        )
-        text = _read_transcript(transcript_path)
+        if engine == "deepgram":
+            text = self._transcribe_deepgram(audio_bytes)
+            transcript_path.write_text(text, encoding="utf-8")
+        else:
+            self._run_engine(
+                self.config.voice.stt_command,
+                replacements={
+                    "{audio}": str(audio_path),
+                    "{transcript}": str(transcript_path),
+                    "{transcript_base}": str(transcript_path.with_suffix("")),
+                },
+                engine="stt",
+            )
+            text = _read_transcript(transcript_path)
         latency_ms = int((time.perf_counter() - started) * 1000)
         if not text:
             raise ValueError("Transcription produced no text.")
@@ -84,47 +114,57 @@ class VoiceService:
             target=str(audio_path),
             permission_tier="L0_READ",
             status="ok",
-            details={"latency_ms": latency_ms, "chars": len(text), "audio_bytes": len(audio_bytes)},
+            details={"engine": engine, "latency_ms": latency_ms, "chars": len(text), "audio_bytes": len(audio_bytes)},
         )
         return {
             "text": text,
+            "engine": engine,
             "latency_ms": latency_ms,
             "audio_path": str(audio_path),
             "transcript_path": str(transcript_path),
         }
 
     def speak(self, *, text: str) -> dict[str, Any]:
+        engine = self.config.voice.tts_engine
+        if engine not in TTS_ENGINES:
+            raise ValueError(f"Unknown TTS engine: {engine}. Supported: {', '.join(sorted(TTS_ENGINES))}")
         if not self.config.voice.tts_configured:
             raise VoiceNotConfigured("TTS engine is not configured; set [voice] tts_command in config.toml.")
         spoken = text.strip()[:SPOKEN_TEXT_MAX_CHARS]
         if not spoken:
             raise ValueError("Nothing to speak.")
         stamp = _stamp()
-        output_path = self.voice_dir / f"{stamp}-out.wav"
+        audio_format = "mp3" if engine == "elevenlabs" else "wav"
+        output_path = self.voice_dir / f"{stamp}-out.{audio_format}"
         self.voice_dir.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
-        self._run_engine(
-            self.config.voice.tts_command,
-            replacements={"{output}": str(output_path)},
-            engine="tts",
-            stdin_text=spoken,
-        )
+        if engine == "elevenlabs":
+            audio_bytes = self._speak_elevenlabs(spoken)
+            output_path.write_bytes(audio_bytes)
+        else:
+            self._run_engine(
+                self.config.voice.tts_command,
+                replacements={"{output}": str(output_path)},
+                engine="tts",
+                stdin_text=spoken,
+            )
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                raise ValueError("TTS engine produced no audio output.")
+            audio_bytes = output_path.read_bytes()
         latency_ms = int((time.perf_counter() - started) * 1000)
-        if not output_path.is_file() or output_path.stat().st_size == 0:
-            raise ValueError("TTS engine produced no audio output.")
-        audio_bytes = output_path.read_bytes()
         self.db.audit(
             actor="voice",
             action="voice.speak",
             target=str(output_path),
             permission_tier="L0_READ",
             status="ok",
-            details={"latency_ms": latency_ms, "chars": len(spoken), "audio_bytes": len(audio_bytes)},
+            details={"engine": engine, "latency_ms": latency_ms, "chars": len(spoken), "audio_bytes": len(audio_bytes)},
         )
         return {
             "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
             "audio_path": str(output_path),
-            "format": "wav",
+            "format": audio_format,
+            "engine": engine,
             "latency_ms": latency_ms,
             "spoken_chars": len(spoken),
         }
@@ -185,6 +225,52 @@ class VoiceService:
             "conversation": response.get("conversation"),
             "contrarian": response.get("contrarian"),
         }
+
+    def _transcribe_deepgram(self, audio_bytes: bytes) -> str:
+        api_key = self._require_api_key(self.config.voice.stt_api_key_env, engine="Deepgram")
+        params = urllib.parse.urlencode({"model": self.config.voice.stt_model, "smart_format": "true"})
+        request = urllib.request.Request(
+            f"{DEEPGRAM_URL}?{params}",
+            data=audio_bytes,
+            headers={"Authorization": f"Token {api_key}", "Content-Type": "audio/wav"},
+            method="POST",
+        )
+        payload = json.loads(self._http_call(request, engine="Deepgram STT").decode("utf-8", errors="replace"))
+        try:
+            transcript = payload["results"]["channels"][0]["alternatives"][0]["transcript"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError(f"Deepgram STT returned an unexpected response shape: {exc}") from exc
+        return str(transcript).strip()
+
+    def _speak_elevenlabs(self, text: str) -> bytes:
+        api_key = self._require_api_key(self.config.voice.tts_api_key_env, engine="ElevenLabs")
+        voice_id = urllib.parse.quote(self.config.voice.tts_voice, safe="")
+        request = urllib.request.Request(
+            f"{ELEVENLABS_URL}/{voice_id}",
+            data=json.dumps({"text": text, "model_id": self.config.voice.tts_model}).encode("utf-8"),
+            headers={"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
+            method="POST",
+        )
+        audio = self._http_call(request, engine="ElevenLabs TTS")
+        if not audio:
+            raise ValueError("ElevenLabs TTS returned no audio.")
+        return audio
+
+    def _require_api_key(self, env_name: str, *, engine: str) -> str:
+        api_key = os.environ.get(env_name, "").strip()
+        if not api_key:
+            raise VoiceNotConfigured(f"{engine} API key environment variable is not set: {env_name}")
+        return api_key
+
+    def _http_call(self, request: urllib.request.Request, *, engine: str) -> bytes:
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.voice.timeout_seconds) as response:  # noqa: S310 - fixed https endpoints
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:200]
+            raise ValueError(f"{engine} request failed (HTTP {exc.code}): {detail}") from exc
+        except Exception as exc:
+            raise ValueError(f"{engine} request failed: {exc}") from exc
 
     def _write_artifact(self, name: str, data: bytes) -> Path:
         self.voice_dir.mkdir(parents=True, exist_ok=True)
