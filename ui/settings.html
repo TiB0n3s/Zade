@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade — Settings</title>
+  <style>
+    /* Page-specific layout only; colors/type/components from /ui/zade-ui.css.
+       Config + diagnostics consolidated out of primary nav: charters, ops,
+       notifications, plus Skills and Evals rehomed here from the old System page. */
+    * { box-sizing: border-box; }
+    h1 { margin: 0 0 20px; }
+    /* prototype controls page inset via .page; drop main's own centered padding */
+    body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
+    .page { padding: 44px 48px 60px; max-width: 820px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
+
+    .tabs { display: flex; gap: 6px; margin-bottom: 24px; flex-wrap: wrap; }
+    .tabs button { border-radius: 999px; padding: 7px 15px; font-size: 12.5px; min-height: 0; border: 1px solid var(--z-line-strong); color: var(--z-muted); background: transparent; }
+    .tabs button.active { border-color: var(--z-accent); background: rgba(194,160,106,0.10); color: var(--z-text); }
+    [data-panel][hidden] { display: none; }
+
+    .section { margin-bottom: 22px; }
+    .field-label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
+    .field-note { font-size: 11.5px; color: var(--z-faint); margin: -2px 0 8px; }
+    .charter-quote { font-family: var(--z-serif); font-style: italic; font-size: 16px; color: var(--z-ink-hi); line-height: 1.5; }
+    .charter-attr { font-size: 11.5px; color: var(--z-faint); margin-top: 3px; }
+
+    .status-line { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--z-ghost); }
+    .dot.ok { background: var(--z-ok); }
+    .dot.bad { background: var(--z-bad); }
+    .status-text { font-size: 13px; color: var(--z-ink-hi); }
+    .status-sub { font-size: 11.5px; color: var(--z-faint); margin-bottom: 8px; }
+
+    .row { padding: 12px 2px; border-top: 1px solid var(--z-line-soft); display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .row-main { min-width: 0; }
+    .row-title { font-size: 13px; color: var(--z-ink-hi); }
+    .row-title.mono { font-family: var(--z-mono); font-size: 12.5px; }
+    .row-sub { font-size: 11.5px; color: var(--z-faint); margin-top: 2px; }
+    .row-frag { font-size: 13px; color: var(--z-ink); }
+    .row-frag .muted { color: var(--z-faint); }
+    .empty { color: var(--z-faint); font-size: 12.5px; padding: 12px 2px; }
+
+    .switch { border-radius: 999px; padding: 5px 14px; font-size: 11.5px; min-height: 0; white-space: nowrap; }
+    .switch.on { color: var(--z-ok-text); border-color: rgba(90,138,114,0.6); background: rgba(90,138,114,0.14); }
+    .switch.off { color: var(--z-muted); border-color: var(--z-line-strong); background: transparent; }
+    .static-pill { color: var(--z-muted); background: rgba(255,255,255,0.05); border: 0; border-radius: 2px; padding: 3px 8px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+
+    .skills-filter { margin-bottom: 12px; }
+    .skills-filter input { width: 100%; border-radius: 6px; }
+    .summary-line { font-size: 12px; color: var(--z-muted); margin-bottom: 12px; }
+    .skill-desc { font-size: 11.5px; color: var(--z-muted); margin-top: 2px; max-width: 60ch; }
+    .risk { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 7px; border-radius: 2px; color: var(--z-muted); background: rgba(255,255,255,0.05); }
+    .risk.approval_gated { color: var(--z-info-text); background: rgba(128,107,184,0.15); }
+    .risk.local_write { color: var(--z-warn-text); background: rgba(194,160,106,0.13); }
+
+    .run-note { font-size: 12px; margin: 8px 0; min-height: 14px; }
+    .run-note.good { color: var(--z-ok-text); }
+    .run-note.err { color: var(--z-bad-text); }
+    @media (max-width: 720px) { .page { padding: 26px 20px 48px; } .row { flex-direction: column; align-items: flex-start; } }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body data-zade-type="sans">
+  <main>
+    <div class="page">
+      <div class="kicker">Settings</div>
+      <h1>Charters, ops &amp; notifications</h1>
+
+      <div class="tabs">
+        <button type="button" data-tab="charters" class="active">Charters</button>
+        <button type="button" data-tab="ops">Ops</button>
+        <button type="button" data-tab="notify">Notifications</button>
+        <button type="button" data-tab="skills">Skills</button>
+        <button type="button" data-tab="evals">Evals</button>
+      </div>
+
+      <!-- Charters -->
+      <section data-panel="charters">
+        <div class="section"><div class="field-label">Identity charter</div><div class="charter-quote" id="idMission">Loading…</div></div>
+        <div class="section"><div class="field-label">Voice charter</div><div class="charter-quote" id="voVoice">Loading…</div></div>
+        <div class="section"><div class="field-label">Relationship charters</div><div id="relList"><div class="empty">Loading…</div></div></div>
+      </section>
+
+      <!-- Ops -->
+      <section data-panel="ops" hidden>
+        <div class="section">
+          <div class="status-line"><span class="dot" id="healthDot"></span><span class="status-text" id="healthText">Checking…</span></div>
+          <div class="status-sub" id="healthSub"></div>
+        </div>
+        <div class="section"><div class="field-label">Backups</div><div id="backupsList"><div class="empty">Loading…</div></div></div>
+        <div class="section"><div class="field-label">Model roles</div><div id="modelsList"><div class="empty">Loading…</div></div></div>
+        <div class="section">
+          <div class="field-label">Function access</div>
+          <div class="field-note">Actions the runtime can dispatch once approved or directly commanded by you. Turn one off to revoke it — Zade can't dispatch a revoked handler even after approval.</div>
+          <div id="handlersList"><div class="empty">Loading…</div></div>
+        </div>
+      </section>
+
+      <!-- Notifications -->
+      <section data-panel="notify" hidden>
+        <div id="channelsList"><div class="empty">Loading…</div></div>
+      </section>
+
+      <!-- Skills -->
+      <section data-panel="skills" hidden>
+        <div class="summary-line" id="skillsSummary"></div>
+        <div class="skills-filter"><input id="skillsFilter" placeholder="Filter skills by name, source, or risk"></div>
+        <div id="skillsList"><div class="empty">Loading…</div></div>
+      </section>
+
+      <!-- Evals -->
+      <section data-panel="evals" hidden>
+        <div class="section">
+          <button id="runEvalBtn">Run health check</button>
+          <div class="run-note" id="evalNote"></div>
+        </div>
+        <div class="section"><div class="field-label">Recent runs</div><div id="runsList"><div class="empty">Loading…</div></div></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    (async () => { if (token()) return; try { const r = await fetch('/session/token'); if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); } } catch (e) {} })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    async function withBusy(btn, label, fn) {
+      const original = btn.textContent; btn.disabled = true; btn.textContent = label;
+      try { return await fn(); } finally { btn.disabled = false; btn.textContent = original; }
+    }
+    const prettyLabel = (v) => (v == null || v === '') ? '' : String(v).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    function fmtBytes(n) { if (n == null) return ''; const u = ['B', 'KB', 'MB', 'GB']; let i = 0; let v = Number(n); while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; } return v.toFixed(v < 10 && i > 0 ? 1 : 0) + u[i]; }
+
+    // ---- Charters ----
+    async function loadCharters() {
+      try {
+        const [c, v, r] = await Promise.all([
+          api('/identity/charter').catch(() => ({ charter: {} })),
+          api('/identity/voice').catch(() => ({ charter: {} })),
+          api('/identity/relationships?limit=50').catch(() => ({ charters: [] }))
+        ]);
+        byId('idMission').textContent = (c.charter && c.charter.mission) || 'No identity charter recorded.';
+        byId('voVoice').textContent = (v.charter && v.charter.overall_voice) || 'No voice charter recorded.';
+        const rels = r.charters || [];
+        byId('relList').innerHTML = rels.length
+          ? rels.map((rc) => `
+              <div class="section" style="margin-bottom:16px;">
+                <div class="charter-quote">${esc(rc.first_principle || rc.summary || '—')}</div>
+                <div class="charter-attr">${esc(rc.subject_name)}${rc.relationship_type ? ' · ' + esc(prettyLabel(rc.relationship_type)) : ''}</div>
+              </div>`).join('')
+          : '<div class="empty">No relationship charters.</div>';
+      } catch (err) { byId('idMission').textContent = 'Could not load charters — ' + err.message; }
+    }
+
+    // ---- Ops ----
+    async function loadOps() {
+      // health
+      try {
+        const health = await api('/ops/health-check');
+        const ok = health.ok !== false;
+        byId('healthDot').className = 'dot ' + (ok ? 'ok' : 'bad');
+        byId('healthText').textContent = ok ? 'Kernel healthy' : 'Needs attention';
+        const checks = health.checks || {};
+        const parts = [];
+        if (checks.database) parts.push('data ' + (checks.database.ok ? 'ok' : 'error'));
+        if (checks.ui) parts.push('ui ' + (checks.ui.ok ? 'ok' : 'error'));
+        if (checks.ollama) parts.push('models ' + (checks.ollama.ok ? 'ok' : 'error'));
+        if (checks.queue && checks.queue.counts) parts.push((checks.queue.counts.pending || 0) + ' tasks waiting');
+        byId('healthSub').textContent = parts.join(' · ');
+      } catch (err) { byId('healthText').textContent = 'Health check failed'; byId('healthDot').className = 'dot bad'; }
+      // backups
+      try {
+        const { items } = await api('/ops/backups?limit=25');
+        byId('backupsList').innerHTML = (items && items.length)
+          ? items.map((b) => `<div class="row"><div class="row-frag">${esc(b.name)} <span class="muted">— ${esc(fmtBytes(b.size_bytes))}</span></div></div>`).join('')
+          : '<div class="empty">No backups.</div>';
+      } catch (err) { byId('backupsList').innerHTML = '<div class="empty">Could not load backups.</div>'; }
+      // models
+      try {
+        const models = await api('/models');
+        const roles = models.roles || {};
+        const missing = models.missing_roles || {};
+        const entries = Object.entries(roles);
+        byId('modelsList').innerHTML = entries.length
+          ? entries.map(([role, name]) => `<div class="row"><div class="row-frag">${esc(prettyLabel(role))} <span class="muted">— ${esc(name)}${missing[role] ? ' (not installed)' : ''}</span></div></div>`).join('')
+          : '<div class="empty">No model roles configured.</div>';
+      } catch (err) { byId('modelsList').innerHTML = '<div class="empty">Could not load models.</div>'; }
+      // function access (grant/revoke per handler)
+      await loadHandlers();
+    }
+    async function loadHandlers() {
+      try {
+        const { items } = await api('/action-handlers');
+        byId('handlersList').innerHTML = (items && items.length)
+          ? items.map((h) => {
+              const on = h.enabled !== false;
+              return `
+              <div class="row" data-action="${esc(h.action)}">
+                <div class="row-main">
+                  <div class="row-title mono">${esc(h.action)}</div>
+                  <div class="row-sub">${esc(h.description || '')}</div>
+                </div>
+                <button class="switch ${on ? 'on' : 'off'}" data-act="toggle" data-enabled="${on}">${on ? 'On' : 'Off'}</button>
+              </div>`;
+            }).join('')
+          : '<div class="empty">No handlers registered.</div>';
+      } catch (err) { byId('handlersList').innerHTML = '<div class="empty">Could not load handlers.</div>'; }
+    }
+    byId('handlersList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act="toggle"]');
+      if (!btn) return;
+      const row = btn.closest('.row');
+      const action = row.getAttribute('data-action');
+      const enabled = btn.dataset.enabled === 'true';
+      withBusy(btn, '…', async () => {
+        try {
+          await api('/action-handlers/' + encodeURIComponent(action) + '/' + (enabled ? 'disable' : 'enable'), { method: 'POST', body: '{}' });
+          await loadHandlers();
+        } catch (err) { row.querySelector('.row-sub').textContent = 'Failed: ' + err.message; }
+      });
+    });
+
+    // ---- Notifications ----
+    const CHANNEL_NOTES = {
+      ui: 'On by default — shows up in the app',
+      voice: "Speaks replies aloud when you're on a call with Zade",
+      sms: 'Critical alerts only, via your Android gateway'
+    };
+    let channelState = {};
+    async function loadNotify() {
+      try {
+        const { items } = await api('/notify/channels');
+        (items || []).forEach((ch) => { channelState[ch.channel] = ch; });
+        byId('channelsList').innerHTML = (items && items.length)
+          ? items.map((ch) => `
+              <div class="row" data-channel="${esc(ch.channel)}">
+                <div class="row-main">
+                  <div class="row-title">${esc(prettyLabel(ch.channel))}</div>
+                  <div class="row-sub">${esc(CHANNEL_NOTES[ch.channel] || ('Severity ' + prettyLabel(ch.min_severity || 'info') + ' and up'))}</div>
+                </div>
+                <button class="switch ${ch.enabled ? 'on' : 'off'}" data-act="toggle">${ch.enabled ? 'On' : 'Off'}</button>
+              </div>`).join('')
+          : '<div class="empty">No channels.</div>';
+      } catch (err) { byId('channelsList').innerHTML = '<div class="empty">Could not load channels — ' + esc(err.message) + '</div>'; }
+    }
+    byId('channelsList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act="toggle"]');
+      if (!btn) return;
+      const row = btn.closest('.row');
+      const channel = row.getAttribute('data-channel');
+      const ch = channelState[channel] || {};
+      withBusy(btn, '…', async () => {
+        try {
+          await api('/notify/channels/' + encodeURIComponent(channel), { method: 'POST', body: JSON.stringify({
+            enabled: !ch.enabled,
+            min_severity: ch.min_severity || 'info',
+            quiet_start: ch.quiet_start || '',
+            quiet_end: ch.quiet_end || '',
+            rate_limit_per_hour: ch.rate_limit_per_hour == null ? 30 : ch.rate_limit_per_hour,
+            recipients: ch.recipients || []
+          }) });
+          await loadNotify();
+        } catch (err) { row.querySelector('.row-sub').textContent = 'Failed: ' + err.message; }
+      });
+    });
+
+    // ---- Skills ----
+    let allSkills = [];
+    async function loadSkills() {
+      try {
+        const data = await api('/skills?limit=500');
+        allSkills = data.items || [];
+        const s = data.summary || {};
+        const gated = (s.by_risk_tier && s.by_risk_tier.approval_gated) || 0;
+        byId('skillsSummary').textContent = `${s.enabled || 0} of ${s.total || allSkills.length} enabled · ${gated} approval-gated`;
+        renderSkills();
+      } catch (err) { byId('skillsList').innerHTML = '<div class="empty">Could not load skills — ' + esc(err.message) + '</div>'; }
+    }
+    function renderSkills() {
+      const q = byId('skillsFilter').value.trim().toLowerCase();
+      const list = q ? allSkills.filter((sk) => (sk.name + ' ' + (sk.source || '') + ' ' + (sk.risk_tier || '') + ' ' + (sk.description || '')).toLowerCase().includes(q)) : allSkills;
+      byId('skillsList').innerHTML = list.length ? list.map(renderSkill).join('') : '<div class="empty">No skills match.</div>';
+    }
+    function renderSkill(sk) {
+      return `
+        <div class="row" data-name="${esc(sk.name)}">
+          <div class="row-main">
+            <div class="row-title">${esc(sk.name)} <span class="risk ${esc(sk.risk_tier || '')}">${esc(prettyLabel(sk.risk_tier))}</span></div>
+            <div class="skill-desc">${esc((sk.description || '').slice(0, 140))}</div>
+          </div>
+          <button class="switch ${sk.enabled ? 'on' : 'off'}" data-act="toggle" data-enabled="${sk.enabled}">${sk.enabled ? 'Enabled' : 'Enable'}</button>
+        </div>`;
+    }
+    byId('skillsFilter').addEventListener('input', renderSkills);
+    byId('skillsList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act="toggle"]');
+      if (!btn) return;
+      const row = btn.closest('.row');
+      const name = row.getAttribute('data-name');
+      const enabled = btn.dataset.enabled === 'true';
+      withBusy(btn, '…', async () => {
+        try {
+          await api('/skills/' + encodeURIComponent(name) + '/' + (enabled ? 'disable' : 'enable'), { method: 'POST', body: '{}' });
+          await loadSkills();
+        } catch (err) { row.querySelector('.skill-desc').textContent = 'Failed: ' + err.message; }
+      });
+    });
+
+    // ---- Evals ----
+    async function loadRuns() {
+      try {
+        const { items } = await api('/evals/runs?limit=25');
+        byId('runsList').innerHTML = (items && items.length)
+          ? items.map((r) => {
+              const total = (r.passed || 0) + (r.failed || 0) + (r.errors || 0);
+              return `<div class="row"><div class="row-main"><div class="row-title">#${esc(r.id)} · ${esc(r.label)}</div><div class="row-sub">${esc(r.created_at)}${r.duration_ms != null ? ' · took ' + r.duration_ms + 'ms' : ''}</div></div><span class="pill ${r.pass_rate >= 1 ? 'done' : (r.pass_rate >= 0.8 ? 'pending' : 'miss')}">${Math.round((r.pass_rate || 0) * 100)}% · ${esc(r.passed || 0)}/${total}</span></div>`;
+            }).join('')
+          : '<div class="empty">No runs yet.</div>';
+      } catch (err) { byId('runsList').innerHTML = '<div class="empty">Could not load runs.</div>'; }
+    }
+    async function runEval() {
+      const note = byId('evalNote'); note.textContent = ''; note.className = 'run-note';
+      try {
+        const result = await api('/evals/run', { method: 'POST', body: JSON.stringify({ label: 'manual', categories: [], case_names: [], max_cases: 50 }) });
+        note.textContent = `Run #${result.run_id} — ${result.passed}/${result.total} passed (${Math.round((result.pass_rate || 0) * 100)}%), ${result.failed} failed, ${result.errors} errors.`;
+        note.className = 'run-note ' + (result.failed || result.errors ? 'err' : 'good');
+        await loadRuns();
+      } catch (err) { note.textContent = 'Run failed: ' + err.message; note.className = 'run-note err'; }
+    }
+    byId('runEvalBtn').addEventListener('click', () => withBusy(byId('runEvalBtn'), 'Running…', runEval));
+
+    // ---- Tabs (lazy load per tab) ----
+    const LOADERS = { charters: loadCharters, ops: loadOps, notify: loadNotify, skills: loadSkills, evals: loadRuns };
+    const loaded = {};
+    const TABS = ['charters', 'ops', 'notify', 'skills', 'evals'];
+    function activate(tab) {
+      if (!TABS.includes(tab)) tab = 'charters';
+      document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+      document.querySelectorAll('[data-panel]').forEach((p) => { if (p.dataset.panel === tab) p.removeAttribute('hidden'); else p.setAttribute('hidden', ''); });
+      if (!loaded[tab]) { loaded[tab] = true; LOADERS[tab](); }
+    }
+    document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.tab; activate(b.dataset.tab); }));
+    window.addEventListener('hashchange', () => activate(location.hash.replace('#', '')));
+    activate(location.hash.replace('#', ''));
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

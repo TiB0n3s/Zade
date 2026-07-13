@@ -173,6 +173,7 @@ def test_dev_action_runs_through_approval_dispatch(tmp_path: Path, monkeypatch) 
         "title": "Run git status in the workspace",
         "action": "dev.command.run",
         "permission_tier": "L3_EXTERNAL_ACTION",
+        "source": "zade.proposal",
         "metadata": {"command": "git-status"},
     })
     # Machine dev action is approval-gated, never autonomous.
@@ -194,7 +195,7 @@ def test_dev_action_runs_through_approval_dispatch(tmp_path: Path, monkeypatch) 
     # Dispatch without the typed phrase is rejected.
     queued2 = client.post("/work/items", json={
         "kind": "action_step", "title": "again", "action": "dev.command.run",
-        "permission_tier": "L3_EXTERNAL_ACTION", "metadata": {"command": "python-version"},
+        "permission_tier": "L3_EXTERNAL_ACTION", "source": "zade.proposal", "metadata": {"command": "python-version"},
     })
     no_phrase = client.post(
         f"/work/items/{queued2.json()['item_id']}/approve",

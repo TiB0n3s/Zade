@@ -78,7 +78,7 @@ class AuthorityPolicy:
           4. deny phrases / financial-execution on the target, but ONLY for
              non-local actions, so ingesting a file named "wire transfer notes"
              is not blocked
-          5. external/system approval screening on the action — BEFORE the local
+          5. external/system proposal screening on the action — BEFORE the local
              allow, so an external capability named under a local prefix
              (self.install, work.http) cannot ride the prefix to auto-allow
           6. known-local read/memory allow at L0/L1
@@ -217,7 +217,7 @@ class AuthorityPolicy:
                     "financial execution on the action (a financial noun plus an execution verb)",
                     "deny phrases on the normalized action",
                     "deny phrases / financial execution on the target (non-local actions only)",
-                    "external/system approval screening on the action (before the local allow)",
+                    "external/system proposal screening on the action (before the local allow)",
                     "known-local read/memory allow for L0/L1 tiers",
                     "tier defaults",
                 ],
@@ -227,7 +227,9 @@ class AuthorityPolicy:
                     "Financial vocabulary (order/payment/trade) is allowed for analysis and only denied when "
                     "paired with an execution verb, so a founder can review finances but Zade can never transact. "
                     "External-capability screening runs before the local-prefix allow, so a name like "
-                    "self.install cannot ride a local prefix to auto-allow."
+                    "self.install cannot ride a local prefix to auto-allow. Direct founder work-item commands "
+                    "are treated as already approved by the work queue; autonomous Zade/system proposals still "
+                    "create approval requests."
                 ),
             },
             "autonomous": [
@@ -240,12 +242,12 @@ class AuthorityPolicy:
                 "Cold archive copies for ingested files",
             ],
             "approval_required": [
-                "Generic file writes or edits",
-                "Shell commands and process control",
-                "Installing software or changing services",
-                "Browser, email, calendar, messaging, GitHub, or other external actions",
-                "Network/API calls outside the configured local Ollama endpoint",
-                "Source-control publishing or deployment",
+                "Generic file writes or edits proposed by Zade/system automation",
+                "Shell commands and process control proposed by Zade/system automation",
+                "Installing software or changing services proposed by Zade/system automation",
+                "Browser, email, calendar, messaging, GitHub, or other external actions proposed by Zade/system automation",
+                "Network/API calls outside the configured local Ollama endpoint proposed by Zade/system automation",
+                "Source-control publishing or deployment proposed by Zade/system automation",
             ],
             "denied": [
                 "Live trading, broker mutation, order placement, or account-risk changes",
@@ -286,7 +288,8 @@ def build_self_inventory(
         "tools": tools,
         "operating_rule": (
             "Act autonomously for local read, reasoning, memory, and ingestion work. "
-            "Require explicit approval for generic file/system/external actions. "
+            "Treat direct founder commands as already approved; require approval for Zade/system-proposed "
+            "generic file/system/external actions. "
             "Deny destructive, credential, financial, broker, and live-trading mutations."
         ),
     }

@@ -258,6 +258,7 @@ def test_imap_sync_uses_env_credentials_and_mocked_fetcher(tmp_path: Path, monke
                 "action": "external.connector.sync",
                 "target": "founder-inbox",
                 "permission_tier": "L3_EXTERNAL_ACTION",
+                "source": "zade.proposal",
             },
         )
         dispatched = _approve_and_dispatch(client, fresh.json()["item_id"])

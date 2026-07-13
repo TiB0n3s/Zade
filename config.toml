@@ -1,6 +1,11 @@
 # Zade local overrides. Only sections present here override built-in defaults;
 # see config.example.toml for everything that can be configured.
 
+[ollama]
+# Chat/voice sampling temperature. Default is 0.2 (deterministic, flat). Raised so
+# the charter voice has room for texture and doesn't repeat the same phrasing.
+temperature = 0.6
+
 [voice]
 # Cloud speech engines (standing grant: audio and reply text leave the machine).
 # API keys are read from the DEEPGRAM_API_KEY and ELEVENLABS_API_KEY environment

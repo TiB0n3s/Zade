@@ -14,6 +14,37 @@ ACTIVE_EXPERIMENT_STATUSES = ("active", "running", "revised")
 INTEGRITY_SEVERITY_SCORES = {"red": 80, "orange": 70, "yellow": 56}
 CONFLICT_SEVERITY_SCORES = {"red": 78, "orange": 68, "yellow": 62}
 
+ATTENTION_KIND_HREFS = {
+    "approvals_pending": "/ui/inbox.html#decisions",
+    "commitment_overdue": "/ui/inbox.html#promises",
+    "commitment_drifting": "/ui/inbox.html#promises",
+    "action_plan_stalled": "/ui/inbox.html#motion",
+    "connector_items_staged": "/ui/memory.html#connectors",
+    "kill_criteria_overdue": "/ui/ledger.html#sec-kill-criteria",
+    "integrity_warning": "/ui/ledger.html#sec-integrity-warnings",
+    "thesis_conflict": "/ui/ledger.html#sec-thesis-conflicts",
+    "prediction_overdue": "/ui/ledger.html#sec-predictions",
+    "decision_revisit_due": "/ui/ledger.html#sec-decisions",
+    "confidence_drop": "/ui/ledger.html#sec-confidence-events",
+    "override_review_due": "/ui/ledger.html#sec-overrides",
+    "assumption_review_due": "/ui/ledger.html#sec-assumptions",
+}
+
+ATTENTION_SUBJECT_HREFS = {
+    "approval_requests": "/ui/inbox.html#decisions",
+    "commitment": "/ui/inbox.html#promises",
+    "action_plan": "/ui/inbox.html#motion",
+    "connector_items": "/ui/memory.html#connectors",
+    "kill_criteria": "/ui/ledger.html#sec-kill-criteria",
+    "integrity_warning": "/ui/ledger.html#sec-integrity-warnings",
+    "thesis_conflict": "/ui/ledger.html#sec-thesis-conflicts",
+    "prediction": "/ui/ledger.html#sec-predictions",
+    "decision_memo": "/ui/ledger.html#sec-decisions",
+    "confidence_event": "/ui/ledger.html#sec-confidence-events",
+    "founder_override": "/ui/ledger.html#sec-overrides",
+    "assumption": "/ui/ledger.html#sec-assumptions",
+}
+
 
 class SurfacingService:
     """Proactive attention surfacing for the founder.
@@ -641,7 +672,12 @@ def _item(
         "subject_id": subject_id,
         "recommended_action": recommended_action,
         "opened_at": opened_at,
+        "href": _item_href(kind=kind, subject_type=subject_type),
     }
+
+
+def _item_href(*, kind: str, subject_type: str) -> str:
+    return ATTENTION_KIND_HREFS.get(kind) or ATTENTION_SUBJECT_HREFS.get(subject_type) or "/ui/surfacing.html#attention"
 
 
 def _item_headline(item: dict[str, Any]) -> str:

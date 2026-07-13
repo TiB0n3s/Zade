@@ -68,8 +68,31 @@ class ApprovalService:
             "training_by_outcome": by_outcome,
         }
 
-    def list_handlers(self) -> list[dict[str, str]]:
+    def list_handlers(self) -> list[dict[str, Any]]:
         return self.handlers.list_handlers() if self.handlers else []
+
+    def set_handler_access(self, action: str, *, enabled: bool, actor: str = "founder") -> dict[str, Any]:
+        """Grant or revoke a single registered action handler.
+
+        Enablement is an operator switch layered on top of the authority policy,
+        not part of it: authority still classifies the action's tier, while this
+        overlay decides whether an approved item may actually be dispatched to a
+        local handler. Enforced at the existing dispatch chokepoint
+        (ActionHandlerRegistry.can_dispatch), so a revoked handler is blocked for
+        direct dispatch, approve-and-dispatch, and the console alike.
+        """
+        if self.handlers is None:
+            raise ValueError("No action handler registry is configured.")
+        handler = self.handlers.set_access(action, enabled)
+        self.db.audit(
+            actor=actor,
+            action="action_handler.grant" if enabled else "action_handler.revoke",
+            target=action,
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={"enabled": enabled, "description": handler.get("description", "")},
+        )
+        return handler
 
     def get_request(self, request_id: int) -> dict[str, Any]:
         request = self.db.get_approval_request(request_id)
@@ -393,7 +416,6 @@ class ApprovalService:
     def dispatch_work_item(self, item_id: int, *, typed_confirmation: str = "") -> dict[str, Any]:
         if self.handlers is None:
             raise ValueError("No action handler registry is configured.")
-        self._validate_typed_confirmation(typed_confirmation)
         item = self.db.get_work_item(item_id)
         if not item:
             raise ValueError(f"Work item not found: {item_id}")
@@ -401,8 +423,11 @@ class ApprovalService:
             raise ValueError(f"Work item is {item.status}, not approved.")
         if item.permission_tier in NON_APPROVABLE_TIERS or item.authority_decision == "deny":
             raise ValueError("Denied or irreversible boundaries cannot be dispatched.")
-        if not self.handlers.can_dispatch(item.action):
-            raise ValueError(f"No approved local handler registered for action: {item.action}")
+        if not _has_founder_implied_approval(item):
+            self._validate_typed_confirmation(typed_confirmation)
+        denial = self.handlers.dispatch_denial(item.action)
+        if denial:
+            raise ValueError(denial)
 
         self.db.update_work_item(item.id, status="running", authority_decision=item.authority_decision)
         try:
@@ -497,8 +522,9 @@ class ApprovalService:
             raise ValueError("Only work-item approval requests can be dispatched.")
         if self.handlers is None:
             raise ValueError("No action handler registry is configured.")
-        if not self.handlers.can_dispatch(request.action):
-            raise ValueError(f"No approved local handler registered for action: {request.action}")
+        denial = self.handlers.dispatch_denial(request.action)
+        if denial:
+            raise ValueError(denial)
 
     def _validate_typed_confirmation(self, typed_confirmation: str) -> None:
         if typed_confirmation.strip() != self.typed_confirmation_phrase:
@@ -625,6 +651,17 @@ def _proposal_sentence(request: ApprovalRequest) -> str:
     if request.target:
         return f"Zade wants to {request.action} -> {request.target}"
     return f"Zade wants to {request.action}"
+
+
+def _has_founder_implied_approval(item: Any) -> bool:
+    result = getattr(item, "result", {}) or {}
+    metadata = getattr(item, "metadata", {}) or {}
+    return (
+        result.get("approval_status") == "approved_by_founder_command"
+        or bool(result.get("founder_command"))
+        or bool(metadata.get("founder_command"))
+        or bool(metadata.get("direct_founder_command"))
+    )
 
 
 def _normalize_evidence(metadata: dict[str, Any]) -> dict[str, Any]:

@@ -33,6 +33,7 @@ def test_file_write_cannot_touch_kernel_state(tmp_path: Path, monkeypatch) -> No
     queued = client.post("/work/items", json={
         "kind": "external", "title": "overwrite the DB", "action": "local.file.write",
         "permission_tier": "L3_EXTERNAL_ACTION",
+        "source": "zade.proposal",
         "metadata": {"path": db_path, "content": "corrupt", "mode": "overwrite"},
     })
     dispatched = client.post(
@@ -46,6 +47,7 @@ def test_file_write_cannot_touch_kernel_state(tmp_path: Path, monkeypatch) -> No
     ok = client.post("/work/items", json={
         "kind": "external", "title": "write a note", "action": "local.file.write",
         "permission_tier": "L3_EXTERNAL_ACTION",
+        "source": "zade.proposal",
         "metadata": {"path": str(config.paths.hot_root / "Zade" / "note.txt"), "content": "hi", "mode": "overwrite"},
     })
     ok_dispatch = client.post(

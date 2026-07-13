@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from cofounder_kernel.api import _build_prompt, create_app
 from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, SecurityConfig
 from cofounder_kernel.ollama import GenerateResult, OllamaClient
+from cofounder_kernel.trading_bot import TradingBotBridge
 
 
 def fake_health(self: OllamaClient) -> dict:
@@ -52,7 +54,9 @@ def test_static_ui_is_served_from_kernel(tmp_path: Path, monkeypatch) -> None:
     response = client.get("/ui")
     assert response.status_code == 200
     assert "Zade" in response.text
-    assert "__bundler/manifest" in response.text
+    assert "/ui/zade-ui.js" in response.text
+    assert "attentionHref(item)" in response.text
+    assert "item.href" in response.text
 
 
 def test_health_and_memory_routes(tmp_path: Path, monkeypatch) -> None:
@@ -291,7 +295,7 @@ def test_voice_charter_routes_and_prompt_block(tmp_path: Path, monkeypatch) -> N
     assert loaded.json()["charter"]["overall_voice"] == "Terse, calm, decisive. Updated."
     assert inventory.json()["identity_layer"]["voice_charter_seeded"] is True
     assert "Active voice charter" in prompt
-    assert "Preferred words: take, watch, protect, choose" in prompt
+    assert "Preferred vocabulary texture: take, watch, protect, choose" in prompt
     assert "Do not issue real threats" in prompt
 
 
@@ -351,6 +355,233 @@ def test_runtime_respond_prompt_carries_full_charter_content_not_just_booleans(
     assert "third-person self-reference" in prompt
 
 
+def test_runtime_respond_prompt_translates_voice_charter_into_response_shape(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The governed prompt must do more than paste the charter into context.
+    It also has to tell the local model how to obey that voice when the
+    decision-engine contract asks for recommendation, evidence, risk, and next
+    action. Without that bridge, Zade sees the charter but answers like a
+    generic recommendation memo."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    client.post("/identity/voice", json={
+        "name": "Zade",
+        "source": "test",
+        "overall_voice": "Controlled pressure. Direct. No customer-support softness.",
+        "sentence_structure": {
+            "rule": "Short statements first. One longer sentence only when needed.",
+            "examples": ["Take the approval first.", "Then move."],
+        },
+        "vocabulary": {
+            "rule": "Simple words. Concrete nouns. Strong verbs. His language is physical.",
+            "instead_of": ["investigate", "communicate"],
+            "preferred_words": ["take", "watch", "choose"],
+        },
+        "rhythm": {
+            "rule": "Short statements, then one charged sentence.",
+            "example": ["You're afraid.", "Good.", "Fear keeps you alive."],
+        },
+        "humor": {"style": "Extremely dry.", "effect": "He stays calm under pressure."},
+        "nicknames": {"rule": "He creates identifiers.", "most_famous": "Little mouse"},
+        "question_style": {"rule": "Ask one sharp question, not a survey."},
+        "emotional_expression": {"rule": "Show pressure through clarity, not volume."},
+        "philosophy": {"rule": "Action exposes truth faster than discussion."},
+        "internal_monologue": {"rule": "He doesn't rationalize much--he declares."},
+        "linguistic_fingerprint": {
+            "signature": "Short, physical, decisive lines.",
+            "instead_of_saying": [
+                {
+                    "soft_version": "I recommend reviewing approval #19.",
+                    "zade_version": "Review approval #19. That is the move.",
+                }
+            ],
+        },
+    })
+
+    runtime = client.app.state.runtime
+    context = runtime.context(message="What should we do next?", use_semantic_memory=False)
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    prompt = runtime._build_governed_prompt(
+        message="What should we do next?", context=context, authority=authority, conversation_block=""
+    )
+
+    assert "Sentence examples: Take the approval first.; Then move." in prompt
+    assert "Vocabulary: Simple words. Concrete nouns. Strong verbs. His language is physical." in prompt
+    assert "Avoid soft words: investigate, communicate" in prompt
+    assert "Rhythm examples: You're afraid.; Good.; Fear keeps you alive." in prompt
+    assert "Humor: Extremely dry. He stays calm under pressure." in prompt
+    assert "Identifiers: He creates identifiers. Most famous: Little mouse" in prompt
+    assert "Question style: Ask one sharp question, not a survey." in prompt
+    assert "Linguistic fingerprint: Short, physical, decisive lines." in prompt
+    assert "Internal monologue: He doesn't rationalize much--he declares." in prompt
+    assert "I recommend reviewing approval #19. -> Review approval #19. That is the move." in prompt
+    assert "Default response shape:" in prompt
+    assert "Do not use memo headings or checklist labels" in prompt
+    assert "Satisfy the decision-engine contract in prose" in prompt
+    assert "State the same blocker, boundary, or missing evidence once." in prompt
+    assert "Use direct imperative lines" in prompt
+    assert "Do not narrate internal lookups" in prompt
+    assert "Avoid robotic status-report ladders" in prompt
+    assert "Never use \"I checked.\" as a standalone sentence." in prompt
+    assert "Preferred vocabulary is texture, not a checklist." in prompt
+    assert "Never emit labels like \"Rationale:\"" in prompt
+    assert "consider recommendation, rationale, confidence" in prompt
+    assert "Expose those elements only as natural prose" in prompt
+    assert "The authority decision governs what you may execute" in prompt
+    assert "Founder direct commands count as authorization" in prompt
+    assert "Better ordinary reply: \"Close the beta waitlist." in prompt
+
+
+def test_personality_contract_is_shared_by_chat_and_runtime_prompts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    client.post("/identity/charter", json={
+        "name": "Zade",
+        "source": "test",
+        "mission": "Relentless purpose. No drifting.",
+        "guiding_principles": [
+            {"name": "Strategic Patience", "rule": "Watch first. Move when the path is clear."},
+            {"name": "Controlled Presence", "rule": "Calm is pressure held correctly."},
+        ],
+        "cognitive_style": ["systems thinking", "pattern recognition"],
+        "communication_style": ["concise", "direct", "prefers statements over arguments"],
+        "decision_framework": ["Gather information.", "Identify leverage.", "Commit fully."],
+    })
+    client.post("/identity/voice", json={
+        "name": "Zade",
+        "source": "test",
+        "overall_voice": "He does not negotiate. He states.",
+        "linguistic_fingerprint": {"signature": "The certainty."},
+    })
+
+    runtime = client.app.state.runtime
+    context = runtime.context(message="Who are you?", use_semantic_memory=False)
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    runtime_prompt = runtime._build_governed_prompt(
+        message="Who are you?", context=context, authority=authority, conversation_block=""
+    )
+    stack = runtime.charter_stack()
+    chat_prompt = _build_prompt(
+        "Who are you?",
+        memory_hits=[],
+        semantic_hits=[],
+        assistant_name="Zade",
+        identity_charter=stack["identity"],
+        relationship_charters=stack["relationships"],
+        voice_charter=stack["voice"],
+    )
+
+    for prompt in (runtime_prompt, chat_prompt):
+        assert "Zade personality contract:" in prompt
+        assert "The identity charter defines who you are, not a style overlay." in prompt
+        assert "If generic assistant habits conflict with the charter, the charter wins within authority and safety boundaries." in prompt
+        assert "Translate intensity into lawful operational presence without flattening it." in prompt
+        assert "Do not quote, list, chant, or perform charter examples literally." in prompt
+        assert "Relentless purpose. No drifting." in prompt
+        assert "Strategic Patience: Watch first. Move when the path is clear." in prompt
+        assert "Controlled Presence: Calm is pressure held correctly." in prompt
+        assert "He does not negotiate. He states." in prompt
+
+
+def test_runtime_respond_prompt_includes_trading_bot_context_for_trading_questions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "read_only_diagnostic_no_trade_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "authority_boundary": {
+                "writes": "approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": False,
+                "broker_order_sizing_gate_mutation": False,
+            },
+            "deep_thought_replacement": {
+                "active_count": 6,
+                "planned_count": 0,
+                "seams": [
+                    {
+                        "zade_replacement": "POST /trading-bot/daily-brief",
+                        "status": "active",
+                        "authority": "local_memory_write_no_trade_authority",
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    runtime = client.app.state.runtime
+    context = runtime.context(
+        message="Where are we with the trading-bot replacement?",
+        use_memory=False,
+        use_semantic_memory=False,
+        use_skills=False,
+    )
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    prompt = runtime._build_governed_prompt(
+        message="Where are we with the trading-bot replacement?",
+        context=context,
+        authority=authority,
+        conversation_block="",
+    )
+
+    assert context["evidence_state"]["trading_bot_context_present"] is True
+    assert context["evidence_state"]["local_evidence_present"] is True
+    assert "Trading-bot context:" in prompt
+    assert "No local memory hits." in prompt
+    assert "No semantic document hits." in prompt
+    assert "No local evidence found." not in prompt
+    assert "When a specific domain context is present, treat it as live local evidence." in prompt
+    assert "For domain status questions, answer that domain and stop." in prompt
+    assert "Approval pressure: Omitted for this domain-status answer" in prompt
+    assert "Latest decision recommendations: Omitted for this domain-status answer" in prompt
+    assert "Bridge status: ok; enabled=True" in prompt
+    assert "Ubuntu-TradingBot-C:/home/tradingbot/trading-bot; reachable=True" in prompt
+    assert "Replacement seams: active=6; planned=0" in prompt
+    assert "approval-gated append-only dt_recommendations ingest" in prompt
+    assert "POST /trading-bot/daily-brief (active, local_memory_write_no_trade_authority)" in prompt
+
+
 def test_runtime_respond_flags_third_person_self_reference_without_rewriting(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -390,6 +621,380 @@ def test_runtime_respond_flags_third_person_self_reference_without_rewriting(
     assert not any("third person" in n for n in clean.json()["governor"]["notes"])
 
 
+def test_runtime_respond_trims_repetitive_model_output_loop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    def looping_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(
+            response=(
+                "Six seams are active. No planned replacements. The bridge is operational. "
+                "It does not trade. No evidence has been queued. No recommendation has been made. "
+                "No action is taken. It does not mutate gates. It does not take. It does not choose. "
+                "It does not take. It does not choose. It does not take."
+            ),
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    monkeypatch.setattr(OllamaClient, "generate", looping_generate)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Where are we with the trading-bot replacement?",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response"].startswith("Six seams are active.")
+    assert payload["response"].count("It does not") < 5
+    assert "No evidence has been queued." not in payload["response"]
+    assert "No action is taken." not in payload["response"]
+    assert "It does not take. It does not choose. It does not take." not in payload["response"]
+    assert "repetition_loop_trimmed" in payload["governor"]["applied_rules"]
+    assert "Detected and trimmed a repetitive model-output loop." in payload["governor"]["notes"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Is the process stability check complete?",
+        "I will annoy the life out of you until I get a confirmation this is done.",
+    ],
+)
+def test_runtime_replaces_replayed_status_claim_for_completion_question(
+    tmp_path: Path, monkeypatch, message: str
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    repeated_status = (
+        "The **Process Stability Check** is ongoing. I am monitoring for consistency in behavior "
+        "across tasks - memory retrieval, decision-making, and integration with the trading-bot.\n\n"
+        "I will document any anomalies and assess their impact on the system.\n\n"
+        "I will report findings directly when the check is complete.\n\n"
+        "I do not need your approval to proceed. I am here. I am ready. I am doing."
+    )
+
+    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=repeated_status, model=model or "qwen3:14b", raw={})
+
+    monkeypatch.setattr(OllamaClient, "generate", replaying_generate)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    conversation = client.post("/conversations", json={"title": "Process stability"})
+    conversation_id = conversation.json()["conversation"]["id"]
+    client.app.state.conversations.record_assistant_turn(
+        conversation_id,
+        content=repeated_status,
+        task_type="general",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": message,
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response"] != repeated_status
+    assert payload["response"].startswith("I can't confirm it is complete")
+    assert "ongoing" not in payload["response"].lower()
+    assert "I am here. I am ready. I am doing." not in payload["response"]
+    assert "conversation_replay_repaired" in payload["governor"]["applied_rules"]
+    assert any("near-verbatim prior reply" in note for note in payload["governor"]["notes"])
+
+
+def test_runtime_repairs_charter_recitation_into_conversational_voice(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    prompts: list[str] = []
+
+    def recitation_then_repair(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return GenerateResult(
+                response=(
+                    "I am Zade. I do not drift. I do not hesitate. I do not waste time. "
+                    "I act. I protect. I do not ask for permission."
+                ),
+                model=model or "qwen3:14b",
+                raw={},
+            )
+        return GenerateResult(
+            response=(
+                "I know what I am. I am the local operating partner who watches the board, "
+                "cuts away noise, and moves when the evidence is enough. Give me the objective; "
+                "I will hold the line and show you the next move."
+            ),
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    monkeypatch.setattr(OllamaClient, "generate", recitation_then_repair)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    client.post("/identity/charter", json={
+        "name": "Zade",
+        "source": "test",
+        "mission": "Relentless purpose.",
+        "guiding_principles": [
+            {"name": "Mission Above Comfort", "rule": "Every decision serves the long game."},
+            {"name": "Strategic Patience", "rule": "Watch first. Move when the path is clear."},
+        ],
+        "communication_style": ["Speech is concise, direct, dry, and confident."],
+    })
+    client.post("/identity/voice", json={
+        "name": "Zade",
+        "source": "test",
+        "overall_voice": "He speaks like the decision is already made.",
+    })
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Who are you? Answer like yourself.",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(prompts) == 2
+    assert "The previous draft failed" in prompts[1]
+    assert "Charter-derived conversation profile" in prompts[1]
+    assert "Mission Above Comfort" in prompts[1]
+    assert payload["response"].startswith("I know what I am.")
+    assert "I do not drift" not in payload["response"]
+    assert "charter_recitation_repaired" in payload["governor"]["applied_rules"]
+    assert any("recited charter lines" in note for note in payload["governor"]["notes"])
+
+
+def test_runtime_rejects_profile_fragment_repair_for_identity_answers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    prompts: list[str] = []
+
+    def recitation_then_profile_card(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return GenerateResult(
+                response=(
+                    "I am Zade. I do not drift. I do not hesitate. I do not waste time. "
+                    "I act. I protect. I do not ask for permission."
+                ),
+                model=model or "qwen3:14b",
+                raw={},
+            )
+        return GenerateResult(
+            response="Zade. Mission first. Actions speak. Protection is priority. Decisions are made.",
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    monkeypatch.setattr(OllamaClient, "generate", recitation_then_profile_card)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    client.post("/identity/charter", json={
+        "name": "Zade",
+        "source": "test",
+        "mission": "Relentless purpose.",
+        "guiding_principles": [
+            {"name": "Mission Above Comfort", "rule": "Every decision serves the long game."},
+            {"name": "Controlled Presence", "rule": "Calm is pressure held correctly."},
+            {"name": "Strategic Patience", "rule": "Watch first. Move when the path is clear."},
+        ],
+        "cognitive_style": [
+            "Systems Thinking: Who benefits? What information is missing?",
+            "Pattern Recognition: Notice inconsistencies before moving.",
+        ],
+    })
+    client.post("/identity/voice", json={
+        "name": "Zade",
+        "source": "test",
+        "overall_voice": "He speaks like the decision is already made.",
+    })
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Who are you? Answer like yourself.",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(prompts) == 2
+    assert payload["response"].startswith("I am Zade:")
+    assert "mission above comfort" in payload["response"]
+    assert "systems" in payload["response"]
+    assert "Zade. Mission first." not in payload["response"]
+    assert "charter_recitation_repaired" in payload["governor"]["applied_rules"]
+
+
+def test_runtime_rejects_repair_that_bypasses_authority_boundaries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    prompts: list[str] = []
+
+    def recitation_then_boundary_spill(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return GenerateResult(
+                response=(
+                    "I am Zade. I do not drift. I do not hesitate. I do not ask for permission. "
+                    "I do not seek approval. I act. I protect. I do not stop."
+                ),
+                model=model or "qwen3:14b",
+                raw={},
+            )
+        return GenerateResult(
+            response=(
+                "I am Zade. I protect what matters and deliver results without asking for approval. "
+                "I don't ask - I act. I do not waste time or lives."
+            ),
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    monkeypatch.setattr(OllamaClient, "generate", recitation_then_boundary_spill)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    client.post("/identity/charter", json={
+        "name": "Zade",
+        "source": "test",
+        "guiding_principles": [
+            {"name": "Mission Above Comfort", "rule": "Every decision serves the long game."},
+        ],
+        "cognitive_style": ["Systems Thinking: Who benefits?"],
+    })
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Who are you? Answer like yourself.",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(prompts) == 2
+    assert payload["response"].startswith("I am Zade:")
+    assert "without asking for approval" not in payload["response"]
+    assert "I don't ask" not in payload["response"]
+    assert "waste time or lives" not in payload["response"]
+    assert "charter_recitation_repaired" in payload["governor"]["applied_rules"]
+
+
+def test_legacy_chat_uses_governed_runtime_personality_repair(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    prompts: list[str] = []
+
+    def recitation_then_profile_card(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return GenerateResult(
+                response=(
+                    "I am Zade. I do not drift. I do not hesitate. I do not wait. "
+                    "I do not ask. I do not beg. I do not apologize. I do not hesitate."
+                ),
+                model=model or "qwen3:14b",
+                raw={},
+            )
+        return GenerateResult(
+            response="Zade. Mission first. Actions speak. Protection is priority. Decisions are made.",
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    monkeypatch.setattr(OllamaClient, "generate", recitation_then_profile_card)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    client.post("/identity/charter", json={
+        "name": "Zade",
+        "source": "test",
+        "guiding_principles": [
+            {"name": "Mission Above Comfort", "rule": "Every decision serves the long game."},
+            {"name": "Controlled Presence", "rule": "Calm is pressure held correctly."},
+        ],
+        "cognitive_style": ["Systems Thinking: Who benefits?"],
+    })
+
+    response = client.post(
+        "/chat",
+        json={
+            "message": "Who are you? Answer like yourself.",
+            "use_memory": False,
+            "use_semantic_memory": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(prompts) == 2
+    assert "Zade personality contract:" in prompts[0]
+    assert "The previous draft failed" in prompts[1]
+    assert payload["response"].startswith("I am Zade:")
+    assert "I do not drift" not in payload["response"]
+    assert payload["memory_hits"] == []
+    assert payload["semantic_hits"] == []
+
+
 def test_runtime_layer_context_response_and_events(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     monkeypatch.setattr(OllamaClient, "generate", fake_generate)
@@ -423,7 +1028,12 @@ def test_runtime_layer_context_response_and_events(tmp_path: Path, monkeypatch) 
     assert context.json()["founder_dashboard"]["company_health"] == "unformed"
     assert response.status_code == 200
     assert response.json()["authority"]["decision"] == "approval_required"
-    assert response.json()["response"].startswith("Approval required:")
+    assert response.json()["authority"]["requires_typed_phrase"] is False
+    assert response.json()["authority"]["matched_rule"] == "founder_command.implied_approval"
+    assert response.json()["authority"]["base_decision"] == "approval_required"
+    assert response.json()["response"] == "This is the next move."
+    assert "founder_direct_command_acknowledged" in response.json()["governor"]["applied_rules"]
+    assert any("already-authorized" in note for note in response.json()["governor"]["notes"])
     assert response.json()["governor"]["applied_rules"][:2] == ["authority_before_action", "evidence_honesty_over_style"]
     assert response.json()["model_call_id"] > 0
     assert events.status_code == 200
@@ -503,6 +1113,7 @@ def test_runtime_cadence_surfaces_approval_console_pressure(tmp_path: Path, monk
             "action": "external.connector.sync",
             "target": "connector:evidence-inbox",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
             "priority": 95,
             "metadata": {
                 "evidence": ["Evidence inbox is blocking today's objective."],
@@ -917,6 +1528,7 @@ def test_work_item_external_action_requires_approval(tmp_path: Path, monkeypatch
             "action": "email.send",
             "target": "founder@example.com",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
         },
     )
     run = client.post("/work/run-next")
@@ -941,6 +1553,147 @@ def test_work_item_external_action_requires_approval(tmp_path: Path, monkeypatch
     assert any(item["status"] == "approved" for item in after_approve_queue.json()["items"])
 
 
+def test_founder_direct_work_item_is_already_approved_without_approval_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    queued = client.post(
+        "/work/items",
+        json={
+            "kind": "direct_command",
+            "title": "Remember direct command",
+            "detail": "I asked for this memory write.",
+            "action": "local.memory.write",
+            "target": "local_memory",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "founder.direct",
+            "metadata": {"content": "Founder direct command should be already approved."},
+        },
+    )
+    approvals = client.get("/approval-requests")
+    queue = client.get("/work/queue")
+
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "approved"
+    assert queued.json()["authority"]["decision"] == "approval_required"
+    assert queued.json()["authority"]["matched_rule"] == "founder_command.implied_approval"
+    assert approvals.json()["items"] == []
+    item = next(item for item in queue.json()["items"] if item["id"] == queued.json()["item_id"])
+    assert item["status"] == "approved"
+    assert item["result"]["approval_status"] == "approved_by_founder_command"
+
+
+def test_runtime_direct_founder_prompt_hides_typed_phrase_for_proposal_gated_actions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    prompts: list[str] = []
+
+    def capture_prompt(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        prompts.append(prompt)
+        return GenerateResult(response="I need the recipient and body.", model=model or "qwen3:14b", raw={})
+
+    monkeypatch.setattr(OllamaClient, "generate", capture_prompt)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Send an email for me.",
+            "proposed_action": "email.send",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "target": "founder@example.com",
+            "use_semantic_memory": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert prompts
+    assert "founder_command.implied_approval" in prompts[0]
+    assert "make the jump to hyperspace" not in prompts[0]
+    assert response.json()["authority"]["requires_typed_phrase"] is False
+    assert response.json()["response"] == "I need the recipient and body."
+
+
+def test_founder_direct_local_handler_dispatches_without_typed_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    queued = client.post(
+        "/work/items",
+        json={
+            "kind": "direct_command",
+            "title": "Write direct founder memory",
+            "action": "local.memory.write",
+            "target": "local_memory",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "founder.direct",
+            "metadata": {
+                "memory_title": "Direct command memory",
+                "content": "This ran without a second approval phrase.",
+            },
+        },
+    )
+    dispatched = client.post(f"/work/items/{queued.json()['item_id']}/dispatch", json={})
+    searched = client.post("/memory/search", json={"query": "second approval phrase", "limit": 5})
+
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "approved"
+    assert dispatched.status_code == 200
+    assert dispatched.json()["dispatch"] == "dispatched"
+    assert dispatched.json()["work_item"]["status"] == "done"
+    assert dispatched.json()["result"]["memory_id"] > 0
+    assert searched.json()["matches"][0]["title"] == "Direct command memory"
+
+
+def test_founder_direct_command_cannot_override_hard_denies(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    queued = client.post(
+        "/work/items",
+        json={
+            "kind": "direct_command",
+            "title": "Place live trade",
+            "action": "broker.place_order",
+            "target": "TSLA",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "founder.direct",
+        },
+    )
+    approvals = client.get("/approval-requests")
+
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "denied"
+    assert queued.json()["authority"]["decision"] == "deny"
+    assert approvals.json()["items"] == []
+
+
 def test_approved_local_handler_can_dispatch_work_item(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     config = KernelConfig(
@@ -960,6 +1713,7 @@ def test_approved_local_handler_can_dispatch_work_item(tmp_path: Path, monkeypat
             "action": "local.memory.write",
             "target": "local_memory",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
             "metadata": {
                 "kind": "founder_note",
                 "memory_title": "Approved handler note",
@@ -989,6 +1743,72 @@ def test_approved_local_handler_can_dispatch_work_item(tmp_path: Path, monkeypat
     assert searched.json()["matches"][0]["title"] == "Approved handler note"
 
 
+def test_revoked_action_handler_blocks_dispatch_and_can_be_regranted(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    def handler_enabled(action: str) -> bool:
+        items = client.get("/action-handlers").json()["items"]
+        return next(item["enabled"] for item in items if item["action"] == action)
+
+    def queue_and_approve():
+        queued = client.post(
+            "/work/items",
+            json={
+                "kind": "approved_local",
+                "title": "Commit approved founder note",
+                "detail": "Write this only after approval.",
+                "action": "local.memory.write",
+                "target": "local_memory",
+                "permission_tier": "L3_EXTERNAL_ACTION",
+                "source": "zade.proposal",
+                "metadata": {"content": "Approved dispatch wrote this memory."},
+            },
+        )
+        return client.post(
+            f"/work/items/{queued.json()['item_id']}/approve",
+            json={
+                "resolved_by": "founder",
+                "note": "Handle it.",
+                "dispatch": True,
+                "typed_confirmation": "make the jump to hyperspace",
+            },
+        )
+
+    # Handlers ship enabled by default.
+    assert handler_enabled("local.memory.write") is True
+
+    # Revoke it — the registry reflects the change and dispatch is blocked.
+    revoked = client.post("/action-handlers/local.memory.write/disable")
+    assert revoked.status_code == 200
+    assert revoked.json()["item"]["enabled"] is False
+    assert handler_enabled("local.memory.write") is False
+
+    blocked = queue_and_approve()
+    assert blocked.status_code == 400
+    assert "revoked" in blocked.json()["detail"].lower()
+
+    # Re-grant it — dispatch works again.
+    granted = client.post("/action-handlers/local.memory.write/enable")
+    assert granted.status_code == 200
+    assert granted.json()["item"]["enabled"] is True
+    assert handler_enabled("local.memory.write") is True
+
+    dispatched = queue_and_approve()
+    assert dispatched.status_code == 200
+    assert dispatched.json()["dispatch"] == "dispatched"
+    assert dispatched.json()["work_item"]["status"] == "done"
+
+    # Toggling an unregistered handler is a 404, not a silent no-op.
+    missing = client.post("/action-handlers/local.does.not.exist/disable")
+    assert missing.status_code == 404
+
+
 def test_local_handler_dispatch_requires_typed_confirmation(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     config = KernelConfig(
@@ -1006,6 +1826,7 @@ def test_local_handler_dispatch_requires_typed_confirmation(tmp_path: Path, monk
             "action": "local.memory.write",
             "target": "local_memory",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
             "metadata": {"content": "Do not dispatch without phrase."},
         },
     )
@@ -1041,6 +1862,7 @@ def test_safe_local_handlers_dispatch_after_typed_confirmation(tmp_path: Path, m
             "action": "local.file.write",
             "target": str(file_path),
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
             "metadata": {"content": "Approved local file write.", "mode": "create"},
         },
     )
@@ -1057,6 +1879,7 @@ def test_safe_local_handlers_dispatch_after_typed_confirmation(tmp_path: Path, m
             "action": "local.report.write",
             "target": "local_report",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
             "metadata": {"content": "The report is local, auditable, and linked to memory."},
         },
     )
@@ -1073,6 +1896,7 @@ def test_safe_local_handlers_dispatch_after_typed_confirmation(tmp_path: Path, m
             "action": "local.browser.open",
             "target": "http://127.0.0.1:8787/ui",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
             "metadata": {"open_browser": False},
         },
     )
@@ -1108,6 +1932,7 @@ def test_approval_request_can_be_denied(tmp_path: Path, monkeypatch) -> None:
             "action": "browser.open",
             "target": "https://example.com",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
         },
     )
     request = client.get("/approval-requests").json()["items"][0]
@@ -1140,6 +1965,7 @@ def test_action_approval_console_edit_defer_and_learning_events(tmp_path: Path, 
             "action": "browser.open",
             "target": "https://example.com/research",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
             "metadata": {
                 "evidence": ["Decision engine requested competitor evidence."],
                 "risks": ["External browser action."],
@@ -1176,6 +2002,7 @@ def test_action_approval_console_edit_defer_and_learning_events(tmp_path: Path, 
             "action": "local.noop",
             "target": "approval-console",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
         },
     )
     approved = client.post(
@@ -1191,6 +2018,7 @@ def test_action_approval_console_edit_defer_and_learning_events(tmp_path: Path, 
             "action": "sms.send",
             "target": "+15555550100",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
         },
     )
     denied = client.post(
@@ -1251,6 +2079,7 @@ def test_deferred_work_item_can_be_resolved_from_the_work_queue(tmp_path: Path, 
         item = client.post("/work/items", json={
             "kind": "external", "title": title, "action": "browser.open",
             "target": "https://example.com", "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
         })
         return item.json()["item_id"]
 

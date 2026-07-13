@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade — Strategy</title>
+  <style>
+    /* Page-specific layout only; colors/type/components from /ui/zade-ui.css.
+       One operating-ledger view (Founder + Ledger merged): a thesis hero, then
+       four collapsed accordions — decisions, recommendations, initiatives,
+       predictions — read-first, with progressive disclosure. */
+    * { box-sizing: border-box; }
+    h1 { margin: 0 0 20px; }
+    /* prototype controls page inset via .page; drop main's own centered padding */
+    body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
+    .page { padding: 44px 48px 60px; max-width: 820px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
+
+    .hero { padding: 22px 0; border-top: 1px solid var(--z-line); border-bottom: 1px solid var(--z-line); margin-bottom: 28px; }
+    .hero-quote { font-family: var(--z-serif); font-style: italic; font-size: 19px; line-height: 1.5; color: var(--z-text); }
+    .hero-note { margin-top: 14px; font-size: 12.5px; color: var(--z-muted); }
+
+    .acc { border-top: 1px solid var(--z-line); }
+    .acc:last-of-type { border-bottom: 1px solid var(--z-line); }
+    .acc-head { cursor: pointer; padding: 16px 2px; display: flex; justify-content: space-between; align-items: center; }
+    .acc-title { font-size: 13.5px; color: var(--z-ink-hi); }
+    .acc-ind { font-size: 11px; color: var(--z-faint); }
+    .acc-body[hidden] { display: none; }
+    .acc-body { padding: 0 2px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .acc-line { font-size: 13px; color: var(--z-ink); line-height: 1.5; }
+    .frag { color: var(--z-faint); }
+    .frag.warn { color: var(--z-warn-text); }
+    .frag.ok { color: var(--z-ok-text); }
+    .acc-empty { font-size: 12.5px; color: var(--z-faint); }
+    @media (max-width: 720px) { .page { padding: 26px 20px 48px; } }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body data-zade-type="sans">
+  <main>
+    <div class="page">
+      <div class="kicker">Strategy</div>
+      <h1>The thesis, in one place</h1>
+
+      <div class="hero">
+        <div class="hero-quote" id="heroQuote">Loading the thesis…</div>
+        <div class="hero-note" id="heroNote"></div>
+      </div>
+
+      <div id="accordions">
+        <div class="acc">
+          <div class="acc-head" data-acc="decisions"><span class="acc-title">Decision log</span><span class="acc-ind" data-ind="decisions">+</span></div>
+          <div class="acc-body" data-body="decisions" hidden></div>
+        </div>
+        <div class="acc">
+          <div class="acc-head" data-acc="recs"><span class="acc-title">Recommendations</span><span class="acc-ind" data-ind="recs">+</span></div>
+          <div class="acc-body" data-body="recs" hidden></div>
+        </div>
+        <div class="acc">
+          <div class="acc-head" data-acc="initiatives"><span class="acc-title">Initiatives</span><span class="acc-ind" data-ind="initiatives">+</span></div>
+          <div class="acc-body" data-body="initiatives" hidden></div>
+        </div>
+        <div class="acc">
+          <div class="acc-head" data-acc="predictions"><span class="acc-title">Predictions</span><span class="acc-ind" data-ind="predictions">+</span></div>
+          <div class="acc-body" data-body="predictions" hidden></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    (async () => { if (token()) return; try { const r = await fetch('/session/token'); if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); } } catch (e) {} })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const prettyLabel = (v) => (v == null || v === '') ? '' : String(v).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    const q = (sel) => document.querySelector(sel);
+
+    // ---- Hero: thesis + current objective ----
+    async function loadHero() {
+      const [thesisData, objData] = await Promise.all([
+        api('/founder/thesis').catch(() => ({ thesis: {} })),
+        api('/founder/active-objective').catch(() => ({ item: {} }))
+      ]);
+      const thesis = thesisData.thesis || {};
+      const quote = thesis.vision || thesis.mission || '';
+      q('#heroQuote').textContent = quote || 'No thesis recorded yet.';
+      const obj = objData.item || {};
+      if (obj.id) {
+        const note = obj.next_action || [obj.metric, obj.target].filter(Boolean).join(' / ') || obj.desired_outcome || '';
+        q('#heroNote').textContent = 'Current objective: ' + obj.objective + (note ? ' — ' + note : '');
+      } else {
+        q('#heroNote').textContent = '';
+      }
+    }
+
+    // ---- Accordions ----
+    // Each entry: fetch its list, then map each record to { title, frag, cls }.
+    const SECTIONS = {
+      decisions: {
+        fetch: () => api('/founder/decisions?limit=50'),
+        map: (i) => {
+          const open = (i.status || 'open') === 'open';
+          const bits = [prettyLabel(i.status), i.decision_date ? 'closed ' + i.decision_date : ''].filter(Boolean).join(' · ');
+          return { title: i.problem, frag: bits, cls: open ? 'warn' : '' };
+        }
+      },
+      recs: {
+        fetch: () => api('/founder/decision-recommendations?limit=25'),
+        map: (i) => {
+          const status = i.status || 'proposed';
+          const proposed = status === 'proposed';
+          const accepted = /accept|approv/i.test(status);
+          return { title: i.recommendation, frag: proposed ? 'pending your review' : prettyLabel(status), cls: proposed ? 'warn' : (accepted ? 'ok' : '') };
+        }
+      },
+      initiatives: {
+        fetch: () => api('/founder/initiatives?limit=50'),
+        map: (i) => {
+          const bits = [prettyLabel(i.current_stage), prettyLabel(i.status)].filter(Boolean).join(' · ');
+          return { title: i.objective, frag: bits, cls: '' };
+        }
+      },
+      predictions: {
+        fetch: () => api('/founder/predictions?limit=50'),
+        map: (i) => {
+          const open = (i.result || 'open') === 'open';
+          if (open) return { title: i.prediction, frag: 'unscored' + (i.due_at ? ', due ' + i.due_at : ''), cls: 'warn' };
+          return { title: i.prediction, frag: 'scored ' + (i.outcome || i.result), cls: 'ok' };
+        }
+      }
+    };
+
+    async function loadSection(key) {
+      const body = q(`[data-body="${key}"]`);
+      const sec = SECTIONS[key];
+      try {
+        const data = await sec.fetch();
+        const items = data.items || [];
+        body.innerHTML = items.length
+          ? items.map((i) => {
+              const m = sec.map(i);
+              return `<div class="acc-line">${esc(m.title)}${m.frag ? ` <span class="frag ${m.cls}">— ${esc(m.frag)}</span>` : ''}</div>`;
+            }).join('')
+          : '<div class="acc-empty">Nothing here yet.</div>';
+      } catch (err) {
+        body.innerHTML = '<div class="acc-empty">Could not load — ' + esc(err.message) + '</div>';
+      }
+    }
+
+    const loaded = {};
+    document.querySelectorAll('.acc-head').forEach((head) => {
+      head.addEventListener('click', () => {
+        const key = head.dataset.acc;
+        const body = q(`[data-body="${key}"]`);
+        const ind = q(`[data-ind="${key}"]`);
+        const isHidden = body.hasAttribute('hidden');
+        if (isHidden) {
+          body.removeAttribute('hidden');
+          ind.textContent = '−';
+          if (!loaded[key]) { loaded[key] = true; body.innerHTML = '<div class="acc-empty">Loading…</div>'; loadSection(key); }
+        } else {
+          body.setAttribute('hidden', '');
+          ind.textContent = '+';
+        }
+      });
+    });
+
+    loadHero();
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

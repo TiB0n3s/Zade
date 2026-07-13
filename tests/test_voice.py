@@ -138,6 +138,47 @@ def test_converse_runs_governed_loop_with_memory_and_contrarian(tmp_path: Path, 
     assert turn_list[0]["content"] == "what should we prioritize next"
 
 
+def test_converse_prompt_carries_personality_contract(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    prompts: list[str] = []
+
+    def capturing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        prompts.append(prompt)
+        if model == "deepseek-r1:14b":
+            return GenerateResult(response=CRITIC_JSON, model=model, raw={})
+        return GenerateResult(response="Review the gate. Then move.", model=model or "qwen3:14b", raw={})
+
+    monkeypatch.setattr(OllamaClient, "generate", capturing_generate)
+    client = TestClient(create_app(_config(tmp_path, _voice_config())))
+    client.post("/identity/charter", json={
+        "name": "Zade",
+        "source": "test",
+        "mission": "Relentless purpose. No drifting.",
+    })
+    client.post("/identity/voice", json={
+        "name": "Zade",
+        "source": "test",
+        "overall_voice": "He does not negotiate. He states.",
+    })
+
+    converse = client.post(
+        "/voice/converse",
+        json={
+            "audio_base64": FAKE_AUDIO,
+            "use_semantic_memory": False,
+            "contrarian": False,
+        },
+    )
+
+    assert converse.status_code == 200
+    assert prompts
+    assert "Zade personality contract:" in prompts[0]
+    assert "The identity charter defines who you are, not a style overlay." in prompts[0]
+    assert "Relentless purpose. No drifting." in prompts[0]
+    assert "He does not negotiate. He states." in prompts[0]
+    assert converse.json()["spoken_text"] == "Review the gate. Then move."
+
+
 def test_converse_speak_full_includes_contrarian_block(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     monkeypatch.setattr(OllamaClient, "generate", fake_generate)

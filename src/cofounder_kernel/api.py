@@ -14,6 +14,7 @@ from .approval import ApprovalService
 from .authority import AuthorityPolicy, AuthorityRequest, build_self_inventory
 from .autonomy import WorkQueueService
 from .brief import build_daily_brief
+from .browser import BrowserService
 from .config import KernelConfig, ensure_local_paths, load_config
 from .connectors import ConnectorService
 from .conversation import ConversationService
@@ -25,6 +26,7 @@ from .experiments import ExperimentService
 from .founder import FounderService
 from .handlers import ActionHandlerRegistry
 from .ingestion import IngestionService
+from .research import ResearchService
 from .models import (
     ActionPlanCreate,
     ActionPlanFromRecommendation,
@@ -42,6 +44,12 @@ from .models import (
     AuthorityEvaluateRequest,
     BackupCreateRequest,
     BackupRetentionRequest,
+    BrowserRunRequest,
+    ResearchDaydreamRequest,
+    ResearchRunRequest,
+    VaultDeleteRequest,
+    VaultMoveRequest,
+    VaultRestoreRequest,
     CadenceReviewCreate,
     CadenceRunRequest,
     ChatRequest,
@@ -123,6 +131,7 @@ from .commitments import CommitmentLedger
 from .notify import NotificationBus
 from .runtime import (
     RuntimeService,
+    _charter_personality_contract,
     _format_identity_charter_for_prompt,
     _format_relationship_charters_for_prompt,
     _format_voice_charter_for_prompt,
@@ -133,9 +142,17 @@ from .voice import VoiceNotConfigured, VoiceService
 from .teaching import DeepThoughtTeachingBridge
 from .trading_bot import TradingBotBridge
 from .tools import ToolRegistry
+from .tray import TrayService
+from .vault import VaultService
 
 
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
+
+
+_VAULT_APPROVAL_NOTE = (
+    "Vault move/delete is a file mutation: approve and dispatch the work item with the typed "
+    "confirmation phrase to run it. Deletes and clobbered targets go to a restorable trash."
+)
 
 
 def create_app(config: KernelConfig | None = None) -> FastAPI:
@@ -180,6 +197,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         skills=skills,
         conversations=conversations,
         critic=critic,
+        trading_bot=trading_bot,
     )
     teaching = DeepThoughtTeachingBridge(config=cfg, db=db, founder=founder, ingestion=ingestion)
     experiments = ExperimentService(config=cfg, db=db, founder=founder, ingestion=ingestion)
@@ -189,6 +207,10 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         "Read-only sync of an approved external connector into staged candidate items.",
         connectors.sync_from_work_item,
     )
+    browser = BrowserService(config=cfg, db=db, work_queue=work_queue)
+    browser.register_into(handlers)
+    vault = VaultService(config=cfg, db=db, work_queue=work_queue)
+    vault.register_into(handlers)
     devtools = DevToolsHandlers(db=db, config=cfg)
     devtools.register_into(handlers)
     handlers.register(
@@ -208,6 +230,11 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     commitments = CommitmentLedger(db=db, bus=bus)
     actions = ActionPipelineService(db=db, authority=authority, founder=founder, work_queue=work_queue, bus=bus)
     surfacing = SurfacingService(config=cfg, db=db, ollama=ollama, bus=bus)
+    tray = TrayService(config=cfg, db=db, bus=bus, ollama=ollama)
+    research = ResearchService(
+        config=cfg, db=db, founder=founder, ingestion=ingestion, work_queue=work_queue, bus=bus
+    )
+    research.register_into(handlers)
 
     app = FastAPI(title=f"{cfg.identity.name} Local AI Co-founder Kernel", version="0.1.0")
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
@@ -230,6 +257,10 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     app.state.teaching = teaching
     app.state.experiments = experiments
     app.state.connectors = connectors
+    app.state.browser = browser
+    app.state.vault = vault
+    app.state.tray = tray
+    app.state.research = research
     app.state.surfacing = surfacing
     app.state.bus = bus
     app.state.commitments = commitments
@@ -541,6 +572,17 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.post("/conversations/{conversation_id}/distill")
+    def distill_conversation(conversation_id: int) -> dict[str, Any]:
+        """Promote durable knowledge from this thread's not-yet-distilled turns into
+        searchable memory, on demand (the runtime also does this automatically as
+        turns age out of the recent window)."""
+        try:
+            result = conversations.distill(conversation_id, min_turns=1, only_aged_out=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"result": result or {"status": "nothing_to_distill", "written": [], "count": 0}}
+
     @app.get("/surface/attention")
     def surface_attention() -> dict[str, Any]:
         return surfacing.scan()
@@ -634,6 +676,112 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             "note": (
                 "Connector sync is an external action: approve and dispatch the work item "
                 "with the typed confirmation phrase to run it."
+            ),
+        }
+
+    @app.get("/browser/status")
+    def browser_status() -> dict[str, Any]:
+        return browser.status()
+
+    @app.post("/browser/run")
+    def browser_run(payload: BrowserRunRequest) -> dict[str, Any]:
+        try:
+            result = browser.queue_run(
+                steps=payload.steps,
+                title=payload.title,
+                session_label=payload.session_label,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result | {
+            "note": (
+                "Headed browser automation is an external action: approve and dispatch the work item "
+                "with the typed confirmation phrase to run it."
+            ),
+        }
+
+    @app.get("/vault/status")
+    def vault_status() -> dict[str, Any]:
+        return vault.status()
+
+    @app.get("/vault/list")
+    def vault_list(path: str = "", limit: int | None = None) -> dict[str, Any]:
+        try:
+            return vault.list_entries(path, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/vault/search")
+    def vault_search(query: str, path: str = "", limit: int | None = None) -> dict[str, Any]:
+        try:
+            return vault.search(query, path=path, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/vault/trash")
+    def vault_trash(limit: int = 50) -> dict[str, Any]:
+        return vault.list_trash(limit=limit)
+
+    @app.post("/vault/move")
+    def vault_move(payload: VaultMoveRequest) -> dict[str, Any]:
+        try:
+            if payload.dry_run:
+                return vault.plan_move(
+                    payload.src, payload.dst, allow_top_level=payload.allow_top_level, overwrite=payload.overwrite
+                )
+            result = vault.queue_move(
+                payload.src, payload.dst, allow_top_level=payload.allow_top_level, overwrite=payload.overwrite
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result | {"note": _VAULT_APPROVAL_NOTE}
+
+    @app.post("/vault/delete")
+    def vault_delete(payload: VaultDeleteRequest) -> dict[str, Any]:
+        try:
+            if payload.dry_run:
+                return vault.plan_delete(payload.path, allow_top_level=payload.allow_top_level)
+            result = vault.queue_delete(payload.path, allow_top_level=payload.allow_top_level)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result | {"note": _VAULT_APPROVAL_NOTE}
+
+    @app.post("/vault/restore")
+    def vault_restore(payload: VaultRestoreRequest) -> dict[str, Any]:
+        try:
+            return vault.restore(payload.trash_id, overwrite=payload.overwrite)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/tray/state")
+    def tray_state() -> dict[str, Any]:
+        return tray.state()
+
+    @app.get("/research/status")
+    def research_status() -> dict[str, Any]:
+        return research.status()
+
+    @app.get("/research/topics")
+    def research_topics(limit: int = 5) -> dict[str, Any]:
+        return {"topics": research.derive_topics(limit=limit)}
+
+    @app.post("/research/daydream")
+    def research_daydream(payload: ResearchDaydreamRequest | None = None) -> dict[str, Any]:
+        request = payload or ResearchDaydreamRequest()
+        return research.daydream(limit=request.limit, notify=request.notify)
+
+    @app.post("/research/run")
+    def research_run(payload: ResearchRunRequest) -> dict[str, Any]:
+        try:
+            result = research.queue_research(
+                topic=payload.topic, urls=payload.urls, create_evidence=payload.create_evidence
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result | {
+            "note": (
+                "Web research is an external action: approve and dispatch the work item with the typed "
+                "confirmation phrase to fetch the sources."
             ),
         }
 
@@ -1049,6 +1197,20 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     @app.get("/action-handlers")
     def list_action_handlers() -> dict[str, Any]:
         return {"items": approvals.list_handlers()}
+
+    @app.post("/action-handlers/{action}/enable")
+    def enable_action_handler(action: str) -> dict[str, Any]:
+        try:
+            return {"item": approvals.set_handler_access(action, enabled=True)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/action-handlers/{action}/disable")
+    def disable_action_handler(action: str) -> dict[str, Any]:
+        try:
+            return {"item": approvals.set_handler_access(action, enabled=False)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/trading-bot/status")
     def trading_bot_status() -> dict[str, Any]:
@@ -1636,33 +1798,23 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             except OllamaError:
                 semantic_hits = []
 
-        selected_model = payload.model or cfg.ollama.model_for_role(payload.task_type)
-        identity_charter = founder.get_identity_charter()
-        relationship_charters = founder.list_relationship_charters(status="active", limit=5)
-        voice_charter = founder.get_voice_charter()
-        prompt = _build_prompt(
-            payload.message,
-            memory_hits,
-            semantic_hits,
-            payload.task_type,
-            assistant_name=cfg.identity.name,
-            identity_charter=identity_charter,
-            relationship_charters=relationship_charters,
-            voice_charter=voice_charter,
-        )
         try:
-            think = payload.think if payload.think is not None else cfg.ollama.think_for_role(payload.task_type)
-            result = ollama.generate(
-                prompt=prompt,
-                model=selected_model,
-                think=think,
-                temperature=cfg.ollama.temperature,
+            result = runtime.respond(
+                message=payload.message,
+                task_type=payload.task_type,
+                model=payload.model,
+                use_memory=payload.use_memory,
+                use_semantic_memory=payload.use_semantic_memory,
+                semantic_limit=payload.semantic_limit,
+                use_skills=False,
+                think=payload.think,
+                contrarian=False,
             )
         except OllamaError as exc:
             db.audit(
                 actor="api",
-                action="model.generate",
-                target=selected_model,
+                action="chat.runtime.respond",
+                target=payload.model or cfg.ollama.model_for_role(payload.task_type),
                 permission_tier="L0_READ",
                 status="error",
                 details={"error": str(exc), "task_type": payload.task_type},
@@ -1671,23 +1823,22 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
 
         audit_id = db.audit(
             actor="api",
-            action="model.generate",
-            target=result.model,
+            action="chat.runtime.respond",
+            target=result["model"],
             permission_tier="L0_READ",
             status="ok",
             details={
+                "runtime_event_id": result["event_id"],
+                "model_call_id": result["model_call_id"],
                 "memory_hits": len(memory_hits),
                 "semantic_hits": len(semantic_hits),
                 "task_type": payload.task_type,
-                "think": think,
-                "identity_charter": bool(identity_charter),
-                "relationship_charters": len(relationship_charters),
-                "voice_charter": bool(voice_charter),
+                "governor": result["governor"],
             },
         )
         return ChatResponse(
-            response=result.response,
-            model=result.model,
+            response=result["response"],
+            model=result["model"],
             task_type=payload.task_type,
             memory_hits=memory_hits,
             semantic_hits=semantic_hits,
@@ -1951,7 +2102,17 @@ def _build_prompt(
     identity_block = _format_identity_charter_for_prompt(identity_charter)
     relationship_block = _format_relationship_charters_for_prompt(relationship_charters or [])
     voice_block = _format_voice_charter_for_prompt(voice_charter)
-    return f"""You are {assistant_name}, a local-first AI co-founder kernel.
+    personality_contract = _charter_personality_contract(
+        {
+            "identity": identity_charter or {},
+            "relationships": relationship_charters or [],
+            "voice": voice_charter or {},
+        }
+    )
+    return f"""You are {assistant_name}. You are speaking as yourself, not describing an assistant persona.
+Zade personality contract:
+{personality_contract}
+
 Use the founder operating layer, local memory, and semantic memory before treating the task as a one-off chat.
 Use only the provided local memory unless the user asks for general reasoning.
 Be direct, practical, and explicit about uncertainty.
@@ -2017,6 +2178,8 @@ def _inventory_payload(
             "GET /approval-console/{request_id}",
             "GET /approval-training-events",
             "GET /action-handlers",
+            "POST /action-handlers/{action}/enable",
+            "POST /action-handlers/{action}/disable",
             "GET /approval-requests/{request_id}",
             "POST /approval-requests/{request_id}/approve",
             "POST /approval-requests/{request_id}/deny",
@@ -2043,14 +2206,20 @@ def _inventory_payload(
             "local.vault.organize",
             "local.browser.open",
             "external.connector.sync",
+            "external.browser.run",
+            "local.vault.move",
+            "local.vault.delete",
+            "external.research.run",
             "external.dt_recommendation.ingest",
         ],
         "approval_contract": [
-            "Approval records founder authorization without bypassing denied boundaries.",
+            "Founder direct commands are already approved without bypassing denied boundaries.",
+            "Approval records founder authorization for Zade/system-proposed work without bypassing denied boundaries.",
             "The approval console exposes Zade's proposed action, evidence, risk, and authority tier before resolution.",
             "Approve, deny, defer, and edit decisions are recorded as approval_training_events for future judgment tuning.",
             "Approved work items can dispatch only when the action has a registered local handler.",
-            "Dispatch of approved local handlers requires the typed confirmation phrase.",
+            "Function access can revoke an individual handler; a revoked handler is never dispatched even after approval.",
+            "Dispatch of Zade/system-proposed approved local handlers requires the typed confirmation phrase; founder direct commands do not require a second approval phrase.",
             "Unmanaged external actions remain approved-for-record only and are not run by the kernel.",
         ],
     }
@@ -2133,6 +2302,78 @@ def _inventory_payload(
             "Sync executes only through the approved dispatch flow with the typed confirmation phrase.",
             "Credentials live in environment variables referenced by name; connector configs that contain secrets are rejected.",
             "Synced items land as staged candidates and are imported as graded evidence, never as native certainty.",
+        ],
+    }
+    inventory["research_layer"] = {
+        "routes": [
+            "GET /research/status",
+            "GET /research/topics",
+            "POST /research/daydream",
+            "POST /research/run",
+        ],
+        "dispatch_action": "external.research.run",
+        "enabled": cfg.research.enabled,
+        "operating_rules": [
+            "Topic derivation and the daydream are LOCAL and autonomous: they read the founder's evidence gaps and propose research questions; no network, no approval.",
+            "Web fetch is the one deliberate outbound-to-the-open-web exception and runs only through approved dispatch with the typed confirmation phrase (L3 external action).",
+            "Egress is https-only to public hosts, redirects refused, and byte-capped; an optional host allowlist can tighten it further.",
+            "Fetched pages are salience-scored against the topic and filed as graded web_research evidence — a sourced external claim, never native certainty.",
+        ],
+    }
+    inventory["tray_layer"] = {
+        "routes": [
+            "GET /tray/state",
+        ],
+        "enabled": cfg.tray.enabled,
+        "install_script": "scripts/install-tray-task.ps1",
+        "console_script": "zade-tray",
+        "operating_rules": [
+            "The tray is a separate resident process (installed at logon) that polls /tray/state over loopback.",
+            "It is read-only — status display and OS toasts only; it never mutates and needs no token.",
+            "Status is ok/attention/error from health, pending approvals, and unread notifications; new notifications raise native toasts.",
+            "GUI dependencies (pystray + Pillow) are the optional 'tray' extra; the kernel runs headless without them.",
+        ],
+    }
+    inventory["vault_layer"] = {
+        "routes": [
+            "GET /vault/status",
+            "GET /vault/list",
+            "GET /vault/search",
+            "GET /vault/trash",
+            "POST /vault/move",
+            "POST /vault/delete",
+            "POST /vault/restore",
+        ],
+        "dispatch_actions": ["local.vault.move", "local.vault.delete"],
+        "guard_segments": list(cfg.vault.guard_segments),
+        "enabled": cfg.vault.enabled,
+        "operating_rules": [
+            "Reads (list/search) are direct; move and delete run only through approved dispatch with the typed confirmation phrase (L2_FILE_WRITE).",
+            "Deletes and clobbered move targets go to a restorable trash snapshot under the kernel state dir — never a hard unlink.",
+            "Any path segment in guard_segments (raw source-of-truth folders) is refused; a .zade-protected marker protects its whole subtree.",
+            "Operating on a top-level folder needs explicit allow_top_level confirmation; a vault root can never be moved or deleted.",
+            "dry_run previews the exact effect (counts, resolved paths, guard result) and changes nothing.",
+        ],
+    }
+    inventory["browser_layer"] = {
+        "routes": [
+            "GET /browser/status",
+            "POST /browser/run",
+        ],
+        "artifacts": [
+            "browser_run work items",
+            "browser-captures",
+        ],
+        "dispatch_action": "external.browser.run",
+        "step_types": ["navigate", "wait", "read", "links", "fill", "click", "press", "screenshot"],
+        "enabled": cfg.browser.enabled,
+        "headless": cfg.browser.headless,
+        "operating_rules": [
+            "A browser flow is a fully-specified list of steps; the founder approves the exact sequence, which runs in one browser context.",
+            "Every flow is an L3 external action: it runs only through approved dispatch with the typed confirmation phrase.",
+            "Navigation is http/https only; private/internal hosts are refused unless allow_private_navigation is set.",
+            "Typed values may come from a named environment variable (value_env); typed text is never written to the audit log or result.",
+            "Screenshots are written only under the configured local roots, through the same path guard the file handlers use.",
         ],
     }
     inventory["eval_layer"] = {
@@ -2278,6 +2519,7 @@ def _inventory_payload(
             "GET /conversations",
             "GET /conversations/{conversation_id}",
             "GET /conversations/{conversation_id}/turns",
+            "POST /conversations/{conversation_id}/distill",
         ],
         "artifacts": [
             "conversations",

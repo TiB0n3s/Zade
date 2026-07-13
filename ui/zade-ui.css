@@ -213,8 +213,115 @@ body.zade-has-sidebar { padding-left: var(--z-sidebar-w); }
 .zade-sidebar-foot .zade-status span { font-size: 10.5px; letter-spacing: 0.05em; color: var(--z-faint); }
 @keyframes zade-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
+/* ---------- 4b · Activity beacon (injected by zade-ui.js) ---------- */
+/* Surfaces the work Zade does off the chat/voice thread: contrarian passes,
+   operating loops, cadence reviews, self-evals, the work queue. margin-top:auto
+   claims the rail's free space so this + the footer pin to the bottom. */
+.zade-activity {
+  margin-top: auto;
+  padding: 10px 8px 6px;
+  border-top: 1px solid var(--z-line);
+}
+.zade-activity-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 6px 8px; min-height: 0;
+  background: transparent; border: 0; border-radius: var(--z-radius);
+  color: inherit; text-align: left; cursor: pointer;
+  transition: background 0.2s ease;
+}
+.zade-activity-head:hover { background: rgba(255, 255, 255, 0.03); }
+
+/* Shared beacon — colored/animated by the [data-state] on its container,
+   so both the sidebar monitor and the narrow-screen strip mirror use it. */
+.zade-beacon {
+  width: 8px; height: 8px; flex: none; border-radius: 50%;
+  background: var(--z-ghost);
+}
+.zade-activity[data-state="recent"] .zade-beacon,
+.zade-strip-beacon[data-state="recent"] .zade-beacon { background: var(--z-info); }
+.zade-activity[data-state="offline"] .zade-beacon,
+.zade-strip-beacon[data-state="offline"] .zade-beacon { background: var(--z-bad); }
+.zade-activity[data-state="working"] .zade-beacon,
+.zade-strip-beacon[data-state="working"] .zade-beacon {
+  background: var(--z-ok);
+  box-shadow: 0 0 0 0 rgba(90, 138, 114, 0.5);
+  animation: zade-beacon 1.8s ease-out infinite;
+}
+@keyframes zade-beacon {
+  0% { box-shadow: 0 0 0 0 rgba(90, 138, 114, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(90, 138, 114, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(90, 138, 114, 0); }
+}
+
+.zade-activity-copy { flex: 1; min-width: 0; }
+.zade-activity-title {
+  display: block;
+  font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--z-muted);
+}
+.zade-activity[data-state="working"] .zade-activity-title { color: var(--z-ok-text); }
+.zade-activity[data-state="offline"] .zade-activity-title { color: var(--z-bad-text); }
+.zade-activity-detail {
+  display: block; margin-top: 2px;
+  font-size: 11px; color: var(--z-faint); line-height: 1.35;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.zade-activity-chip {
+  flex: none;
+  font-size: 9.5px; letter-spacing: 0.06em; color: var(--z-faint);
+  border: 1px solid var(--z-line-strong); border-radius: var(--z-radius-sm);
+  padding: 1px 6px;
+}
+.zade-activity-caret { flex: none; color: var(--z-ghost); transition: transform 0.2s ease; }
+.zade-activity-head[aria-expanded="true"] .zade-activity-caret { transform: rotate(180deg); }
+
+.zade-activity-feed {
+  display: none; flex-direction: column;
+  margin-top: 4px; max-height: 224px; overflow-y: auto;
+}
+.zade-activity-feed.open { display: flex; }
+.zade-activity-row {
+  display: grid; grid-template-columns: 6px 1fr auto; gap: 9px;
+  align-items: start;
+  padding: 7px 8px; border-top: 1px solid var(--z-line-soft);
+}
+.zade-activity-row:first-child { border-top: 0; }
+.zade-activity-status {
+  width: 6px; height: 6px; margin-top: 4px; flex: none; border-radius: 50%;
+  background: var(--z-ok);
+}
+.zade-activity-status.error { background: var(--z-bad); }
+.zade-activity-op { min-width: 0; }
+.zade-activity-op .op-name {
+  display: block; font-size: 11.5px; color: var(--z-ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.zade-activity-op .op-meta {
+  display: block; margin-top: 1px;
+  font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--z-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.zade-activity-row time {
+  font-size: 10px; color: var(--z-faint); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.zade-activity-empty { padding: 8px; font-size: 11px; color: var(--z-faint); }
+
 /* legacy horizontal strip: retired when the sidebar is present */
 body.zade-has-sidebar .zade-workspace-nav { display: none; }
+
+/* Narrow-screen mirror: a compact beacon pinned to the start of the top strip. */
+.zade-strip-beacon {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  padding: 4px 10px 4px 2px; margin-right: 6px;
+  border-right: 1px solid var(--z-line);
+}
+.zade-strip-beacon .zade-strip-label {
+  font-size: 11px; letter-spacing: 0.04em; color: var(--z-faint);
+}
+.zade-strip-beacon[data-state="working"] .zade-strip-label { color: var(--z-ok-text); }
+.zade-strip-beacon[data-state="offline"] .zade-strip-label { color: var(--z-bad-text); }
 
 /* ---------- 5 · Page header = a Command-style masthead ---------- */
 body header {

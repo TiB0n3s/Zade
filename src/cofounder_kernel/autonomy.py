@@ -91,6 +91,21 @@ class WorkQueueService:
         authority = self.authority.evaluate(
             AuthorityRequest(action=action, permission_tier=permission_tier, target=target, metadata=metadata or {})
         )
+        metadata = metadata or {}
+        authority_dict = authority.as_dict()
+        founder_implied_approval = (
+            authority.decision == AuthorityDecision.APPROVAL_REQUIRED
+            and _source_is_founder_command(source, metadata)
+        )
+        if founder_implied_approval:
+            authority_dict = {
+                **authority_dict,
+                "reason": "Founder direct command is already approved; no separate approval request was created.",
+                "requires_typed_phrase": False,
+                "typed_phrase": None,
+                "matched_rule": "founder_command.implied_approval",
+                "base_decision": authority.decision.value,
+            }
         item_id, created = self.db.enqueue_work_item(
             kind=kind,
             title=title,
@@ -104,16 +119,25 @@ class WorkQueueService:
             metadata=metadata,
             unique_key=unique_key,
         )
-        status = _queue_status_for_decision(authority.decision)
+        status = "approved" if founder_implied_approval else _queue_status_for_decision(authority.decision)
         if created:
+            result = (
+                {
+                    "approval_status": "approved_by_founder_command",
+                    "founder_command": True,
+                    "dispatch": "not_dispatched",
+                }
+                if founder_implied_approval
+                else {}
+            )
             self.db.update_work_item(
                 item_id,
                 status=status,
                 authority_decision=authority.decision.value,
-                result={},
+                result=result,
                 error="",
             )
-            if authority.decision == AuthorityDecision.APPROVAL_REQUIRED:
+            if authority.decision == AuthorityDecision.APPROVAL_REQUIRED and not founder_implied_approval:
                 approval, approval_created = self.db.ensure_approval_request(
                     source_type="work_item",
                     source_id=item_id,
@@ -123,7 +147,7 @@ class WorkQueueService:
                     target=target,
                     permission_tier=permission_tier,
                     authority_decision=authority.decision.value,
-                    authority=authority.as_dict(),
+                    authority=authority_dict,
                     requested_by=source,
                     metadata={"work_item_unique_key": unique_key, **(metadata or {})},
                 )
@@ -138,17 +162,18 @@ class WorkQueueService:
                 status=status,
                 details={
                     "item_id": item_id,
-                    "authority": authority.as_dict(),
+                    "authority": authority_dict,
                     "unique_key": unique_key,
                     "approval_request_id": approval.id if approval else None,
                     "approval_request_created": approval_created,
+                    "founder_implied_approval": founder_implied_approval,
                 },
             )
         return QueueResult(
             item_id=item_id,
             created=created,
             status=status,
-            authority=authority.as_dict(),
+            authority=authority_dict,
             action=action,
             title=title,
         )
@@ -426,3 +451,13 @@ def _queue_status_for_decision(decision: AuthorityDecision) -> str:
     if decision == AuthorityDecision.DENY:
         return "denied"
     return "approval_required"
+
+
+def _source_is_founder_command(source: str, metadata: dict[str, Any]) -> bool:
+    normalized = source.strip().lower().replace("_", ".").replace("-", ".")
+    if normalized in {"founder", "founder.direct", "founder.command", "user.direct", "ui.direct", "voice.direct"}:
+        return True
+    if normalized.startswith("founder."):
+        return True
+    explicit = metadata.get("founder_command") or metadata.get("direct_founder_command")
+    return bool(explicit)

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Splash window baseline; the universe pages are served by the kernel and use plain HTTP, no IPC.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

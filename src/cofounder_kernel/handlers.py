@@ -33,20 +33,54 @@ class ActionHandlerRegistry:
         """Register an additional approved dispatch handler (e.g. connector sync)."""
         self._handlers[action] = (description, handler)
 
-    def list_handlers(self) -> list[dict[str, str]]:
+    def list_handlers(self) -> list[dict[str, Any]]:
+        access = self.db.list_handler_access()
         return [
-            {"action": action, "description": description}
+            {"action": action, "description": description, "enabled": access.get(action, True)}
             for action, (description, _handler) in sorted(self._handlers.items())
         ]
 
+    def is_enabled(self, action: str) -> bool:
+        """True unless the founder has explicitly revoked this handler.
+
+        An absent access-overlay row means enabled, so handlers stay live by
+        default and pre-existing databases keep working unchanged.
+        """
+        return self.db.get_handler_access(action) is not False
+
     def can_dispatch(self, action: str) -> bool:
-        return action in self._handlers
+        return action in self._handlers and self.is_enabled(action)
+
+    def dispatch_denial(self, action: str) -> str | None:
+        """Reason the action cannot be dispatched, or None if it can.
+
+        Separates "no handler exists" from "handler exists but is revoked" so
+        the founder sees an accurate error after turning function access off.
+        """
+        if action not in self._handlers:
+            return f"No approved local handler registered for action: {action}"
+        if not self.is_enabled(action):
+            return f"Action handler is revoked — turn function access back on to dispatch: {action}"
+        return None
+
+    def set_access(self, action: str, enabled: bool) -> dict[str, Any]:
+        """Grant (enable) or revoke (disable) a registered handler.
+
+        Raises ValueError for an unknown action so the API can surface a 404;
+        only handlers that actually exist can be toggled.
+        """
+        entry = self._handlers.get(action)
+        if not entry:
+            raise ValueError(f"No action handler registered for action: {action}")
+        description, _handler = entry
+        self.db.set_handler_access(action, enabled)
+        return {"action": action, "description": description, "enabled": bool(enabled)}
 
     def dispatch(self, item: WorkItem) -> dict[str, Any]:
-        entry = self._handlers.get(item.action)
-        if not entry:
-            raise ValueError(f"No approved local handler registered for action: {item.action}")
-        _description, handler = entry
+        denial = self.dispatch_denial(item.action)
+        if denial:
+            raise ValueError(denial)
+        _description, handler = self._handlers[item.action]
         return handler(item)
 
     def _noop(self, item: WorkItem) -> dict[str, Any]:

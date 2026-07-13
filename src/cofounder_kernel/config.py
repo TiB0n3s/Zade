@@ -160,6 +160,84 @@ class DevToolsConfig:
 
 
 @dataclass(frozen=True)
+class BrowserConfig:
+    """Headed browser automation via approved dispatch.
+
+    Like the connector layer, every flow still runs only through founder
+    approval + the typed confirmation phrase; these settings just bound how the
+    browser runs. ``headless`` defaults to false because the whole point is a
+    visible browser the founder can watch. Navigation to private/internal hosts
+    is refused unless ``allow_private_navigation`` is set, matching netguard's
+    SSRF stance for the kernel's own egress.
+    """
+
+    enabled: bool = True
+    headless: bool = False
+    browser: str = "chromium"
+    nav_timeout_seconds: float = 30.0
+    action_timeout_seconds: float = 15.0
+    max_steps: int = 25
+    allow_private_navigation: bool = False
+
+
+@dataclass(frozen=True)
+class VaultConfig:
+    """Whole-vault file operator (move/delete) via approved dispatch.
+
+    Deletes and clobbered move targets go to a trash snapshot under the kernel
+    state dir (restorable), never a hard unlink. Guards layer on top of the
+    approval + typed-phrase gate: any path segment in ``guard_segments`` (raw
+    source-of-truth folders) is refused; a ``protected_marker`` file protects
+    its whole subtree (per-project instruction precedence over the global
+    allow); and operations on a top-level folder (a direct child of a root)
+    require explicit confirmation so a single mis-scoped approval cannot wipe a
+    whole project area.
+    """
+
+    enabled: bool = True
+    guard_segments: tuple[str, ...] = ("01-raw", "raw-ingest")
+    protected_marker: str = ".zade-protected"
+    instructions_marker: str = ".zade-instructions.md"
+    list_limit: int = 500
+    search_limit: int = 200
+
+
+@dataclass(frozen=True)
+class TrayConfig:
+    """Resident desktop tray shell.
+
+    A separate process (installed at logon) that polls the kernel over loopback
+    and shows status + OS toasts. Read-only: it never mutates, so it needs no
+    token. ``poll_interval_seconds`` bounds how often it re-checks state.
+    """
+
+    enabled: bool = True
+    poll_interval_seconds: float = 15.0
+    toasts: bool = True
+    max_toast_notifications: int = 5
+
+
+@dataclass(frozen=True)
+class ResearchConfig:
+    """Autonomous web research.
+
+    Topic derivation is local and needs nothing here. The web-fetch lane is the
+    kernel's one deliberate outbound-to-the-open-web exception, so its bounds
+    live here: how many URLs per approved run, timeouts, a byte cap, an optional
+    host allowlist (empty = any public https host), and the default reliability
+    grade for filed web evidence. Every fetch is still approval-gated.
+    """
+
+    enabled: bool = True
+    max_urls_per_run: int = 5
+    fetch_timeout_seconds: float = 20.0
+    max_fetch_bytes: int = 2_000_000
+    max_text_chars: int = 8000
+    allow_hosts: tuple[str, ...] = ()
+    default_reliability: str = "C"
+
+
+@dataclass(frozen=True)
 class KernelConfig:
     app: AppConfig = AppConfig()
     identity: IdentityConfig = IdentityConfig()
@@ -170,6 +248,10 @@ class KernelConfig:
     voice: VoiceConfig = VoiceConfig()
     trading_bot: TradingBotConfig = TradingBotConfig()
     devtools: DevToolsConfig = DevToolsConfig()
+    browser: BrowserConfig = BrowserConfig()
+    vault: VaultConfig = VaultConfig()
+    tray: TrayConfig = TrayConfig()
+    research: ResearchConfig = ResearchConfig()
 
 
 def _read_toml(path: Path) -> dict:
@@ -258,6 +340,44 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         default_branch=str(os.getenv("COFOUNDER_DEFAULT_BRANCH", devtools_raw.get("default_branch", "main"))),
         command_timeout_seconds=float(devtools_raw.get("command_timeout_seconds", 300.0)),
     )
+    browser_raw = raw.get("browser", {})
+    browser = BrowserConfig(
+        enabled=_bool(os.getenv("ZADE_BROWSER_ENABLED", browser_raw.get("enabled", True))),
+        headless=_bool(os.getenv("ZADE_BROWSER_HEADLESS", browser_raw.get("headless", False))),
+        browser=str(os.getenv("ZADE_BROWSER_ENGINE", browser_raw.get("browser", "chromium"))).strip().lower(),
+        nav_timeout_seconds=float(browser_raw.get("nav_timeout_seconds", 30.0)),
+        action_timeout_seconds=float(browser_raw.get("action_timeout_seconds", 15.0)),
+        max_steps=int(browser_raw.get("max_steps", 25)),
+        allow_private_navigation=_bool(
+            os.getenv("ZADE_BROWSER_ALLOW_PRIVATE", browser_raw.get("allow_private_navigation", False))
+        ),
+    )
+    vault_raw = raw.get("vault", {})
+    vault = VaultConfig(
+        enabled=_bool(os.getenv("ZADE_VAULT_ENABLED", vault_raw.get("enabled", True))),
+        guard_segments=_segments(vault_raw.get("guard_segments"), ("01-raw", "raw-ingest")),
+        protected_marker=str(vault_raw.get("protected_marker", ".zade-protected")).strip(),
+        instructions_marker=str(vault_raw.get("instructions_marker", ".zade-instructions.md")).strip(),
+        list_limit=int(vault_raw.get("list_limit", 500)),
+        search_limit=int(vault_raw.get("search_limit", 200)),
+    )
+    tray_raw = raw.get("tray", {})
+    tray = TrayConfig(
+        enabled=_bool(os.getenv("ZADE_TRAY_ENABLED", tray_raw.get("enabled", True))),
+        poll_interval_seconds=float(tray_raw.get("poll_interval_seconds", 15.0)),
+        toasts=_bool(tray_raw.get("toasts", True)),
+        max_toast_notifications=int(tray_raw.get("max_toast_notifications", 5)),
+    )
+    research_raw = raw.get("research", {})
+    research = ResearchConfig(
+        enabled=_bool(os.getenv("ZADE_RESEARCH_ENABLED", research_raw.get("enabled", True))),
+        max_urls_per_run=int(research_raw.get("max_urls_per_run", 5)),
+        fetch_timeout_seconds=float(research_raw.get("fetch_timeout_seconds", 20.0)),
+        max_fetch_bytes=int(research_raw.get("max_fetch_bytes", 2_000_000)),
+        max_text_chars=int(research_raw.get("max_text_chars", 8000)),
+        allow_hosts=_segments(research_raw.get("allow_hosts"), ()),
+        default_reliability=str(research_raw.get("default_reliability", "C")).strip() or "C",
+    )
     return KernelConfig(
         app=app,
         identity=identity,
@@ -268,6 +388,9 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         voice=voice,
         trading_bot=trading_bot,
         devtools=devtools,
+        browser=browser,
+        vault=vault,
+        tray=tray,
     )
 
 
@@ -292,3 +415,11 @@ def _command(value: object) -> tuple[str, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(str(item) for item in value if str(item).strip())
     raise ValueError("Voice commands must be TOML arrays of argv strings (no shell parsing).")
+
+
+def _segments(value: object, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return fallback
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    raise ValueError("vault.guard_segments must be a TOML array of folder-name strings.")

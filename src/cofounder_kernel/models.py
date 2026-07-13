@@ -112,7 +112,7 @@ class WorkItemCreate(BaseModel):
     target: str = Field(default="", max_length=1000)
     permission_tier: str = Field(default="L0_READ", min_length=1, max_length=80)
     priority: int = Field(default=50, ge=0, le=100)
-    source: str = Field(default="api", min_length=1, max_length=240)
+    source: str = Field(default="founder.direct", min_length=1, max_length=240)
     due_at: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     unique_key: str | None = None
@@ -278,6 +278,44 @@ class ConnectorItemsImport(BaseModel):
 
 class ConnectorItemDismiss(BaseModel):
     reason: str = Field(default="", max_length=500)
+
+
+class BrowserRunRequest(BaseModel):
+    steps: list[dict[str, Any]] = Field(min_length=1, max_length=50)
+    title: str = Field(default="", max_length=200)
+    session_label: str = Field(default="", max_length=120)
+
+
+class VaultDeleteRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1000)
+    allow_top_level: bool = False
+    # dry_run defaults True: a bare request previews the effect and changes
+    # nothing; the caller must explicitly opt out to enqueue for approval.
+    dry_run: bool = True
+
+
+class VaultMoveRequest(BaseModel):
+    src: str = Field(min_length=1, max_length=1000)
+    dst: str = Field(min_length=1, max_length=1000)
+    allow_top_level: bool = False
+    overwrite: bool = False
+    dry_run: bool = True
+
+
+class VaultRestoreRequest(BaseModel):
+    trash_id: str = Field(min_length=1, max_length=120)
+    overwrite: bool = False
+
+
+class ResearchRunRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=500)
+    urls: list[str] = Field(min_length=1, max_length=10)
+    create_evidence: bool = True
+
+
+class ResearchDaydreamRequest(BaseModel):
+    limit: int = Field(default=3, ge=1, le=20)
+    notify: bool = True
 
 
 class VoiceTranscribeRequest(BaseModel):

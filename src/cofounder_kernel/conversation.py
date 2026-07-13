@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .config import KernelConfig
-from .db import KernelDatabase
+from .db import KernelDatabase, utc_now
 from .ollama import OllamaClient
 
 
@@ -19,6 +20,12 @@ class ConversationService:
     SUMMARY_MIN_OVERFLOW = 8
     SUMMARY_MAX_CHARS = 1200
     TURN_PROMPT_CHARS = 700
+
+    # Distillation: promote durable knowledge from chat into searchable memory.
+    DISTILL_MIN_TURNS = 8          # auto path waits for this many aged-out turns
+    DISTILL_MAX_ITEMS = 8          # cap memories written per distillation pass
+    DISTILL_TURN_CAP = 40          # cap turns fed to one extraction call
+    DISTILL_KINDS = ("decision", "commitment", "preference", "fact", "lesson")
 
     def __init__(self, *, config: KernelConfig, db: KernelDatabase, ollama: OllamaClient):
         self.config = config
@@ -197,6 +204,139 @@ class ConversationService:
             summary = _fallback_summary(existing_summary, turns, assistant_name)
         return _truncate(summary, self.SUMMARY_MAX_CHARS)
 
+    def maybe_distill(
+        self,
+        conversation_id: int,
+        *,
+        window: int | None = None,
+        min_turns: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Promote turns that have aged out of the recent window into memory.
+
+        Mirrors ``maybe_summarize``: a no-op until enough un-distilled older turns
+        exist, so short threads never pay for extraction. Each turn is promoted at
+        most once (tracked by ``distilled_through_turn_id``).
+        """
+        return self.distill(
+            conversation_id,
+            window=window,
+            min_turns=min_turns or self.DISTILL_MIN_TURNS,
+            only_aged_out=True,
+        )
+
+    def distill(
+        self,
+        conversation_id: int,
+        *,
+        window: int | None = None,
+        min_turns: int = 1,
+        only_aged_out: bool = False,
+    ) -> dict[str, Any] | None:
+        """Extract durable knowledge (decisions, commitments, preferences, facts,
+        lessons) from not-yet-distilled turns and write it into searchable memory.
+
+        Idempotent: advances the distillation cursor only when extraction
+        succeeds, and never re-promotes a turn. On extraction failure the cursor is
+        left untouched so a later call retries. Returns None when there is nothing
+        to do.
+        """
+        window = window or self.RECENT_WINDOW
+        conversation = self.db.get_conversation(conversation_id)
+        if not conversation:
+            raise ValueError(f"Conversation not found: {conversation_id}")
+        turns = self.db.list_conversation_turns(conversation_id, limit=100_000)
+        through = conversation.get("distilled_through_turn_id")
+        candidates = [turn for turn in turns if through is None or turn["id"] > through]
+        if only_aged_out:
+            aged_ids = {turn["id"] for turn in turns[:-window]} if len(turns) > window else set()
+            candidates = [turn for turn in candidates if turn["id"] in aged_ids]
+        if len(candidates) < max(1, min_turns):
+            return None
+        # Bound how many turns feed one extraction call; oldest-first order preserved.
+        batch = candidates[: self.DISTILL_TURN_CAP]
+        items = self._extract_durable_items(batch, conversation.get("summary", ""))
+        if items is None:
+            # Extraction failed (model or parse error). Leave the cursor for a retry.
+            return {"status": "extraction_failed", "written": [], "count": 0, "candidates": len(batch)}
+        source = f"conversation:{conversation_id}"
+        existing_titles = {record.title.strip().lower() for record in self.db.list_memories_by_source(source)}
+        written: list[dict[str, Any]] = []
+        turn_range = [batch[0]["id"], batch[-1]["id"]]
+        for item in items:
+            title = item["title"]
+            if title.strip().lower() in existing_titles:
+                continue
+            memory_id = self.db.add_memory(
+                kind=f"chat_{item['kind']}",
+                title=title,
+                content=item["content"],
+                source=source,
+                metadata={
+                    "conversation_id": conversation_id,
+                    "category": item["kind"],
+                    "distilled_from_turns": turn_range,
+                    "distilled_at": utc_now(),
+                },
+            )
+            existing_titles.add(title.strip().lower())
+            written.append({"memory_id": memory_id, "kind": f"chat_{item['kind']}", "title": title})
+        last_turn_id = batch[-1]["id"]
+        self.db.update_conversation_distilled(conversation_id, distilled_through_turn_id=last_turn_id)
+        self.db.audit(
+            actor="conversation",
+            action="conversation.distill",
+            target=f"conversation:{conversation_id}",
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={"written": len(written), "candidates": len(batch), "distilled_through_turn_id": last_turn_id},
+        )
+        return {
+            "status": "ok",
+            "written": written,
+            "count": len(written),
+            "candidates": len(batch),
+            "distilled_through_turn_id": last_turn_id,
+        }
+
+    def _extract_durable_items(
+        self, turns: list[dict[str, Any]], existing_summary: str
+    ) -> list[dict[str, str]] | None:
+        """Return durable {kind, title, content} items, or None if the model/parse
+        failed (so the caller can retry later without losing turns)."""
+        assistant_name = self.config.identity.name
+        transcript_lines = []
+        for turn in turns:
+            speaker = "Founder" if turn["role"] == "user" else assistant_name
+            transcript_lines.append(f"[{speaker}] {_truncate(turn['content'], self.TURN_PROMPT_CHARS)}")
+        transcript = "\n".join(transcript_lines)
+        kinds = ", ".join(self.DISTILL_KINDS)
+        prompt = (
+            f"You extract durable, reusable knowledge from a founder's conversation with {assistant_name}, "
+            "so it can be recalled later in unrelated conversations.\n"
+            "Return ONLY a JSON array (no prose, no code fences). Each element is an object: "
+            '{"kind": <one of [' + kinds + ']>, "title": <short label>, "content": <one or two factual sentences>}.\n'
+            "kind meanings — decision: a choice that was made; commitment: something someone said they will do; "
+            "preference: a stated like/dislike or working style; fact: a durable fact about the business, product, "
+            "market, or people; lesson: an insight or principle learned.\n"
+            "Only include things still worth remembering weeks from now. Skip greetings, small talk, transient "
+            "status, and anything already covered by the existing summary. Do not invent anything not supported by "
+            "the transcript. If nothing durable was said, return [].\n\n"
+            f"Existing long-term summary (do not repeat):\n{existing_summary or 'None yet.'}\n\n"
+            f"Transcript:\n{transcript}\n\n"
+            "JSON array:"
+        )
+        try:
+            generated = self.ollama.generate(
+                prompt=prompt,
+                model=self.config.ollama.chat_model,
+                think=False,
+                temperature=self.config.ollama.temperature,
+                num_predict=800,
+            )
+        except Exception:
+            return None
+        return _parse_distilled_items(generated.response, self.DISTILL_KINDS, self.DISTILL_MAX_ITEMS)
+
 
 def _truncate(text: str, limit: int) -> str:
     text = (text or "").strip()
@@ -214,3 +354,39 @@ def _fallback_summary(existing_summary: str, turns: list[dict[str, Any]], assist
         speaker = "Founder" if turn["role"] == "user" else assistant_name
         parts.append(f"{speaker}: {_truncate(turn['content'], 160)}")
     return " | ".join(parts)
+
+
+def _parse_distilled_items(
+    text: str, allowed_kinds: tuple[str, ...], cap: int
+) -> list[dict[str, str]] | None:
+    """Pull a JSON array of durable items out of a model response.
+
+    Returns ``[]`` for a valid-but-empty array (nothing durable — success), and
+    ``None`` when no parseable array is present (a failure the caller should retry).
+    Tolerant of surrounding prose/code fences by slicing the outermost brackets.
+    """
+    if not text:
+        return None
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        data = json.loads(text[start : end + 1])
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    items: list[dict[str, str]] = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        kind = str(entry.get("kind", "")).strip().lower()
+        title = str(entry.get("title", "")).strip()
+        content = str(entry.get("content", "")).strip()
+        if kind not in allowed_kinds or not title or not content:
+            continue
+        items.append({"kind": kind, "title": title, "content": content})
+        if len(items) >= cap:
+            break
+    return items

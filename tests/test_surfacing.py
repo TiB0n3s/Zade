@@ -79,6 +79,7 @@ def _seed_signals(client: TestClient) -> dict:
             "action": "email.send",
             "target": "founder@example.com",
             "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
         },
     )
     assert bet.status_code == 200
@@ -143,6 +144,19 @@ def test_attention_scan_ranks_overdue_kill_criteria_first(tmp_path: Path, monkey
     assert scores == sorted(scores, reverse=True)
     # The longest-open secondary signal is called out as underweighted.
     assert payload["underweighted"]
+
+
+def test_attention_items_include_routable_ui_destinations(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    client = TestClient(create_app(_config(tmp_path)))
+    _seed_signals(client)
+
+    payload = client.get("/surface/attention").json()
+    hrefs_by_kind = {item["kind"]: item["href"] for item in payload["items"]}
+
+    assert hrefs_by_kind["thesis_conflict"] == "/ui/ledger.html#sec-thesis-conflicts"
+    assert hrefs_by_kind["approvals_pending"] == "/ui/inbox.html#decisions"
+    assert all(item["href"].startswith("/ui/") for item in payload["items"])
 
 
 def test_brief_persists_and_tracks_changes_between_briefs(tmp_path: Path, monkeypatch) -> None:

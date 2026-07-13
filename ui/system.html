@@ -157,7 +157,7 @@
             <option value="">All risk levels</option>
             <option value="read_only">Read only — just looks things up</option>
             <option value="local_write">Local write — can change files on this machine</option>
-            <option value="approval_gated">Approval gated — needs your sign-off first</option>
+            <option value="approval_gated">Proposal gated — needs your sign-off first</option>
           </select>
         </label>
         <button class="secondary" id="refreshBtn">Refresh list</button>
@@ -430,7 +430,7 @@
 
       <section class="panel">
         <h2>Test What Zade Would Be Allowed To Do</h2>
-        <div class="sub" style="margin-bottom:10px;">Describe an action and see whether Zade's rules would allow it automatically, block it, or require your approval first — nothing happens for real. This is a dry run only.</div>
+        <div class="sub" style="margin-bottom:10px;">Describe an action and see whether Zade's rules would allow it automatically, block it, or require approval when Zade/system automation proposes it — nothing happens for real. This is a dry run only.</div>
         <div class="form">
           <div class="row">
             <label>Action <span class="hint">The thing Zade would be doing</span><input id="evAction" placeholder="e.g. local.file.write, browser.open, dev.git.commit"></label>
@@ -514,7 +514,7 @@
       byId('summary').innerHTML = [
         metric(s.total || 0, 'Installed', 'Skills Zade knows about'),
         metric(s.enabled || 0, 'Enabled', 'Skills Zade is currently allowed to use'),
-        metric(risk.approval_gated || 0, 'Need approval', "Skills that always ask before doing anything"),
+        metric(risk.approval_gated || 0, 'Proposal gated', "Skills that need sign-off when Zade initiates them"),
         metric((s.recently_used || []).length, 'Recently used', 'Skills used in the last activity window')
       ].join('');
     }
@@ -533,7 +533,7 @@
     const RISK_HINTS = {
       read_only: 'Only looks things up — cannot change anything',
       local_write: 'Can change files on this machine',
-      approval_gated: 'Always asks for your sign-off before doing anything'
+      approval_gated: 'Needs sign-off when Zade initiates it'
     };
 
     function riskPill(riskTier) {
@@ -1345,7 +1345,7 @@
     const AUTHORITY_DECISION_LABELS = {
       allow: 'Allowed automatically',
       deny: 'Blocked',
-      approval_required: 'Needs your approval first'
+      approval_required: 'Needs approval when Zade/system automation proposes it'
     };
 
     async function evaluateAuthority() {

@@ -17,9 +17,17 @@ dev = [
   "httpx>=0.28",
   "pytest>=8.4",
 ]
+browser = [
+  "playwright>=1.40",
+]
+tray = [
+  "pystray>=0.19",
+  "Pillow>=10",
+]
 
 [project.scripts]
 cofounder-kernel = "cofounder_kernel.__main__:main"
+zade-tray = "cofounder_kernel.tray:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade — Inbox</title>
+  <style>
+    /* Page-specific layout only; colors/type/components from /ui/zade-ui.css.
+       Inbox folds three old pages (Approvals, Commitments, Action Plans) into
+       one decision surface split by kind, not by which page it used to live on. */
+    * { box-sizing: border-box; }
+    h1 { margin: 0 0 8px; }
+    /* prototype controls page inset via .page; drop main's own centered padding */
+    body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
+    .page { padding: 44px 48px 60px; max-width: 920px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
+    .lede { font-size: 13px; color: var(--z-muted); margin-bottom: 28px; max-width: 60ch; }
+
+    /* pill tabs */
+    .tabs { display: flex; gap: 6px; margin-bottom: 24px; flex-wrap: wrap; }
+    .tabs button {
+      border-radius: 999px; padding: 7px 15px; font-size: 12.5px; min-height: 0;
+      border: 1px solid var(--z-line-strong); color: var(--z-muted); background: transparent;
+    }
+    .tabs button.active { border-color: var(--z-accent); background: rgba(194,160,106,0.10); color: var(--z-text); }
+
+    [data-panel][hidden] { display: none; }
+
+    /* hairline rows */
+    .rows { display: flex; flex-direction: column; }
+    .row {
+      padding: 16px 2px; border-top: 1px solid var(--z-line-soft);
+      display: flex; justify-content: space-between; gap: 16px; align-items: flex-start;
+    }
+    .row-main { min-width: 0; }
+    .row-title { font-size: 14px; color: var(--z-ink-hi); margin-bottom: 4px; }
+    .row-detail { font-size: 12px; color: var(--z-muted); margin-bottom: 6px; }
+    .row-meta { font-size: 12px; color: var(--z-faint); }
+    .row-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: none; }
+    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .row-actions button { min-height: 28px; padding: 4px 12px; font-size: 11.5px; }
+
+    .due-urgent { color: var(--z-bad-text); }
+    .due-soon { color: var(--z-warn-text); }
+
+    /* tier chip */
+    .tier { display: inline-flex; align-items: center; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 7px; border-radius: 2px; }
+    .tier.l0 { color: var(--z-muted); background: rgba(255,255,255,0.05); }
+    .tier.l1, .tier.l2 { color: var(--z-warn-text); background: rgba(194,160,106,0.13); }
+    .tier.l3, .tier.l4 { color: var(--z-info-text); background: rgba(128,107,184,0.15); }
+
+    /* status pills not already covered by shared css */
+    .pill.open, .pill.active { color: var(--z-warn-text); background: rgba(194,160,106,0.13); }
+    .pill.missed, .pill.failed, .pill.blocked, .pill.disapproved { color: var(--z-bad-text); background: rgba(168,74,74,0.15); }
+    .pill.dropped, .pill.abandoned, .pill.skipped { color: var(--z-muted); background: rgba(255,255,255,0.05); }
+
+    .row-error { color: var(--z-bad-text); font-size: 11px; margin-top: 4px; text-align: right; }
+    .empty { color: var(--z-faint); font-size: 12.5px; padding: 22px 2px; }
+    @media (max-width: 720px) { .page { padding: 26px 20px 48px; } .row { flex-direction: column; } .row-side { align-items: flex-start; } .row-actions { justify-content: flex-start; } }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body data-zade-type="sans">
+  <main>
+    <div class="page">
+      <div class="kicker">Inbox</div>
+      <h1>What needs you</h1>
+      <div class="lede">Approvals, promises, and plans in one place — everything that used to live across three separate pages.</div>
+
+      <div class="tabs">
+        <button type="button" data-tab="decisions" class="active">Needs a decision · <span id="cDecisions">0</span></button>
+        <button type="button" data-tab="promises">Promises · <span id="cPromises">0</span></button>
+        <button type="button" data-tab="motion">In motion · <span id="cMotion">0</span></button>
+      </div>
+
+      <section data-panel="decisions"><div class="rows" id="decisionsRows"><div class="empty">Loading…</div></div></section>
+      <section data-panel="promises" hidden><div class="rows" id="promisesRows"><div class="empty">Loading…</div></div></section>
+      <section data-panel="motion" hidden><div class="rows" id="motionRows"><div class="empty">Loading…</div></div></section>
+    </div>
+  </main>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    (async () => { if (token()) return; try { const r = await fetch('/session/token'); if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); } } catch (e) {} })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    async function withBusy(btn, label, fn) {
+      const original = btn.textContent; btn.disabled = true; btn.textContent = label;
+      try { return await fn(); } finally { btn.disabled = false; btn.textContent = original; }
+    }
+    const prettyLabel = (v) => (v == null || v === '') ? '' : String(v).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+
+    const TIER_INFO = {
+      L0_READ: { label: 'Reads (L0)', cls: 'l0' },
+      L1_MEMORY_WRITE: { label: 'Saves to memory (L1)', cls: 'l1' },
+      L2_FILE_WRITE: { label: 'Writes a file (L2)', cls: 'l2' },
+      L3_EXTERNAL_ACTION: { label: 'Reaches outside (L3)', cls: 'l3' },
+      L4_IRREVERSIBLE: { label: 'Irreversible (L4)', cls: 'l4' }
+    };
+    function tierChip(tier) {
+      const info = TIER_INFO[String(tier || '').toUpperCase()];
+      if (!info) return '';
+      return `<span class="tier ${info.cls}">${esc(info.label)}</span>`;
+    }
+
+    let state = { decisions: [], promises: [], motion: [] };
+
+    async function load() {
+      const [consoleData, commitments, plans] = await Promise.all([
+        api('/approval-console?status=pending&limit=50').catch(() => ({ items: [] })),
+        api('/commitments?status=open&limit=100').catch(() => ({ items: [] })),
+        api('/action-plans?status=active&limit=50').catch(() => ({ items: [] }))
+      ]);
+      state.decisions = consoleData.items || [];
+      state.promises = commitments.items || [];
+      // action-plan summaries need a detail fetch for their steps
+      const summaries = plans.items || [];
+      state.motion = await Promise.all(summaries.map((p) => api('/action-plans/' + p.id).then((d) => d.item).catch(() => p)));
+
+      byId('cDecisions').textContent = state.decisions.length;
+      byId('cPromises').textContent = state.promises.length;
+      byId('cMotion').textContent = state.motion.length;
+
+      renderDecisions();
+      renderPromises();
+      renderMotion();
+    }
+
+    // ---- Needs a decision (approval requests) ----
+    function renderDecisions() {
+      byId('decisionsRows').innerHTML = state.decisions.length
+        ? state.decisions.map(renderDecision).join('')
+        : '<div class="empty">Nothing is waiting on a decision.</div>';
+    }
+    function renderDecision(item) {
+      const request = item.request || {};
+      const authority = item.authority_tier || {};
+      const tier = authority.permission_tier || request.permission_tier;
+      const actions = item.available_actions || {};
+      const title = item.zade_wants || request.title || 'Approval request';
+      const detail = request.title && item.zade_wants ? request.title : (request.detail || '');
+      const canAct = actions.approve || actions.deny || actions.defer;
+      return `
+        <div class="row" data-id="${esc(item.id)}">
+          <div class="row-main">
+            <div class="row-title">${esc(title)}</div>
+            ${detail ? `<div class="row-detail">${esc(detail)}</div>` : ''}
+            ${tierChip(tier)}
+          </div>
+          <div class="row-side">
+            <span class="pill ${esc(item.status)}">${esc(prettyLabel(item.status))}</span>
+            ${canAct ? `<div class="row-actions">
+              ${actions.approve ? `<button class="ok" data-act="approve">Approve</button>` : ''}
+              ${actions.deny ? `<button class="bad" data-act="deny">Deny</button>` : ''}
+              ${actions.defer ? `<button class="warn" data-act="defer">Defer</button>` : ''}
+            </div>` : ''}
+            <div class="row-error" data-error></div>
+          </div>
+        </div>`;
+    }
+    const DECISION_BODIES = {
+      approve: { resolved_by: 'founder', dispatch: false, note: '', typed_confirmation: '' },
+      deny: { resolved_by: 'founder', note: '' },
+      defer: { resolved_by: 'founder', note: '', defer_until: null }
+    };
+
+    // ---- Promises (commitments) ----
+    function dueText(item) {
+      if (!item.due_at) return { text: 'no due date', cls: '' };
+      const overdue = item.due_at < new Date().toISOString();
+      const soon = !overdue && item.due_at < new Date(Date.now() + 48 * 3600 * 1000).toISOString();
+      return { text: (overdue ? 'overdue · ' : 'due ') + item.due_at, cls: overdue ? 'due-urgent' : (soon ? 'due-soon' : '') };
+    }
+    function renderPromises() {
+      byId('promisesRows').innerHTML = state.promises.length
+        ? state.promises.map(renderPromise).join('')
+        : '<div class="empty">No open promises.</div>';
+    }
+    function renderPromise(item) {
+      const due = dueText(item);
+      const open = item.status === 'open';
+      return `
+        <div class="row" data-id="${esc(item.id)}">
+          <div class="row-main">
+            <div class="row-title">${esc(item.title)}</div>
+            <div class="row-meta">${esc(prettyLabel(item.who))} · <span class="${due.cls}">${esc(due.text)}</span></div>
+          </div>
+          <div class="row-side">
+            <span class="pill ${esc(item.status)}">${esc(prettyLabel(item.status))}</span>
+            ${open ? `<div class="row-actions">
+              <button class="ok" data-act="done">Done</button>
+              <button class="bad" data-act="miss">Missed</button>
+            </div>` : ''}
+            <div class="row-error" data-error></div>
+          </div>
+        </div>`;
+    }
+
+    // ---- In motion (action plans) ----
+    const TERMINAL_PLAN = new Set(['done', 'failed', 'abandoned']);
+    function planProgress(plan) {
+      const steps = plan.steps || [];
+      const total = steps.length;
+      const needsApproval = steps.find((s) => s.status === 'approval_required');
+      if (needsApproval) return { text: 'Next step needs your sign-off', approveStep: needsApproval };
+      const current = steps.find((s) => !['done', 'skipped', 'failed'].includes(s.status));
+      const idx = current ? steps.indexOf(current) + 1 : total;
+      return { text: `Step ${idx} of ${total} · ${prettyLabel(plan.status)}`, approveStep: null };
+    }
+    function renderMotion() {
+      byId('motionRows').innerHTML = state.motion.length
+        ? state.motion.map(renderPlan).join('')
+        : '<div class="empty">No plans in motion.</div>';
+    }
+    function renderPlan(plan) {
+      const prog = planProgress(plan);
+      const terminal = TERMINAL_PLAN.has(plan.status);
+      return `
+        <div class="row" data-id="${esc(plan.id)}">
+          <div class="row-main">
+            <div class="row-title">${esc(plan.title)}</div>
+            <div class="row-meta">${esc(prog.text)}</div>
+          </div>
+          <div class="row-side">
+            <span class="pill ${esc(plan.status)}">${esc(prettyLabel(plan.status))}</span>
+            ${!terminal ? `<div class="row-actions">
+              ${prog.approveStep ? `<button class="ok" data-act="approve-step" data-step="${esc(prog.approveStep.id)}">Approve step</button>` : ''}
+              <button class="secondary" data-act="advance">Advance</button>
+            </div>` : ''}
+            <div class="row-error" data-error></div>
+          </div>
+        </div>`;
+    }
+
+    // ---- Action wiring (delegated per panel) ----
+    function setRowError(row, msg) { const e = row.querySelector('[data-error]'); if (e) e.textContent = msg || ''; }
+
+    function wirePanel(panelId, handler) {
+      byId(panelId).addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button[data-act]');
+        if (!btn) return;
+        const row = btn.closest('.row');
+        const id = row.getAttribute('data-id');
+        setRowError(row, '');
+        withBusy(btn, '…', async () => {
+          try { await handler(btn.dataset.act, id, btn); await load(); }
+          catch (err) { setRowError(row, err.message); }
+        });
+      });
+    }
+
+    wirePanel('decisionsRows', async (act, id) => {
+      await api(`/approval-requests/${encodeURIComponent(id)}/${act}`, { method: 'POST', body: JSON.stringify(DECISION_BODIES[act]) });
+    });
+    wirePanel('promisesRows', async (act, id) => {
+      // act is 'done' | 'miss' -> real routes /done, /miss
+      await api(`/commitments/${encodeURIComponent(id)}/${act}`, { method: 'POST', body: JSON.stringify({ note: '' }) });
+    });
+    wirePanel('motionRows', async (act, id, btn) => {
+      if (act === 'advance') {
+        await api(`/action-plans/${encodeURIComponent(id)}/advance`, { method: 'POST' });
+      } else if (act === 'approve-step') {
+        await api(`/action-plans/${encodeURIComponent(id)}/steps/${encodeURIComponent(btn.dataset.step)}/approve`, { method: 'POST', body: '{}' });
+      }
+    });
+
+    // ---- Tabs (hash-driven, deep-linkable from Home) ----
+    const TABS = ['decisions', 'promises', 'motion'];
+    function activate(tab) {
+      if (!TABS.includes(tab)) tab = 'decisions';
+      document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+      document.querySelectorAll('[data-panel]').forEach((p) => {
+        if (p.dataset.panel === tab) p.removeAttribute('hidden'); else p.setAttribute('hidden', '');
+      });
+    }
+    document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.tab; activate(b.dataset.tab); }));
+    window.addEventListener('hashchange', () => activate(location.hash.replace('#', '')));
+    activate(location.hash.replace('#', ''));
+
+    load().catch((err) => { byId('decisionsRows').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>'; });
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

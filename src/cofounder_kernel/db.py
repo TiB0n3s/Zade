@@ -10,14 +10,18 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 23
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
 # Every historical schema change so far added a new table, so this is empty — but
 # any future `ALTER TABLE ... ADD COLUMN` must be registered here as
 # (table, column_name, "column_name TYPE [DEFAULT ...]") so upgraded DBs receive it.
-COLUMN_PATCHES: tuple[tuple[str, str, str], ...] = ()
+COLUMN_PATCHES: tuple[tuple[str, str, str], ...] = (
+    # v23: conversation -> memory distillation cursor. Tracks which turns have been
+    # promoted into searchable memory so promotion is incremental and idempotent.
+    ("conversations", "distilled_through_turn_id", "distilled_through_turn_id INTEGER"),
+)
 
 
 # Key-name fragments whose values are redacted before landing in the (plaintext,
@@ -1310,6 +1314,36 @@ class KernelDatabase:
             raise ValueError(f"Unknown skill: {name}")
         return _skill_from_row(row)
 
+    # --- Action-handler access overlay ---------------------------------------
+    # Handlers are registered in code at startup; this table only records
+    # explicit founder grant/revoke overrides. An absent row means "enabled"
+    # (the historical default), so existing databases keep every handler live.
+    def get_handler_access(self, action: str) -> bool | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT enabled FROM action_handler_access WHERE action = ?", (action,)
+            ).fetchone()
+        return None if row is None else bool(row["enabled"])
+
+    def list_handler_access(self) -> dict[str, bool]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT action, enabled FROM action_handler_access").fetchall()
+        return {row["action"]: bool(row["enabled"]) for row in rows}
+
+    def set_handler_access(self, action: str, enabled: bool) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO action_handler_access (created_at, updated_at, action, enabled)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(action) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (now, now, action, int(enabled)),
+            )
+
     def record_skill_invocation(
         self,
         *,
@@ -1574,6 +1608,29 @@ class KernelDatabase:
                 (utc_now(), summary, summary_through_turn_id, conversation_id),
             )
 
+    def update_conversation_distilled(
+        self,
+        conversation_id: int,
+        *,
+        distilled_through_turn_id: int,
+    ) -> None:
+        """Advance the distillation cursor after promoting turns into memory."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ?, distilled_through_turn_id = ? WHERE id = ?",
+                (utc_now(), distilled_through_turn_id, conversation_id),
+            )
+
+    def list_memories_by_source(self, source: str, *, limit: int = 200) -> list[MemoryRecord]:
+        """Memories written under a given source (e.g. 'conversation:42'), newest
+        first. Used to dedup distilled items against what's already been promoted."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM memories WHERE source = ? ORDER BY id DESC LIMIT ?",
+                (source, limit),
+            ).fetchall()
+        return [_memory_from_row(row) for row in rows]
+
 
 def _memory_from_row(row: sqlite3.Row) -> MemoryRecord:
     return MemoryRecord(
@@ -1780,6 +1837,11 @@ def _conversation_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "status": str(row["status"]),
         "summary": str(row["summary"]),
         "summary_through_turn_id": int(row["summary_through_turn_id"]) if row["summary_through_turn_id"] is not None else None,
+        "distilled_through_turn_id": (
+            int(row["distilled_through_turn_id"])
+            if "distilled_through_turn_id" in row.keys() and row["distilled_through_turn_id"] is not None
+            else None
+        ),
         "turn_count": int(row["turn_count"]),
         "last_message_at": str(row["last_message_at"]) if row["last_message_at"] else None,
         "metadata": json.loads(row["metadata_json"] or "{}"),
@@ -2669,6 +2731,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   status TEXT NOT NULL DEFAULT 'active',
   summary TEXT NOT NULL DEFAULT '',
   summary_through_turn_id INTEGER,
+  distilled_through_turn_id INTEGER,
   turn_count INTEGER NOT NULL DEFAULT 0,
   last_message_at TEXT,
   metadata_json TEXT NOT NULL DEFAULT '{}'
@@ -2887,6 +2950,15 @@ CREATE TABLE IF NOT EXISTS notification_channels (
   rate_limit_per_hour INTEGER NOT NULL DEFAULT 30,
   recipients_json TEXT NOT NULL DEFAULT '[]',
   config_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS action_handler_access (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  action TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 """

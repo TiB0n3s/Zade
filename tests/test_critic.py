@@ -178,9 +178,54 @@ def test_unparseable_critique_attaches_raw_text(tmp_path: Path, monkeypatch) -> 
     assert response.status_code == 200
     payload = response.json()
     assert payload["contrarian"]["verdict"] == "unparsed"
-    assert "- Verdict: unparsed" in payload["response"]
+    assert "- Verdict: unstructured response; treat as proceed_with_changes until rerun" in payload["response"]
     assert "- Critique: The draft is directionally fine but thin on retention proof." in payload["response"]
     assert "- Confidence adjustment: -10" in payload["response"]
+
+
+def test_empty_unparseable_critique_is_not_attached_to_response(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    calls: list[dict] = []
+    monkeypatch.setattr(OllamaClient, "generate", _generate_stub("", calls))
+    client = TestClient(create_app(_config(tmp_path)))
+
+    response = client.post(
+        "/runtime/respond",
+        json={"message": "Should we prioritize evidence intake next?", "use_semantic_memory": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response"] == "Prioritize evidence intake."
+    assert payload["contrarian"]["verdict"] == "unparsed"
+    assert "Contrarian check" not in payload["response"]
+    assert "contrarian_pass_applied" not in payload["governor"]["applied_rules"]
+    assert "Contrarian pass returned no parseable critique; no visible challenge attached." in payload["governor"]["notes"]
+
+
+def test_malformed_json_critique_fragment_is_not_attached_to_response(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        OllamaClient,
+        "generate",
+        _generate_stub('```json\n{"verdict": "proceed_with_changes", "weakest_assumption": "cut off', calls),
+    )
+    client = TestClient(create_app(_config(tmp_path)))
+
+    response = client.post(
+        "/runtime/respond",
+        json={"message": "Should we prioritize evidence intake next?", "use_semantic_memory": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response"] == "Prioritize evidence intake."
+    assert payload["contrarian"]["verdict"] == "unparsed"
+    assert "Contrarian check" not in payload["response"]
+    assert "```json" not in payload["response"]
+    assert "contrarian_pass_applied" not in payload["governor"]["applied_rules"]
+    assert "Contrarian pass returned no parseable critique; no visible challenge attached." in payload["governor"]["notes"]
 
 
 def test_parse_critique_normalizes_and_clamps() -> None:

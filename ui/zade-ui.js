@@ -26,30 +26,25 @@
     system: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'
   };
 
+  // Redesign: 10 destinations folded into 6. No group labels at this count.
+  //   Home     = index.html   (Command's chat + all of Voice)
+  //   Inbox    = inbox.html    (Approvals + Action Plans + Commitments + attention queue)
+  //   Strategy = strategy.html (Founder + Ledger)
+  //   Memory   = memory.html   (restyled)
+  //   Trading  = trading.html  (restyled, advanced tools tucked away)
+  //   Settings = settings.html (System + notifications)
+  // Icons are reused as-is: Inbox borrows approvals, Strategy borrows ledger,
+  // Settings borrows system — no new icon assets introduced.
   const GROUPS = [
-    { label: null, pages: [["Command", "index", I.command]] },
     {
-      label: "Operate",
+      label: null,
       pages: [
-        ["Founder", "founder", I.founder],
-        ["Approvals", "approvals", I.approvals],
-        ["Ledger", "ledger", I.ledger],
-        ["Commitments", "commitments", I.commitments],
-        ["Attention", "surfacing", I.surfacing]
-      ]
-    },
-    {
-      label: "Intelligence",
-      pages: [
+        ["Home", "index", I.command],
+        ["Inbox", "inbox", I.approvals],
+        ["Strategy", "strategy", I.ledger],
         ["Memory", "memory", I.memory],
         ["Trading", "trading", I.trading],
-        ["Voice", "voice", I.voice]
-      ]
-    },
-    {
-      label: "Govern",
-      pages: [
-        ["System", "system", I.system]
+        ["Settings", "settings", I.system]
       ]
     }
   ];
@@ -129,6 +124,237 @@
   const svgIcon = (paths) =>
     '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
 
+  const esc = (value) =>
+    String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // ============================================================
+  //  Activity beacon — surfaces the work Zade does off-thread.
+  //  The chat/voice surface only shows the founder-facing reply;
+  //  the contrarian pass, operating loops, cadence reviews,
+  //  self-evals, and the work queue never appear there. This
+  //  reads the runtime's own trail (all plain GETs, no token,
+  //  no backend changes) and renders a live pulse + recent feed
+  //  in the shared sidebar, so every page shows what's running.
+  // ============================================================
+  let activityRefs = null; // sidebar monitor
+  let stripRefs = null; // narrow-screen mirror
+  let pollTimer = null;
+  let feedOpen = false;
+  let offlineStreak = 0;
+
+  // A runtime.respond IS the chat/voice reply — everything else is off-thread.
+  const SURFACED_OPS = new Set(["runtime.respond"]);
+  const OP_LABELS = {
+    "runtime.respond": "Answering you",
+    "runtime.contrarian": "Contrarian check",
+    "evals.case": "Self-evaluation",
+    "ops.model_benchmark": "Benchmarking models",
+  };
+  const EVENT_LABELS = {
+    "runtime.operating_loop": "Operating loop",
+    "runtime.cadence": "Cadence review",
+    "runtime.respond": "Answering you",
+  };
+
+  const humanizeOp = (value) => {
+    const tail = String(value || "").split(".").pop().replace(/[_-]+/g, " ").trim();
+    return tail ? tail.charAt(0).toUpperCase() + tail.slice(1) : "Activity";
+  };
+
+  const relTime = (iso) => {
+    const t = new Date(iso).getTime();
+    if (!t || Number.isNaN(t)) return "";
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (s < 5) return "just now";
+    if (s < 60) return s + "s ago";
+    const m = Math.round(s / 60);
+    if (m < 60) return m + "m ago";
+    const h = Math.round(m / 60);
+    if (h < 24) return h + "h ago";
+    return Math.round(h / 24) + "d ago";
+  };
+
+  const fetchJSON = async (path) => {
+    const response = await fetch(path, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(String(response.status));
+    return response.json();
+  };
+
+  // Merge model-call telemetry and runtime events into one time-sorted trail.
+  // runtime.respond is logged in both places; keep the telemetry copy (it carries
+  // latency) and drop the duplicate event so a single reply isn't listed twice.
+  const normalizeActivity = (modelCalls, events) => {
+    const rows = [];
+    for (const call of modelCalls) {
+      const silent = !SURFACED_OPS.has(call.operation);
+      const latency = Number(call.latency_ms || 0);
+      rows.push({
+        at: call.created_at,
+        label: OP_LABELS[call.operation] || humanizeOp(call.operation),
+        status: call.status || "ok",
+        silent,
+        detail: latency ? Math.round(latency / 100) / 10 + "s" : call.model || "",
+      });
+    }
+    for (const event of events) {
+      if (event.event_type === "runtime.respond") continue;
+      rows.push({
+        at: event.created_at,
+        label: EVENT_LABELS[event.event_type] || humanizeOp(event.event_type),
+        status: event.status || "ok",
+        silent: true,
+        detail: String(event.message || ""),
+      });
+    }
+    rows.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+    return rows;
+  };
+
+  const injectActivityMonitor = (aside) => {
+    const wrap = el("div", "zade-activity");
+    wrap.setAttribute("data-state", "idle");
+    wrap.innerHTML =
+      '<button type="button" class="zade-activity-head" aria-expanded="false" aria-controls="zade-activity-feed" title="What Zade is doing off-thread">' +
+        '<span class="zade-beacon" aria-hidden="true"></span>' +
+        '<span class="zade-activity-copy">' +
+          '<span class="zade-activity-title" data-act-title>Activity</span>' +
+          '<span class="zade-activity-detail" data-act-detail aria-live="polite">Checking…</span>' +
+        "</span>" +
+        '<span class="zade-activity-chip" data-act-chip hidden></span>' +
+        '<svg class="zade-activity-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>' +
+      "</button>" +
+      '<div class="zade-activity-feed" id="zade-activity-feed" role="region" aria-label="Recent Zade activity"></div>';
+    aside.appendChild(wrap);
+    const head = wrap.querySelector(".zade-activity-head");
+    const feed = wrap.querySelector(".zade-activity-feed");
+    head.addEventListener("click", () => {
+      feedOpen = !feedOpen;
+      head.setAttribute("aria-expanded", String(feedOpen));
+      feed.classList.toggle("open", feedOpen);
+    });
+    activityRefs = {
+      wrap,
+      title: wrap.querySelector("[data-act-title]"),
+      detail: wrap.querySelector("[data-act-detail]"),
+      chip: wrap.querySelector("[data-act-chip]"),
+      feed,
+    };
+  };
+
+  const injectStripBeacon = (nav) => {
+    const beacon = el("span", "zade-strip-beacon");
+    beacon.setAttribute("data-state", "idle");
+    beacon.innerHTML =
+      '<span class="zade-beacon" aria-hidden="true"></span>' +
+      '<span class="zade-strip-label" data-strip-label aria-live="polite">Idle</span>';
+    nav.insertBefore(beacon, nav.firstChild);
+    stripRefs = { wrap: beacon, label: beacon.querySelector("[data-strip-label]") };
+  };
+
+  const renderFeed = (rows) => {
+    if (!activityRefs) return;
+    if (!rows.length) {
+      activityRefs.feed.innerHTML = '<div class="zade-activity-empty">No recent runtime activity.</div>';
+      return;
+    }
+    activityRefs.feed.innerHTML = rows
+      .slice(0, 8)
+      .map((row) => {
+        const statusClass = row.status && row.status !== "ok" ? " error" : "";
+        const meta = [row.silent ? "off-thread" : "in chat", row.detail].filter(Boolean).join(" · ");
+        return (
+          '<div class="zade-activity-row">' +
+          '<span class="zade-activity-status' + statusClass + '" aria-hidden="true"></span>' +
+          '<span class="zade-activity-op">' +
+            '<span class="op-name">' + esc(row.label) + "</span>" +
+            (meta ? '<span class="op-meta">' + esc(meta) + "</span>" : "") +
+          "</span>" +
+          '<time datetime="' + esc(row.at) + '">' + esc(relTime(row.at)) + "</time>" +
+          "</div>"
+        );
+      })
+      .join("");
+  };
+
+  const setActivityState = (state, title, detail, chip) => {
+    if (activityRefs) {
+      activityRefs.wrap.setAttribute("data-state", state);
+      activityRefs.title.textContent = title;
+      activityRefs.detail.textContent = detail;
+      if (chip) {
+        activityRefs.chip.textContent = chip;
+        activityRefs.chip.hidden = false;
+      } else {
+        activityRefs.chip.hidden = true;
+      }
+    }
+    if (stripRefs) {
+      stripRefs.wrap.setAttribute("data-state", state);
+      stripRefs.label.textContent = state === "working" ? detail || "Working" : title;
+    }
+  };
+
+  const tickActivity = async () => {
+    let queue = null;
+    let events = null;
+    let calls = null;
+    try {
+      [queue, events, calls] = await Promise.all([
+        fetchJSON("/work/queue?limit=1").catch(() => null),
+        fetchJSON("/runtime/events?limit=10").catch(() => null),
+        fetchJSON("/models/telemetry/calls?limit=12").catch(() => null),
+      ]);
+    } catch {
+      queue = events = calls = null;
+    }
+    if (!queue && !events && !calls) {
+      offlineStreak += 1;
+      setActivityState("offline", "Kernel offline", "No signal from the runtime", "");
+      renderFeed([]);
+      return;
+    }
+    offlineStreak = 0;
+    const counts = (queue && queue.counts) || {};
+    const rows = normalizeActivity((calls && calls.items) || [], (events && events.events) || []);
+    renderFeed(rows);
+
+    const running = Number(counts.running || 0);
+    const pending = Number(counts.pending || 0);
+    const freshestAt = rows.length ? new Date(rows[0].at).getTime() : 0;
+    const ageMs = freshestAt ? Date.now() - freshestAt : Infinity;
+    const working = running > 0 || ageMs <= 12000;
+    const recent = !working && ageMs <= 5 * 60 * 1000;
+    const chip = pending > 0 ? pending + " queued" : "";
+
+    if (working) {
+      const what =
+        running > 0 ? running + " task" + (running > 1 ? "s" : "") + " running" : rows[0] ? rows[0].label : "Thinking";
+      setActivityState("working", "Working", what, chip);
+    } else if (rows.length) {
+      const lead = rows[0].silent ? rows[0].label + " · " : "Last active ";
+      setActivityState(recent ? "recent" : "idle", "Idle", lead + relTime(rows[0].at), chip);
+    } else {
+      setActivityState("idle", "Idle", "No recent activity", chip);
+    }
+  };
+
+  // Self-scheduling poll: 5s when the runtime is live, backing off to 20s while
+  // it's unreachable (file preview / kernel down), and paused while the tab is
+  // hidden so a backgrounded page isn't hammering loopback.
+  const startActivityPoller = () => {
+    if (pollTimer) return;
+    const loop = async () => {
+      pollTimer = null;
+      if (!document.hidden) await tickActivity();
+      const delay = document.hidden ? 2000 : offlineStreak > 2 ? 20000 : 5000;
+      pollTimer = window.setTimeout(loop, delay);
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) tickActivity();
+    });
+    loop();
+  };
+
   const injectSidebar = () => {
     if (document.querySelector(".zade-sidebar")) return;
 
@@ -156,6 +382,11 @@
       wrap.appendChild(nav);
       aside.appendChild(wrap);
     });
+
+    // Activity monitor sits just above the footer status rows. Its own
+    // margin-top:auto claims the free space, pinning it and the footer together
+    // to the bottom of the rail.
+    injectActivityMonitor(aside);
 
     const foot = el("div", "zade-sidebar-foot");
     foot.innerHTML =
@@ -201,6 +432,7 @@
         nav.appendChild(a);
       });
     });
+    injectStripBeacon(nav);
     document.body.insertBefore(nav, document.body.firstChild);
   };
 
@@ -288,6 +520,7 @@
     markButtons();
     observeUi();
     bootstrapToken();
+    startActivityPoller();
   };
 
   if (document.readyState === "loading") {

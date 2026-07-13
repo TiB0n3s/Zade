@@ -94,7 +94,7 @@
       <div class="actions" style="justify-content:space-between;flex-wrap:wrap;">
         <h2 style="margin:0;">Work Queue Admin</h2>
         <div class="actions">
-          <label class="mono" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--z-muted);"><input type="checkbox" id="scanAutonomous" checked style="width:auto;" title="If checked, items that don't need your approval will also be run automatically"> also run allowed items</label>
+          <label class="mono" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--z-muted);"><input type="checkbox" id="scanAutonomous" checked style="width:auto;" title="If checked, autonomous allowed items will also be run automatically"> also run allowed items</label>
           <input id="scanMaxRun" type="number" min="0" max="25" value="5" style="width:70px;" title="Max number of allowed items to run automatically in this pass">
           <button class="secondary" id="scanBtn" title="Check daily brief, inventory, inbox, and goal reviews for new work, and optionally run what's already allowed">Scan Work Sources</button>
           <input id="runDueMax" type="number" min="1" max="25" value="5" style="width:70px;" title="Max number of already-queued items to run right now">
@@ -125,7 +125,7 @@
 
       <details style="margin-top:14px;border-top:1px solid var(--z-line);padding-top:12px;">
         <summary style="cursor:pointer;color:var(--z-muted);font-size:12px;text-transform:uppercase;letter-spacing:0.06em;">+ Registered Action Handlers</summary>
-        <div class="sub" style="margin:8px 0;">Actions the local runtime can actually dispatch once approved. An action outside this list can be queued and evaluated by authority, but has nothing to execute it.</div>
+        <div class="sub" style="margin:8px 0;">Actions the local runtime can actually dispatch once approved or directly commanded by you. An action outside this list can be queued and evaluated by authority, but has nothing to execute it.</div>
         <div class="list" id="handlersList" style="margin-top:8px;"></div>
       </details>
     </section>
@@ -327,8 +327,8 @@
           <label>Risks, one per line <textarea data-edit="risks" rows="2">${esc(toLines(item.risk && item.risk.items))}</textarea></label>
           <label>Decision note <textarea data-edit="note" rows="2" placeholder="Why are you approving, denying, deferring, or editing?"></textarea></label>
           <div class="edit-grid">
-            <label>Typed phrase for dispatch <span class="hint">Must be typed exactly to let Zade actually carry out the action after approval; leave blank to just record the approval</span><input data-edit="typed_confirmation" placeholder="make the jump to hyperspace"></label>
-            <label><span class="muted">Dispatch after approval</span><span class="hint">Yes = Zade runs the action once approved (needs the typed phrase). No = just records the decision.</span><select data-edit="dispatch"><option value="false">No</option><option value="true">Yes</option></select></label>
+            <label>Typed phrase for dispatch <span class="hint">For Zade/system proposals, type this exactly to carry out the action after approval; your direct commands are already approved</span><input data-edit="typed_confirmation" placeholder="make the jump to hyperspace"></label>
+            <label><span class="muted">Dispatch after approval</span><span class="hint">Yes = Zade runs this proposed action once approved (needs the typed phrase). No = just records the decision.</span><select data-edit="dispatch"><option value="false">No</option><option value="true">Yes</option></select></label>
           </div>
 
           <div class="actions">
@@ -653,7 +653,7 @@
     const STATUS_HINTS = {
       pending: 'Waiting to start',
       approved: 'Approved and ready to run',
-      approval_required: 'Waiting on your approval before it can run',
+      approval_required: 'Waiting on your approval because Zade proposed it',
       blocked: 'Stuck — something needs to be resolved before this can continue',
       queued: 'Waiting in line to run',
       running: 'In progress right now',
@@ -671,7 +671,7 @@
       if (!NON_TERMINAL_STEP.has(step.status)) return '';
       const parts = [];
       if (step.execution === 'work_queue') {
-        parts.push(`<div class="muted">This step runs automatically through the work queue — approve or dispatch it from <a class="button secondary tiny" href="/ui/approvals.html#approvals" style="margin-left:4px;">Approvals</a>.</div>`);
+        parts.push(`<div class="muted">This step runs through the work queue — approve Zade proposals or dispatch direct commands from <a class="button secondary tiny" href="/ui/approvals.html#approvals" style="margin-left:4px;">Approvals</a>.</div>`);
       } else {
         if (step.status === 'approval_required') {
           parts.push(`<div class="actions"><button class="ok tiny" data-approve="${step.id}" data-plan="${plan.id}" title="Approve this step so it can run">Approve</button></div>`);
@@ -713,7 +713,7 @@
           </div>
           <div class="muted">${esc(step.action)} · <span title="How this step gets carried out: manually, or automatically via the work queue">${esc(prettyLabel(step.execution))}</span>${step.target ? ' · ' + esc(step.target) : ''} · <span title="How much system access this step is allowed to use">tier ${esc(step.permission_tier)}</span></div>
           ${step.detail ? `<div class="muted">${esc(step.detail)}</div>` : ''}
-          ${step.authority_reason ? `<div class="muted" title="Whether this step needs your approval, and why">approval check: ${esc(prettyLabel(step.authority_decision))} — ${esc(step.authority_reason)}</div>` : ''}
+          ${step.authority_reason ? `<div class="muted" title="Whether this step was allowed, already approved by you, blocked, or requires approval as a Zade proposal">authority check: ${esc(prettyLabel(step.authority_decision))} — ${esc(step.authority_reason)}</div>` : ''}
           ${step.result ? `<div>result: ${esc(step.result)}</div>` : ''}
           ${step.error ? `<div class="notice err">error: ${esc(step.error)}</div>` : ''}
           ${(step.evidence_ids || []).length ? `<div class="muted mono">evidence: ${esc(step.evidence_ids.join(', '))}</div>` : ''}

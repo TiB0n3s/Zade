@@ -3,542 +3,251 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Zade Trading Intelligence</title>
+  <title>Zade — Trading</title>
   <style>
+    /* Page-specific layout only; colors/type/components from /ui/zade-ui.css.
+       Keeps the trading-bot bridge but stops giving the SQLite console / ops
+       checks / advisory generator equal top billing — those sit behind a
+       "Show advanced tools" expander. */
     * { box-sizing: border-box; }
-    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; }
-    h3 { margin: 0 0 6px; font-size: 14px; }
-    .sub { color: var(--z-muted); font-size: 12px; margin-top: 5px; }
-    main { display: grid; gap: 16px; padding: 24px 28px 36px; }
-    .metrics { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--z-line-strong); border-radius: 6px; }
-    .metric strong { display: block; font-size: 22px; line-height: 1; margin-bottom: 5px; }
-    .grid { display: grid; grid-template-columns: 420px minmax(0, 1fr); gap: 16px; align-items: start; }
-    .form { display: grid; gap: 10px; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    label { display: grid; gap: 6px; color: var(--z-muted); font-size: 12px; }
-    input, select, textarea {
-      width: 100%;
-      border: 1px solid var(--z-line-strong);
-      border-radius: 4px;
-      background: #09090b;
-      color: var(--z-text);
-      padding: 9px 10px;
-      outline: none;
-      font: inherit;
+    h1 { margin: 0 0 8px; }
+    /* prototype controls page inset via .page; drop main's own centered padding */
+    body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
+    .page { padding: 44px 48px 60px; max-width: 820px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
+    .disclaimer { font-size: 12.5px; color: var(--z-faint); margin-bottom: 28px; }
+
+    .brief-bar {
+      padding: 18px 0; border-top: 1px solid var(--z-line); border-bottom: 1px solid var(--z-line);
+      display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 28px; flex-wrap: wrap;
     }
-    textarea { resize: vertical; }
-    .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .check { display: flex; align-items: center; gap: 8px; color: var(--z-text); border: 1px solid var(--z-line-strong); border-radius: 4px; padding: 8px; background: rgba(255,255,255,0.025); }
-    .check input { width: 16px; height: 16px; }
-    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .toolbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 12px; }
-    .list { display: grid; gap: 10px; }
-    .item { padding: 12px; display: grid; gap: 8px; }
-    .topline { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
-    pre {
-      margin: 0;
-      white-space: pre-wrap;
-      max-height: 560px;
-      overflow: auto;
-      background: #070708;
-      border: 1px solid var(--z-line-strong);
-      border-radius: 5px;
-      padding: 12px;
-      color: #d8d3cb;
-    }
-    .error { color: #f0c4c4; white-space: pre-wrap; }
-    .table-wrap { overflow-x: auto; border: 1px solid var(--z-line-strong); border-radius: 5px; }
-    table.results { border-collapse: collapse; width: 100%; font-size: 12.5px; }
-    table.results th, table.results td { padding: 7px 10px; border-bottom: 1px solid var(--z-line-strong); text-align: left; white-space: nowrap; }
-    table.results th { color: var(--z-muted); font-weight: 600; background: rgba(255,255,255,0.02); position: sticky; top: 0; }
-    details.schema-table { border: 1px solid var(--z-line-strong); border-radius: 5px; padding: 8px 10px; margin-bottom: 6px; }
-    @media (max-width: 1100px) {
-      .grid, .row, .metrics, .checks { grid-template-columns: 1fr; }
-    }
+    .brief-bar .row-title { font-size: 13.5px; color: var(--z-ink-hi); margin-bottom: 3px; }
+    .brief-bar .row-sub { font-size: 12px; color: var(--z-faint); }
+    .brief-controls { display: flex; align-items: center; gap: 8px; }
+    .brief-controls input[type="date"] { width: auto; border-radius: 6px; }
+    .brief-controls button { border-radius: 6px; }
+    #briefOutput { margin: -8px 0 28px; white-space: pre-wrap; max-height: 320px; overflow: auto; display: none; }
+
+    .field-label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 6px; }
+    .jrow { padding: 13px 2px; border-top: 1px solid var(--z-line-soft); display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .jrow:last-child { border-bottom: 1px solid var(--z-line-soft); }
+    .jtitle { font-size: 13.5px; color: var(--z-ink-hi); }
+    .jsub { font-size: 11.5px; color: var(--z-faint); margin-top: 2px; }
+    .empty { color: var(--z-faint); font-size: 12.5px; padding: 13px 2px; }
+    .pill.hit { color: var(--z-ok-text); background: rgba(90,138,114,0.15); }
+    .pill.pending { color: var(--z-warn-text); background: rgba(194,160,106,0.13); }
+    .pill.miss { color: var(--z-bad-text); background: rgba(168,74,74,0.15); }
+    .pill.observed, .pill.insufficient_evidence { color: var(--z-info-text); background: rgba(128,107,184,0.15); }
+
+    /* advanced */
+    details.advanced { margin-top: 40px; border-top: 1px solid var(--z-line); padding-top: 14px; }
+    details.advanced > summary { cursor: pointer; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--z-faint); list-style: none; }
+    details.advanced > summary::-webkit-details-marker { display: none; }
+    details.advanced > summary::before { content: "+"; margin-right: 8px; color: var(--z-accent-2); font-weight: 500; }
+    details.advanced[open] > summary::before { content: "−"; }
+    .tool { margin-top: 22px; }
+    .tool h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-muted); font-weight: 500; }
+    .tool .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 8px; }
+    .tool label { display: grid; gap: 4px; font-size: 11px; color: var(--z-faint); }
+    .tool input, .tool select, .tool textarea { border-radius: 4px; }
+    .tool textarea { width: 100%; resize: vertical; }
+    .tool .out { white-space: pre-wrap; max-height: 260px; overflow: auto; margin-top: 8px; display: none; }
+    .tool .err { color: var(--z-bad-text); font-size: 11.5px; margin-top: 4px; }
+    .schema-list { margin-top: 8px; }
+    @media (max-width: 720px) { .page { padding: 26px 20px 48px; } }
   </style>
   <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
-<body>
-  <header>
-    <div>
-      <h1>Zade Trading Intelligence</h1>
-      <div class="sub">A read-only window into the trading bot's own data. Nothing on this page can place a trade or move money — any idea Zade proposes waits in Approvals until you say yes.</div>
-    </div>
-    <div class="actions">
-      <button id="refreshBtn">Refresh</button>
-    </div>
-  </header>
-
+<body data-zade-type="sans">
   <main>
-    <section class="metrics" id="metrics"></section>
+    <div class="page">
+      <div class="kicker">Trading</div>
+      <h1>Trading intelligence</h1>
+      <div class="disclaimer">Advisory only — Zade cannot approve, size, route, place, or cancel a trade.</div>
 
-    <section class="grid">
-      <div class="panel">
-        <h2>Daily Brief</h2>
-        <div class="sub" style="margin:-4px 0 12px;">Reads the bot's read-only data for one day and puts together a plain-English summary, plus optional advisory ideas.</div>
-        <div class="form">
-          <div class="row">
-            <label>Date <input id="briefDate" type="date"></label>
-            <label>Max judgments <span class="hint">How many advisory ideas to include, at most</span><input id="maxRecommendations" type="number" min="0" max="50" value="10"></label>
-          </div>
-          <label>Symbols <span class="hint">Tickers to focus on, comma separated. Leave blank for all.</span><input id="symbols" placeholder="AAPL, MSFT, SPY"></label>
-          <label>Snapshot tables <span class="hint">Which database tables to pull as supporting evidence</span><input id="tables" value="auto_buy_candidates,trades,rejected_signal_outcomes,dt_recommendations"></label>
-          <div class="checks">
-            <label class="check" title="Keep a permanent record of this brief for later reference"><input id="storeEvidence" type="checkbox" checked> Save as evidence</label>
-            <label class="check" title="Record Zade's read on each call so it can be checked against results later"><input id="createJudgments" type="checkbox" checked> Record judgments</label>
-            <label class="check" title="Check earlier judgments against what actually happened"><input id="scoreOutcomes" type="checkbox" checked> Score past calls</label>
-            <label class="check" title="Also write this brief out as a file in the vault"><input id="exportVault" type="checkbox"> Export to vault</label>
-          </div>
-          <div class="actions">
-            <button id="runBriefBtn" title="Reads today's data and saves the summary (read-only — no trades)">Run Brief</button>
-            <button class="secondary" id="dryBriefBtn" title="Preview the summary without saving anything">Dry Run (preview only)</button>
-          </div>
-          <div class="error" id="briefError"></div>
+      <div class="brief-bar">
+        <div>
+          <div class="row-title">Daily brief</div>
+          <div class="row-sub" id="briefLastRun">Not run yet</div>
+        </div>
+        <div class="brief-controls">
+          <input type="date" id="briefDate">
+          <button id="runBriefBtn">Run brief</button>
         </div>
       </div>
+      <pre id="briefOutput"></pre>
 
-      <div class="panel">
-        <div class="toolbar">
-          <h2>Brief Output</h2>
-          <span class="muted mono" id="briefMeta"></span>
-        </div>
-        <pre id="briefOutput">No brief loaded.</pre>
-      </div>
-    </section>
+      <div class="field-label">Judgments</div>
+      <div id="judgments"><div class="empty">Loading…</div></div>
 
-    <section class="grid">
-      <div class="panel">
-        <h2>Judgments</h2>
-        <div class="sub" style="margin:-4px 0 12px;">A judgment is Zade's read on how one past call turned out. This just displays them — nothing here changes the bot's data.</div>
-        <div class="form">
-          <div class="row">
-            <label>Date <input id="judgmentDate" type="date"></label>
-            <label>Symbol <span class="hint">Optional — leave blank for all tickers</span><input id="judgmentSymbol" placeholder="optional"></label>
-          </div>
-          <div class="row">
-            <label>Status <span class="hint">Filter by how the call turned out</span>
-              <select id="outcomeStatus">
-                <option value="">All</option>
-                <option value="pending">Pending</option>
-                <option value="hit">Hit</option>
-                <option value="miss">Miss</option>
-                <option value="observed">Observed</option>
-                <option value="insufficient_evidence">Insufficient</option>
-              </select>
-            </label>
-            <label>Limit <span class="hint">Max number of judgments to show</span><input id="judgmentLimit" type="number" min="1" max="500" value="50"></label>
-          </div>
-          <div class="actions">
-            <button id="loadJudgmentsBtn" title="Reload the judgment list below">Load</button>
-            <button class="secondary" id="scoreJudgmentsBtn" title="Compares judgments against the bot's actual results and updates their status">Score Against Results</button>
-          </div>
-          <div class="error" id="judgmentError"></div>
-        </div>
-      </div>
+      <details class="advanced">
+        <summary>Show advanced tools</summary>
 
-      <div class="panel">
-        <div class="toolbar">
-          <h2>Ledger</h2>
-          <span class="muted mono" id="loadedAt"></span>
+        <div class="tool">
+          <h3>SQLite console (read-only)</h3>
+          <div class="controls">
+            <label>Database <input id="sqlDatabase" value="trades.db" style="width:150px;"></label>
+            <button class="secondary tiny" id="loadSchemaBtn">Load schema</button>
+          </div>
+          <div class="schema-list" id="schemaOut"></div>
+          <label style="margin-top:10px;">SQL <textarea id="sqlQuery" rows="3" placeholder="SELECT * FROM trades LIMIT 20"></textarea></label>
+          <div class="controls">
+            <label>Row limit <input id="sqlLimit" type="number" min="1" max="1000" value="100" style="width:90px;"></label>
+            <button class="secondary tiny" id="runSqlBtn">Run query</button>
+            <span id="sqlMeta" class="row-sub"></span>
+          </div>
+          <div class="err" id="sqlError"></div>
+          <div class="out" id="sqlResult"></div>
         </div>
-        <div class="list" id="judgmentList"></div>
-      </div>
-    </section>
 
-    <section class="grid">
-      <div class="panel">
-        <h2>Suggest a Review Task <span class="mono muted" style="font-size:11px;">(dt_trigger)</span></h2>
-        <div class="sub" style="margin:-4px 0 12px;">Saves a suggestion for the trading-bot team to look at manually. This does not run anything or touch the bot's data by itself.</div>
-        <div class="form">
-          <div class="row">
-            <label>Operation <span class="hint">The name of the review job you're suggesting</span><input id="proposalOperation" value="paper-session-review"></label>
-            <label>Date <input id="proposalDate" type="date"></label>
+        <div class="tool">
+          <h3>Ops check</h3>
+          <div class="controls">
+            <label>Check <select id="opsCommand" style="min-width:220px;"></select></label>
+            <label>Date <input type="date" id="opsDate"></label>
+            <button class="secondary tiny" id="runOpsBtn">Run check</button>
           </div>
-          <label>Reason <span class="hint">Why this review is worth doing</span><textarea id="proposalReason" rows="3">Review the paper-session evidence before any future promotion discussion.</textarea></label>
-          <label>Params JSON <span class="hint">Extra technical settings for the job — leave the default if unsure</span><textarea id="proposalParams" rows="4">{"mode":"review_only"}</textarea></label>
-          <button id="queueProposalBtn" title="Saves this as a suggestion for review — does not run anything automatically">Save Suggestion</button>
-          <div class="error" id="proposalError"></div>
+          <div class="err" id="opsCheckError"></div>
+          <pre class="out" id="opsCheckOutput"></pre>
         </div>
-      </div>
-      <div class="panel">
-        <h2>Last Action</h2>
-        <pre id="lastAction">No action yet.</pre>
-      </div>
-    </section>
 
-    <section class="grid">
-      <div class="panel">
-        <h2>Safe Ops Checks</h2>
-        <div class="sub" style="margin-bottom:10px;">Read-only diagnostic reports the bot exposes. Viewing a report never trades, sizes, or approves anything.</div>
-        <div class="form">
-          <label>Command <span class="hint">Pick a diagnostic report to view</span><select id="opsCommand"></select></label>
-          <label>Date (if required) <span class="hint">Only needed for reports that look at a specific day</span><input id="opsDate" type="date"></label>
-          <button id="runOpsCheckBtn" title="Runs this read-only diagnostic report">Run Check</button>
-          <div class="error" id="opsCheckError"></div>
+        <div class="tool">
+          <h3>Evidence snapshot</h3>
+          <div class="controls">
+            <label>Date <input type="date" id="snapDate"></label>
+            <label>Symbols <input id="snapSymbols" placeholder="AAPL,MSFT" style="width:140px;"></label>
+            <label>Tables <input id="snapTables" value="auto_buy_candidates,trades,rejected_signal_outcomes" style="width:260px;"></label>
+            <label>Per table <input id="snapLimit" type="number" min="1" max="200" value="25" style="width:80px;"></label>
+            <label class="mono" style="flex-direction:row;align-items:center;gap:6px;"><input type="checkbox" id="snapStoreEvidence" style="width:auto;"> store evidence</label>
+            <button class="secondary tiny" id="snapBtn">Snapshot</button>
+          </div>
+          <div class="err" id="snapError"></div>
+          <pre class="out" id="snapOutput"></pre>
         </div>
-      </div>
-      <div class="panel">
-        <div class="toolbar">
-          <h2>Check Output</h2>
-        </div>
-        <pre id="opsCheckOutput">No check run yet.</pre>
-      </div>
-    </section>
 
-    <section class="grid">
-      <div class="panel">
-        <h2>SQLite Console</h2>
-        <div class="sub" style="margin-bottom:10px;">Read-only: only SELECT, WITH, EXPLAIN, and read-only PRAGMA are accepted — enforced server-side. There is no way to write, trade, or move money from here.</div>
-        <div class="form">
-          <div class="row">
-            <label>Database <span class="hint">Which read-only database file to look at</span><input id="sqlDatabase" value="trades.db"></label>
-            <label>Row limit <span class="hint">Max number of rows to return</span><input id="sqlLimit" type="number" min="1" max="1000" value="100"></label>
+        <div class="tool">
+          <h3>Advisory generator</h3>
+          <div class="controls">
+            <label>Date <input type="date" id="advDate"></label>
+            <label>Symbols <input id="advSymbols" placeholder="AAPL,MSFT" style="width:140px;"></label>
+            <label>Max <input id="advMax" type="number" min="1" max="50" value="10" style="width:80px;"></label>
+            <label>Tables <input id="advTables" value="auto_buy_candidates,trades,rejected_signal_outcomes" style="width:240px;"></label>
+            <label class="mono" style="flex-direction:row;align-items:center;gap:6px;"><input type="checkbox" id="advQueue" style="width:auto;"> queue as work items</label>
+            <label class="mono" style="flex-direction:row;align-items:center;gap:6px;"><input type="checkbox" id="advUseSnapshot" checked style="width:auto;"> use sqlite snapshot</label>
+            <button class="secondary tiny" id="advGenBtn">Generate</button>
           </div>
-          <div class="actions">
-            <button class="secondary" id="loadSchemaBtn" title="Lists the tables and columns in this database">Load Schema</button>
+          <div class="err" id="advError"></div>
+          <pre class="out" id="advOutput"></pre>
+          <div class="controls" style="margin-top:12px;">
+            <label>Score date <input type="date" id="scoreAdvDate"></label>
+            <label class="mono" style="flex-direction:row;align-items:center;gap:6px;"><input type="checkbox" id="scoreAdvStoreEvidence" checked style="width:auto;"> store evidence</label>
+            <button class="secondary tiny" id="advScoreBtn">Score past advisories</button>
           </div>
-          <div id="schemaOut"></div>
-          <label>SQL <span class="hint">Only SELECT / WITH / EXPLAIN statements are allowed</span><textarea id="sqlQuery" rows="4">SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;</textarea></label>
-          <button id="runQueryBtn" title="Runs this query and shows the results — read-only">Run Query</button>
-          <div class="error" id="sqlError"></div>
+          <div class="err" id="advScoreError"></div>
+          <pre class="out" id="advScoreOutput"></pre>
         </div>
-      </div>
-      <div class="panel">
-        <div class="toolbar">
-          <h2>Query Result</h2>
-          <span class="muted mono" id="sqlMeta"></span>
-        </div>
-        <div class="table-wrap" id="sqlResult"><div class="muted" style="padding:12px;">No query run yet.</div></div>
-      </div>
-    </section>
 
-    <section class="grid">
-      <div class="panel">
-        <h2>Evidence Snapshot</h2>
-        <div class="sub" style="margin-bottom:10px;">Takes a read-only copy of the bot's data right now, so it can be checked or referenced later.</div>
-        <div class="form">
-          <div class="row">
-            <label>Date <input id="snapDate" type="date"></label>
-            <label>Limit per table <span class="hint">Max rows captured per table</span><input id="snapLimit" type="number" min="1" max="200" value="25"></label>
-          </div>
-          <label>Symbols <span class="hint">Tickers to include, comma separated. Leave blank for all.</span><input id="snapSymbols" placeholder="AAPL, MSFT"></label>
-          <label>Tables <span class="hint">Which database tables to capture</span><input id="snapTables" value="auto_buy_candidates,trades,rejected_signal_outcomes"></label>
-          <label class="check" title="Keep a permanent record of this snapshot for later reference"><input id="snapStoreEvidence" type="checkbox" checked> Store as evidence</label>
-          <button id="snapshotBtn" title="Takes a read-only copy of the data right now">Take Snapshot</button>
-          <div class="error" id="snapError"></div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="toolbar"><h2>Snapshot Result</h2></div>
-        <pre id="snapOutput">No snapshot taken yet.</pre>
-      </div>
-    </section>
-
-    <section class="grid">
-      <div class="panel">
-        <h2>Advisory Generate</h2>
-        <div class="sub" style="margin-bottom:10px;">Turns read-only diagnostics and database evidence into advisory ideas. These are opinions only — nothing is sent to the bot until you approve it.</div>
-        <div class="form">
-          <div class="row">
-            <label>Date <input id="advDate" type="date"></label>
-            <label>Max recommendations <span class="hint">How many advisory ideas to produce, at most</span><input id="advMax" type="number" min="0" max="50" value="10"></label>
-          </div>
-          <label>Symbols <span class="hint">Tickers to focus on, comma separated. Leave blank for all.</span><input id="advSymbols" placeholder="AAPL, MSFT"></label>
-          <label>Snapshot tables <span class="hint">Optional — leave blank to use the defaults</span><input id="advTables" placeholder="optional"></label>
-          <div class="checks">
-            <label class="check" title="Add these ideas to Approvals so you can review and accept or reject each one"><input id="advQueue" type="checkbox" checked> Queue for approval</label>
-            <label class="check" title="Also pull fresh data from the database as supporting evidence"><input id="advUseSnapshot" type="checkbox" checked> Use SQLite snapshot</label>
-          </div>
-          <button id="advGenerateBtn" title="Creates advisory ideas from read-only data — nothing reaches the bot until approved">Generate</button>
-          <div class="error" id="advError"></div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="toolbar"><h2>Generated Recommendations</h2></div>
-        <pre id="advOutput">Nothing generated yet.</pre>
-      </div>
-    </section>
-
-    <section class="grid">
-      <div class="panel">
-        <h2>Advisory Score</h2>
-        <div class="sub" style="margin-bottom:10px;">Checks how earlier advisory ideas actually turned out, using the bot's own results.</div>
-        <div class="form">
-          <label>Date <input id="scoreAdvDate" type="date"></label>
-          <label class="check" title="Keep a permanent record of this scoring pass for later reference"><input id="scoreAdvStoreEvidence" type="checkbox" checked> Store as evidence</label>
-          <button id="advScoreBtn" title="Compares past ideas to what actually happened">Score Outcomes</button>
-          <div class="error" id="advScoreError"></div>
-        </div>
-      </div>
-      <div class="panel">
-        <h2>Queue Recommendation Manually</h2>
-        <div class="sub" style="margin-bottom:10px;">Manually record one advisory idea for the trading-bot team to review. This only saves a suggestion — it does not buy, sell, or place any order.</div>
-        <div class="form">
-          <div class="row">
-            <label>Date <input id="recDate" type="date"></label>
-            <label>Symbol <input id="recSymbol" placeholder="AAPL"></label>
-          </div>
-          <div class="row">
-            <label>Action <span class="hint">Zade's advisory opinion — not an order</span><input id="recAction" placeholder="buy, sell, hold"></label>
-            <label>Verdict <span class="hint">recommend, against, or abstain</span><input id="recVerdict" placeholder="approve, reject, watch"></label>
-          </div>
-          <label>Reason <textarea id="recReason" rows="2"></textarea></label>
-          <div class="row">
-            <label>Conviction <span class="hint">How confident this call is, 0 to 1 (optional)</span><input id="recConviction" type="number" min="0" max="1" step="0.01"></label>
-            <label>Priority <span class="hint">Higher numbers get reviewed sooner (0-100)</span><input id="recPriority" type="number" min="0" max="100" value="90"></label>
-          </div>
-          <button id="recQueueBtn" title="Saves this as a suggestion for review — does not place any trade">Save Suggestion</button>
-          <div class="error" id="recError"></div>
-        </div>
-      </div>
-    </section>
+      </details>
+    </div>
   </main>
 
   <script>
     const byId = (id) => document.getElementById(id);
     const token = () => localStorage.getItem('zadeKernelToken') || '';
-    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
-    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
-    // so fire-and-forget is safe — the token lands before any button is clicked.
-    (async () => {
-      if (localStorage.getItem('zadeKernelToken')) return;
-      try {
-        const r = await fetch('/session/token');
-        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
-      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
-    })();
+    (async () => { if (token()) return; try { const r = await fetch('/session/token'); if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); } } catch (e) {} })();
     const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
-    const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const api = async (path, opts = {}) => {
       const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
       if (!response.ok) throw new Error(await response.text());
       return response.json();
     };
-    const csv = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
-    // Status/action/verdict values arrive as raw snake_case or kebab-case strings
-    // (e.g. "insufficient_evidence", "authority-health"); show them the way a
-    // non-technical founder would expect to read them.
-    function prettyLabel(value) {
-      if (value == null || value === '') return '';
-      return String(value).replace(/[_-]+/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    async function withBusy(btn, label, fn) {
+      const original = btn.textContent; btn.disabled = true; btn.textContent = label;
+      try { return await fn(); } finally { btn.disabled = false; btn.textContent = original; }
     }
-    function confidencePct(value) {
-      if (value == null || value === '') return null;
-      const num = Number(value);
-      if (Number.isNaN(num)) return null;
-      return Math.round((num > 1 ? num : num * 100)) + '%';
-    }
-    // Several endpoints return heterogeneous JSON blobs (audit ids, evidence ids,
-    // queue results, etc). Instead of dumping raw JSON, pull out the fields a
-    // founder actually cares about into plain sentences, then keep the full
-    // payload available underneath for anyone who wants the technical detail.
-    function formatActionSummary(result) {
-      if (!result || typeof result !== 'object') return String(result == null ? '' : result);
-      const lines = [];
-      if (result.audit_id != null) lines.push(`Audit reference #${result.audit_id}`);
-      if (result.evidence && result.evidence.evidence_id) lines.push(`Saved as evidence #${result.evidence.evidence_id}`);
-      if (result.id != null && result.status) lines.push(`Saved as item #${result.id} — ${prettyLabel(result.status)}`);
-      if (result.recommendation) {
-        const r = result.recommendation;
-        lines.push(`Advisory idea: ${r.symbol} — ${prettyLabel(r.action)}, ${prettyLabel(r.verdict)} (not an order; waits for approval)`);
-      }
-      if (result.proposal) {
-        lines.push(`Suggested review job: ${result.proposal.operation} (proposal only — nothing was run)`);
-      }
-      if (Array.isArray(result.judgments)) lines.push(`${result.judgments.length} judgment(s) recorded`);
-      if (Array.isArray(result.updates)) lines.push(`${result.updates.length} judgment(s) updated with results`);
-      if (Array.isArray(result.missed_calls) && result.missed_calls.length) lines.push(`${result.missed_calls.length} missed call(s) noted`);
-      if (result.direct_score && Array.isArray(result.direct_score.updates)) lines.push(`${result.direct_score.updates.length} additional judgment(s) scored directly`);
-      if (result.vault_export && result.vault_export.path) lines.push('Also exported to the vault as a file');
-      const summary = lines.length ? lines.map((l) => `- ${l}`).join('\n') : 'No summary fields recognized for this result.';
-      return `${summary}\n\nFull technical details:\n${JSON.stringify(result, null, 2)}`;
-    }
-    function formatSnapshotSummary(result) {
-      const summary = result.summary || {};
-      const tables = summary.tables || {};
-      const names = Object.keys(tables);
-      const lines = [`${result.target_date || ''} — ${summary.total_rows || 0} row(s) captured across ${names.length} table(s)`, ''];
-      for (const name of names) {
-        const t = tables[name] || {};
-        const status = t.error ? `error: ${t.error}` : `${t.row_count || 0} row(s)${t.truncated ? ' (truncated)' : ''}`;
-        lines.push(`- ${name}: ${status}`);
-      }
-      lines.push('');
-      lines.push(result.evidence && result.evidence.evidence_id ? `Saved as evidence #${result.evidence.evidence_id}` : 'Not saved as evidence.');
-      lines.push('');
-      lines.push('Full technical details:');
-      lines.push(JSON.stringify(result, null, 2));
-      return lines.join('\n');
-    }
-    function formatAdvisorySummary(result) {
-      const recs = result.recommendations || [];
-      const queuedCount = (result.queued || []).length;
-      const lines = [`${result.target_date || ''} — ${recs.length} advisory idea(s) (opinions only, not orders)`, ''];
-      recs.forEach((r) => {
-        const pct = confidencePct(r.conviction);
-        lines.push(`- ${r.symbol}: ${prettyLabel(r.action)}, ${prettyLabel(r.verdict)}${pct != null ? ` (${pct} conviction)` : ''}`);
-      });
-      if (!recs.length) lines.push('- No advisory ideas produced for this date.');
-      lines.push('');
-      lines.push(result.queue_requested
-        ? `${queuedCount} idea(s) saved to Approvals for you to review.`
-        : 'Ideas were generated but not saved anywhere (queueing was turned off).');
-      lines.push('');
-      lines.push('Full technical details:');
-      lines.push(JSON.stringify(result, null, 2));
-      return lines.join('\n');
-    }
-    const today = () => new Date().toISOString().slice(0, 10);
-    async function withBusy(btn, workingLabel, fn) {
-      const original = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = workingLabel;
+    const prettyLabel = (v) => (v == null || v === '') ? '' : String(v).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    const csv = (s) => (s || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const confidencePct = (v) => { if (v == null || v === '') return null; const n = Number(v); if (Number.isNaN(n)) return null; return Math.round((n > 1 ? n : n * 100)) + '%'; };
+    function todayISO() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+
+    // ---- Daily brief ----
+    async function runBrief() {
+      const out = byId('briefOutput');
       try {
-        return await fn();
-      } finally {
-        btn.disabled = false;
-        btn.textContent = original;
-      }
+        const result = await api('/trading-bot/daily-brief', {
+          method: 'POST',
+          body: JSON.stringify({
+            target_date: byId('briefDate').value || todayISO(),
+            symbols: [],
+            snapshot_tables: ['auto_buy_candidates', 'trades', 'rejected_signal_outcomes', 'dt_recommendations'],
+            max_recommendations: 10,
+            store_evidence: true, create_judgments: true, score_outcomes: true, export_vault: false
+          })
+        });
+        out.style.display = 'block';
+        out.textContent = (result.brief && result.brief.text) ? result.brief.text : JSON.stringify(result, null, 2);
+        const now = new Date();
+        localStorage.setItem('zadeTradingBriefLastRun', now.toISOString());
+        byId('briefLastRun').textContent = 'Last run ' + now.toLocaleString();
+        await loadJudgments();
+      } catch (err) { out.style.display = 'block'; out.textContent = 'Brief failed: ' + err.message; }
     }
 
-    let state = { status: {}, replacement: {}, judgments: [] };
-
-    function setDates() {
-      for (const id of ['briefDate', 'judgmentDate', 'proposalDate', 'opsDate', 'snapDate', 'advDate', 'scoreAdvDate', 'recDate']) {
-        byId(id).value = byId(id).value || today();
-      }
-    }
-
-    async function load() {
-      setDates();
-      const [status, replacement, opsChecks] = await Promise.all([
-        api('/trading-bot/status'),
-        api('/trading-bot/deep-thought-replacement'),
-        api('/trading-bot/safe-ops-checks')
-      ]);
-      state.status = status;
-      state.replacement = replacement;
-      byId('opsCommand').innerHTML = (opsChecks.items || [])
-        .map((c) => `<option value="${esc(c.command)}" data-date-required="${c.date_required ? '1' : '0'}">${esc(prettyLabel(c.command))}${c.date_required ? ' (date required)' : ''}</option>`)
-        .join('') || '<option value="">No checks available</option>';
-      await loadJudgments();
-      renderMetrics();
-    }
-
-    function renderMetrics() {
-      const counts = state.judgments.reduce((acc, item) => {
-        acc[item.outcome_status || 'pending'] = (acc[item.outcome_status || 'pending'] || 0) + 1;
-        return acc;
-      }, {});
-      byId('metrics').innerHTML = [
-        metric(state.status.ok ? 'Connected' : 'Not responding', 'Bot link', "Whether Zade can reach the trading bot's read-only data"),
-        metric(state.replacement.active_count || 0, 'Active links', 'Read-only connections currently wired up'),
-        metric(state.replacement.planned_count || 0, 'Planned links', 'Read-only connections planned but not yet built'),
-        metric(state.judgments.length, 'Loaded', 'How many judgments are shown below'),
-        metric(counts.pending || 0, 'Pending', 'Judgments still waiting on a real-world result'),
-        metric(counts.miss || 0, 'Misses', 'Judgments where the call did not pan out')
-      ].join('');
-    }
-
-    function metric(value, label, hint) {
-      return '<div class="metric" title="' + esc(hint || '') + '"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
-    }
-
-    async function runBrief(dry) {
-      byId('briefError').textContent = '';
-      const body = {
-        target_date: byId('briefDate').value,
-        symbols: csv(byId('symbols').value),
-        snapshot_tables: csv(byId('tables').value),
-        max_recommendations: Number(byId('maxRecommendations').value || 10),
-        store_evidence: dry ? false : byId('storeEvidence').checked,
-        create_judgments: dry ? false : byId('createJudgments').checked,
-        score_outcomes: dry ? false : byId('scoreOutcomes').checked,
-        export_vault: dry ? false : byId('exportVault').checked
-      };
-      const result = await api('/trading-bot/daily-brief', { method: 'POST', body: JSON.stringify(body) });
-      byId('briefOutput').textContent = result.brief && result.brief.text ? result.brief.text : JSON.stringify(result, null, 2);
-      byId('briefMeta').textContent = [
-        'audit ' + result.audit_id,
-        result.evidence && result.evidence.evidence_id ? 'evidence ' + result.evidence.evidence_id : '',
-        result.vault_export && result.vault_export.path ? 'exported' : ''
-      ].filter(Boolean).join(' / ');
-      byId('lastAction').textContent = formatActionSummary(result);
-      byId('judgmentDate').value = body.target_date;
-      await loadJudgments();
-    }
-
+    // ---- Judgments ----
     async function loadJudgments() {
-      byId('judgmentError').textContent = '';
-      const params = new URLSearchParams();
-      if (byId('judgmentDate').value) params.set('market_date', byId('judgmentDate').value);
-      if (byId('judgmentSymbol').value.trim()) params.set('symbol', byId('judgmentSymbol').value.trim());
-      if (byId('outcomeStatus').value) params.set('outcome_status', byId('outcomeStatus').value);
-      params.set('limit', byId('judgmentLimit').value || '50');
-      const data = await api('/trading-bot/judgments?' + params.toString());
-      state.judgments = data.items || [];
-      renderJudgments();
-      renderMetrics();
-    }
-
-    function renderJudgments() {
-      byId('loadedAt').textContent = new Date().toLocaleTimeString();
-      byId('judgmentList').innerHTML = state.judgments.length ? state.judgments.map(renderJudgment).join('') : '<div class="muted">No judgments in this view.</div>';
-    }
-
-    function renderJudgment(item) {
-      const pct = confidencePct(item.conviction);
-      return `
-        <article class="item">
-          <div class="topline">
-            <div>
-              <h3>${esc(item.symbol)} ${esc(prettyLabel(item.action))} · ${esc(prettyLabel(item.verdict))}</h3>
-              <div class="muted">${esc(item.market_date)}${pct != null ? ' · ' + esc(pct) + ' conviction' : ''}</div>
-            </div>
-            <span class="pill ${esc(item.outcome_status)}" title="How this call turned out">${esc(prettyLabel(item.outcome_status))}</span>
-          </div>
-          <div>${esc(item.outcome_summary || item.rationale || '')}</div>
-          <div class="muted">${esc(item.lesson || '')}</div>
-          <div class="mono muted">#${esc(item.id)} · score ${esc(item.score == null ? 'not scored yet' : item.score)}</div>
-        </article>
-      `;
-    }
-
-    async function scoreJudgments() {
-      byId('judgmentError').textContent = '';
-      const result = await api('/trading-bot/judgments/score', {
-        method: 'POST',
-        body: JSON.stringify({
-          target_date: byId('judgmentDate').value,
-          symbols: byId('judgmentSymbol').value.trim() ? [byId('judgmentSymbol').value.trim()] : [],
-          store_evidence: true
-        })
-      });
-      byId('lastAction').textContent = formatActionSummary(result);
-      await loadJudgments();
-    }
-
-    async function queueProposal() {
-      byId('proposalError').textContent = '';
-      let params = {};
       try {
-        params = JSON.parse(byId('proposalParams').value || '{}');
-      } catch (err) {
-        byId('proposalError').textContent = 'Invalid params JSON.';
-        return;
-      }
-      const result = await api('/trading-bot/dt-trigger/proposals', {
-        method: 'POST',
-        body: JSON.stringify({
-          operation: byId('proposalOperation').value,
-          target_date: byId('proposalDate').value || null,
-          reason: byId('proposalReason').value,
-          params
-        })
-      });
-      byId('lastAction').textContent = formatActionSummary(result);
+        const data = await api('/trading-bot/judgments?limit=50');
+        const items = data.items || [];
+        byId('judgments').innerHTML = items.length ? items.map(renderJudgment).join('') : '<div class="empty">No judgments recorded yet.</div>';
+      } catch (err) { byId('judgments').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>'; }
+    }
+    function outcomeLabel(status) { return status === 'hit' ? 'Correct' : prettyLabel(status || 'pending'); }
+    function renderJudgment(j) {
+      const conv = confidencePct(j.conviction);
+      return `
+        <div class="jrow">
+          <div>
+            <div class="jtitle">${esc(j.symbol)} — ${esc(prettyLabel(j.action))}${j.verdict ? ' · ' + esc(prettyLabel(j.verdict)) : ''}</div>
+            <div class="jsub">${esc(j.market_date || '')}${conv ? ' · ' + conv + ' conviction' : ''}</div>
+          </div>
+          <span class="pill ${esc(j.outcome_status || 'pending')}">${esc(outcomeLabel(j.outcome_status))}</span>
+        </div>`;
     }
 
+    // ---- Advanced: SQLite ----
+    async function loadSchema() {
+      byId('sqlError').textContent = '';
+      try {
+        const params = new URLSearchParams({ database: byId('sqlDatabase').value.trim() || 'trades.db', include_counts: 'true' });
+        const result = await api('/trading-bot/sqlite/schema?' + params.toString());
+        byId('schemaOut').innerHTML = (result.tables || []).map((t) => `
+          <details class="schema-table"><summary>${esc(t.table)}${t.row_count != null ? ' · ' + esc(t.row_count) + ' row(s)' : ''}</summary>
+          <div class="mono muted" style="margin-top:6px;">${(t.columns || []).map((c) => esc(c.name) + ':' + esc(c.type)).join(', ')}</div></details>`).join('') || '<div class="empty">No tables.</div>';
+      } catch (err) { byId('sqlError').textContent = err.message; }
+    }
+    async function runSql() {
+      byId('sqlError').textContent = '';
+      const sql = byId('sqlQuery').value.trim();
+      if (!sql) { byId('sqlError').textContent = 'SQL is required.'; return; }
+      try {
+        const result = await api('/trading-bot/sqlite/query', { method: 'POST', body: JSON.stringify({ sql, database: byId('sqlDatabase').value.trim() || 'trades.db', limit: Number(byId('sqlLimit').value || 100) }) });
+        byId('sqlMeta').textContent = `${result.row_count} row(s)${result.truncated ? ' (truncated)' : ''} · audit #${result.audit_id}`;
+        const cols = result.columns || [];
+        byId('sqlResult').style.display = 'block';
+        byId('sqlResult').innerHTML = cols.length
+          ? `<div class="table-wrap"><table class="results"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${(result.rows || []).map((row) => '<tr>' + cols.map((c) => `<td>${esc(row[c])}</td>`).join('') + '</tr>').join('')}</tbody></table></div>`
+          : '<div class="empty">No rows.</div>';
+      } catch (err) { byId('sqlError').textContent = err.message; }
+    }
+
+    // ---- Advanced: ops check ----
+    async function loadOpsChecks() {
+      try {
+        const opsChecks = await api('/trading-bot/safe-ops-checks');
+        byId('opsCommand').innerHTML = (opsChecks.items || []).map((c) => `<option value="${esc(c.command)}" data-date-required="${c.date_required ? '1' : '0'}">${esc(prettyLabel(c.command))}${c.date_required ? ' (date required)' : ''}</option>`).join('') || '<option value="">No checks available</option>';
+      } catch (err) { byId('opsCommand').innerHTML = '<option value="">Could not load checks</option>'; }
+    }
     async function runOpsCheck() {
       byId('opsCheckError').textContent = '';
       const select = byId('opsCommand');
@@ -547,119 +256,69 @@
       const dateRequired = select.selectedOptions[0] && select.selectedOptions[0].dataset.dateRequired === '1';
       const body = { command, limit_output_chars: 12000 };
       if (dateRequired) body.target_date = byId('opsDate').value;
-      const result = await api('/trading-bot/ops-check', { method: 'POST', body: JSON.stringify(body) });
-      // The backend returns stdout/stderr from the read-only diagnostic command,
-      // not a generic "output" field — show the actual report text.
-      const reportText = [result.stdout, result.stderr].filter((part) => typeof part === 'string' && part.trim()).join('\n');
-      byId('opsCheckOutput').textContent = reportText || `No output. (ok: ${result.ok}, exit code: ${result.exit_code})`;
-    }
-
-    function renderResultsTable(columns, rows) {
-      if (!columns || !columns.length) return '<div class="muted" style="padding:12px;">No rows.</div>';
-      const head = columns.map((c) => `<th>${esc(c)}</th>`).join('');
-      const body = rows.map((row) => '<tr>' + columns.map((c) => `<td>${esc(row[c])}</td>`).join('') + '</tr>').join('');
-      return `<table class="results"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
-    }
-
-    async function loadSqlSchema() {
-      byId('sqlError').textContent = '';
-      const params = new URLSearchParams({ database: byId('sqlDatabase').value.trim() || 'trades.db', include_counts: 'true' });
-      const result = await api('/trading-bot/sqlite/schema?' + params.toString());
-      byId('schemaOut').innerHTML = (result.tables || []).map((t) => `
-        <details class="schema-table">
-          <summary>${esc(t.table)}${t.row_count != null ? ' · ' + esc(t.row_count) + ' row(s)' : ''}</summary>
-          <div class="mono muted" style="margin-top:6px;">${(t.columns || []).map((c) => esc(c.name) + ':' + esc(c.type)).join(', ')}</div>
-        </details>
-      `).join('') || '<div class="muted">No tables.</div>';
-    }
-
-    async function runSqlQuery() {
-      byId('sqlError').textContent = '';
-      const sql = byId('sqlQuery').value.trim();
-      if (!sql) { byId('sqlError').textContent = 'SQL is required.'; return; }
       try {
-        const result = await api('/trading-bot/sqlite/query', {
-          method: 'POST',
-          body: JSON.stringify({ sql, database: byId('sqlDatabase').value.trim() || 'trades.db', limit: Number(byId('sqlLimit').value || 100) })
-        });
-        byId('sqlMeta').textContent = `${result.row_count} row(s)${result.truncated ? ' (truncated)' : ''} · audit #${result.audit_id}`;
-        byId('sqlResult').innerHTML = renderResultsTable(result.columns, result.rows);
-      } catch (err) { byId('sqlError').textContent = err.message; }
+        const result = await api('/trading-bot/ops-check', { method: 'POST', body: JSON.stringify(body) });
+        const text = [result.stdout, result.stderr].filter((p) => typeof p === 'string' && p.trim()).join('\n');
+        byId('opsCheckOutput').style.display = 'block';
+        byId('opsCheckOutput').textContent = text || `No output. (ok: ${result.ok}, exit code: ${result.exit_code})`;
+      } catch (err) { byId('opsCheckError').textContent = err.message; }
     }
 
+    // ---- Advanced: snapshot ----
     async function takeSnapshot() {
       byId('snapError').textContent = '';
-      const result = await api('/trading-bot/evidence/snapshot', {
-        method: 'POST',
-        body: JSON.stringify({
-          target_date: byId('snapDate').value,
+      try {
+        const result = await api('/trading-bot/evidence/snapshot', { method: 'POST', body: JSON.stringify({
+          target_date: byId('snapDate').value || todayISO(),
           symbols: csv(byId('snapSymbols').value),
           tables: csv(byId('snapTables').value),
           limit_per_table: Number(byId('snapLimit').value || 25),
           store_evidence: byId('snapStoreEvidence').checked
-        })
-      });
-      byId('snapOutput').textContent = JSON.stringify(result, null, 2);
+        }) });
+        byId('snapOutput').style.display = 'block';
+        byId('snapOutput').textContent = JSON.stringify(result, null, 2);
+      } catch (err) { byId('snapError').textContent = err.message; }
     }
 
+    // ---- Advanced: advisory ----
     async function generateAdvisory() {
       byId('advError').textContent = '';
-      const result = await api('/trading-bot/advisory/generate', {
-        method: 'POST',
-        body: JSON.stringify({
-          target_date: byId('advDate').value,
+      try {
+        const result = await api('/trading-bot/advisory/generate', { method: 'POST', body: JSON.stringify({
+          target_date: byId('advDate').value || todayISO(),
           symbols: csv(byId('advSymbols').value),
           queue: byId('advQueue').checked,
           max_recommendations: Number(byId('advMax').value || 10),
           snapshot_tables: csv(byId('advTables').value),
           use_sqlite_snapshot: byId('advUseSnapshot').checked
-        })
-      });
-      byId('advOutput').textContent = JSON.stringify(result, null, 2);
+        }) });
+        byId('advOutput').style.display = 'block';
+        byId('advOutput').textContent = JSON.stringify(result, null, 2);
+      } catch (err) { byId('advError').textContent = err.message; }
     }
-
     async function scoreAdvisory() {
       byId('advScoreError').textContent = '';
-      const result = await api('/trading-bot/advisory/score', {
-        method: 'POST',
-        body: JSON.stringify({ target_date: byId('scoreAdvDate').value, store_evidence: byId('scoreAdvStoreEvidence').checked })
-      });
-      byId('lastAction').textContent = JSON.stringify(result, null, 2);
+      try {
+        const result = await api('/trading-bot/advisory/score', { method: 'POST', body: JSON.stringify({ target_date: byId('scoreAdvDate').value || todayISO(), store_evidence: byId('scoreAdvStoreEvidence').checked }) });
+        byId('advScoreOutput').style.display = 'block';
+        byId('advScoreOutput').textContent = JSON.stringify(result, null, 2);
+      } catch (err) { byId('advScoreError').textContent = err.message; }
     }
 
-    async function queueRecommendation() {
-      byId('recError').textContent = '';
-      const symbol = byId('recSymbol').value.trim();
-      const action = byId('recAction').value.trim();
-      const verdict = byId('recVerdict').value.trim();
-      const reason = byId('recReason').value.trim();
-      if (!symbol || !action || !verdict || !reason) { byId('recError').textContent = 'Symbol, action, verdict, and reason are required.'; return; }
-      const body = {
-        market_date: byId('recDate').value,
-        symbol, action, verdict, reason,
-        priority: Number(byId('recPriority').value || 90)
-      };
-      const conviction = byId('recConviction').value.trim();
-      if (conviction) body.conviction = Number(conviction);
-      const result = await api('/trading-bot/recommendations', { method: 'POST', body: JSON.stringify(body) });
-      byId('lastAction').textContent = JSON.stringify(result, null, 2);
-    }
+    // ---- Boot ----
+    byId('briefDate').value = todayISO();
+    const lastRun = localStorage.getItem('zadeTradingBriefLastRun');
+    if (lastRun) byId('briefLastRun').textContent = 'Last run ' + new Date(lastRun).toLocaleString();
+    byId('runBriefBtn').addEventListener('click', () => withBusy(byId('runBriefBtn'), 'Running…', runBrief));
+    byId('loadSchemaBtn').addEventListener('click', () => withBusy(byId('loadSchemaBtn'), 'Loading…', loadSchema));
+    byId('runSqlBtn').addEventListener('click', () => withBusy(byId('runSqlBtn'), 'Running…', runSql));
+    byId('runOpsBtn').addEventListener('click', () => withBusy(byId('runOpsBtn'), 'Running…', runOpsCheck));
+    byId('snapBtn').addEventListener('click', () => withBusy(byId('snapBtn'), 'Snapshotting…', takeSnapshot));
+    byId('advGenBtn').addEventListener('click', () => withBusy(byId('advGenBtn'), 'Generating…', generateAdvisory));
+    byId('advScoreBtn').addEventListener('click', () => withBusy(byId('advScoreBtn'), 'Scoring…', scoreAdvisory));
 
-    byId('runBriefBtn').addEventListener('click', () => withBusy(byId('runBriefBtn'), 'Running…', () => runBrief(false).catch((err) => { byId('briefError').textContent = err.message; })));
-    byId('dryBriefBtn').addEventListener('click', () => withBusy(byId('dryBriefBtn'), 'Running…', () => runBrief(true).catch((err) => { byId('briefError').textContent = err.message; })));
-    byId('loadJudgmentsBtn').addEventListener('click', () => withBusy(byId('loadJudgmentsBtn'), 'Loading…', () => loadJudgments().catch((err) => { byId('judgmentError').textContent = err.message; })));
-    byId('scoreJudgmentsBtn').addEventListener('click', () => withBusy(byId('scoreJudgmentsBtn'), 'Scoring…', () => scoreJudgments().catch((err) => { byId('judgmentError').textContent = err.message; })));
-    byId('queueProposalBtn').addEventListener('click', () => withBusy(byId('queueProposalBtn'), 'Queuing…', () => queueProposal().catch((err) => { byId('proposalError').textContent = err.message; })));
-    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => load().catch((err) => { byId('lastAction').textContent = err.message; })));
-    byId('runOpsCheckBtn').addEventListener('click', () => withBusy(byId('runOpsCheckBtn'), 'Running…', () => runOpsCheck().catch((err) => { byId('opsCheckError').textContent = err.message; })));
-    byId('loadSchemaBtn').addEventListener('click', () => withBusy(byId('loadSchemaBtn'), 'Loading…', () => loadSqlSchema().catch((err) => { byId('sqlError').textContent = err.message; })));
-    byId('runQueryBtn').addEventListener('click', () => withBusy(byId('runQueryBtn'), 'Running…', runSqlQuery));
-    byId('snapshotBtn').addEventListener('click', () => withBusy(byId('snapshotBtn'), 'Snapshotting…', () => takeSnapshot().catch((err) => { byId('snapError').textContent = err.message; })));
-    byId('advGenerateBtn').addEventListener('click', () => withBusy(byId('advGenerateBtn'), 'Generating…', () => generateAdvisory().catch((err) => { byId('advError').textContent = err.message; })));
-    byId('advScoreBtn').addEventListener('click', () => withBusy(byId('advScoreBtn'), 'Scoring…', () => scoreAdvisory().catch((err) => { byId('advScoreError').textContent = err.message; })));
-    byId('recQueueBtn').addEventListener('click', () => withBusy(byId('recQueueBtn'), 'Queuing…', () => queueRecommendation().catch((err) => { byId('recError').textContent = err.message; })));
-    setDates();
-    load().catch((err) => { byId('lastAction').textContent = err.message; });
+    loadJudgments();
+    loadOpsChecks();
   </script>
   <script src="/ui/zade-ui.js"></script>
 </body>

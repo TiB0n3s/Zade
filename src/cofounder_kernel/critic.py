@@ -221,7 +221,14 @@ def _clamp_adjustment(value: Any, verdict: str) -> int:
 
 
 def _critique_block(critique: dict[str, Any]) -> str:
-    lines = ["", "---", "Contrarian check (reasoning-model red team):", f"- Verdict: {critique['verdict']}"]
+    if critique["verdict"] == "unparsed":
+        critique_text = str(critique.get("critique_text", "")).strip()
+        if not critique_text or _looks_like_malformed_json_fragment(critique_text):
+            return ""
+    verdict = str(critique["verdict"])
+    if verdict == "unparsed":
+        verdict = "unstructured response; treat as proceed_with_changes until rerun"
+    lines = ["", "---", "Contrarian check (reasoning-model red team):", f"- Verdict: {verdict}"]
     if critique.get("critique_text"):
         lines.append(f"- Critique: {critique['critique_text']}")
     if critique.get("weakest_assumption"):
@@ -232,6 +239,14 @@ def _critique_block(critique: dict[str, Any]) -> str:
         lines.append(f"- Downside risk: {critique['downside_risk']}")
     lines.append(f"- Confidence adjustment: {critique['confidence_adjustment']}")
     return "\n".join(lines)
+
+
+def _looks_like_malformed_json_fragment(text: str) -> bool:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        return True
+    probe = stripped[:240].lower()
+    return stripped.startswith("{") or '"verdict"' in probe or '"weakest_assumption"' in probe
 
 
 def _truncate(text: str, limit: int) -> str:
