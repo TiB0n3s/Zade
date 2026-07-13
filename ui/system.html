@@ -1,0 +1,1418 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade System</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    /* ---------- shared tab-switcher chrome (new, system.html-specific) ---------- */
+    .tabbar {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      margin-top: 18px; padding-bottom: 2px;
+      border-bottom: 1px solid var(--z-line);
+    }
+    .tabbar button {
+      background: transparent; border: 1px solid transparent; border-bottom: none;
+      border-radius: var(--z-radius-sm) var(--z-radius-sm) 0 0;
+      color: var(--z-muted); font-size: 12.5px; letter-spacing: 0.02em;
+      padding: 9px 16px; cursor: pointer;
+    }
+    .tabbar button:hover { color: var(--z-text); }
+    .tabbar button.tab-active {
+      color: var(--z-text); background: var(--z-accent-wash);
+      border-color: var(--z-line); border-bottom: 1px solid var(--z-bg, #0a0a0b);
+      margin-bottom: -1px;
+    }
+    section[data-tab-panel] { display: grid; gap: var(--z-s5, 16px); }
+    section[data-tab-panel][hidden] { display: none; }
+    .tab-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin: -4px 0 4px; }
+
+    /* ---------- skills.html styles ---------- */
+    h1 { margin: 0; }
+    .sub { margin-top: 5px; }
+    main { display: grid; }
+    .metric strong { display: block; line-height: 1; margin-bottom: 5px; }
+    input[type="search"] { min-width: 260px; flex: 1; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .toolbar label, .route-row label { gap: 4px; }
+    .route-box { background: rgba(12,12,14,0.9); border: 1px solid var(--z-line); border-radius: 6px; padding: 14px; display: grid; gap: 10px; }
+    .route-row { display: grid; grid-template-columns: 1fr 140px auto; gap: 10px; }
+    .notice { min-height: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); overflow: hidden; }
+    .skill { display: grid; gap: 10px; min-height: 220px; }
+    .skill-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .skill h2 { margin: 0; font-size: 15px; }
+    .desc { color: #c9c5bf; min-height: 62px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pill.enabled { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.approval_gated { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    .pill.local_write { color: #f0c8c3; border-color: rgba(176,71,63,0.55); background: rgba(176,71,63,0.12); }
+    .actions { display: flex; gap: 8px; margin-top: auto; }
+    .invocation { border-top: 1px solid var(--z-line); padding: 10px 4px; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; font-size: 12.5px; }
+    .invocation:first-child { border-top: none; }
+    .invocation .meta { color: var(--z-muted); font-size: 11px; margin-top: 3px; }
+    pre { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; }
+    @media (max-width: 760px) {
+      .summary { grid-template-columns: repeat(2, 1fr); }
+      .route-row { grid-template-columns: 1fr; }
+      input[type="search"] { min-width: 100%; }
+    }
+
+    /* ---------- evals.html styles ---------- */
+    header {
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+    }
+    h3 { margin: 0 0 6px; }
+    .metric-row { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); overflow: hidden; margin-bottom: 12px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+    label { display: grid; }
+    input, textarea, select { width: 100%; }
+    textarea { resize: vertical; }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    a.button { text-decoration: none; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .filters select, .filters input { width: auto; max-width: 160px; }
+    .list { display: grid; }
+    .item { display: grid; gap: 8px; }
+    .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    .pillrow { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
+    .pill.pass, .pill.enabled { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.fail, .pill.error, .pill.disabled { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .checks { display: flex; flex-wrap: wrap; gap: 6px; }
+    .check-pill { font-size: 10px; border-radius: 3px; padding: 2px 7px; border: 1px solid var(--z-line); }
+    .check-pill.ok { color: #b9d9c6; border-color: rgba(90,138,114,0.5); }
+    .check-pill.bad { color: #e6b3b3; border-color: rgba(168,74,74,0.5); }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .row, .row3, .metric-row { grid-template-columns: 1fr; }
+    }
+
+    /* ---------- charter.html styles ---------- */
+    .rel-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .rel-chip {
+      cursor: pointer; border: 1px solid var(--z-line); border-radius: 999px; padding: 6px 13px;
+      font-size: 12.5px; color: var(--z-muted); background: rgba(255,255,255,0.02);
+    }
+    .rel-chip.active { color: var(--z-text); border-color: rgba(176,71,63,0.5); background: rgba(176,71,63,0.12); }
+    [data-tab="charters"] .pill { margin: 0 6px 6px 0; }
+    [data-tab="charters"] .pill.ok { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    [data-tab="charters"] .pill.warn { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    [data-tab="charters"] details { border-top: 1px solid var(--z-line); margin-top: 12px; padding-top: 12px; }
+
+    /* ---------- ops.html styles ---------- */
+    /* zade-ui.css colors .pill.ok as a warn/pending state and has no .pill.bad
+       variant at all — these page-specific overrides keep the health-check
+       green/red semantics used by pill() in the script below. Colors match
+       the shared sheet's .allow/.deny groups for consistency. Scoped to
+       [data-tab="ops"] so they don't fight charters' own .pill.ok override. */
+    [data-tab="ops"] .pill.ok { color: var(--z-ok-text) !important; background: rgba(90, 138, 114, 0.15) !important; }
+    [data-tab="ops"] .pill.bad { color: var(--z-bad-text); background: rgba(168, 74, 74, 0.15); }
+    [data-tab="ops"] details { margin-top: 10px; }
+    @media (max-width: 900px) {
+      [data-tab="ops"] .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade System</h1>
+      <div class="sub">Zade's governance and configuration surface, in one place: what skills it can use, whether its brain still answers correctly (evals), the rules it operates under (charters), and its health, backups, and models (ops).</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui/surfacing.html#notifications">Notifications</a>
+    </div>
+    <nav class="tabbar" id="systemTabbar">
+      <button type="button" data-tab="skills">Skills</button>
+      <button type="button" data-tab="evals">Evals</button>
+      <button type="button" data-tab="charters">Charters</button>
+      <button type="button" data-tab="ops">Ops</button>
+    </nav>
+  </header>
+
+  <main>
+    <section data-tab-panel data-tab="skills">
+      <div class="tab-toolbar">
+        <button id="scanBtn" title="Re-reads every skill folder on disk and updates the registry with anything new or changed">Scan for New Skills</button>
+      </div>
+      <section class="summary" id="summary"></section>
+
+      <section class="toolbar">
+        <label>Search <span class="hint">Matches skill name, description, source, or risk level</span><input id="filter" type="search" placeholder="Filter skills"></label>
+        <label>Status <span class="hint">Only enabled skills can be used by Zade</span>
+          <select id="enabled">
+            <option value="">All states</option>
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </label>
+        <label>Risk level <span class="hint">How much a skill is allowed to do on its own</span>
+          <select id="risk">
+            <option value="">All risk levels</option>
+            <option value="read_only">Read only — just looks things up</option>
+            <option value="local_write">Local write — can change files on this machine</option>
+            <option value="approval_gated">Approval gated — needs your sign-off first</option>
+          </select>
+        </label>
+        <button class="secondary" id="refreshBtn">Refresh list</button>
+      </section>
+
+      <section class="route-box">
+        <div>
+          <strong style="font-size:14px;">Test Skill Routing</strong>
+          <p class="sub" style="margin:4px 0 0;">See which skills Zade would pick for a request, and why. Zade blends two signals: how many words match, and how close the meaning is (semantic similarity), into one match score.</p>
+        </div>
+        <div class="route-row">
+          <label>Describe the task <span class="hint">Plain English is fine — this is only a test, nothing runs</span><textarea id="routeQuery" rows="2" placeholder="Ask what Zade should route against, for example: build a pricing page and verify it before claiming done"></textarea></label>
+          <label>Task type <span class="hint">Nudges Zade toward skills built for this kind of work</span>
+            <select id="taskType">
+              <option value="general">General</option>
+              <option value="reasoning">Reasoning / decision-making</option>
+              <option value="coding">Coding</option>
+            </select>
+          </label>
+          <button id="routeBtn" title="Shows the top-matching skills without actually running anything">Test Routing</button>
+        </div>
+        <div id="routeOut" class="muted">No route run yet.</div>
+      </section>
+
+      <section class="route-box">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong style="font-size:14px;">Recently Used Skills</strong>
+          <button class="secondary" id="loadInvocationsBtn" title="Loads the most recent times Zade actually used a skill">Load history</button>
+        </div>
+        <div class="notice" id="invocationsNotice"></div>
+        <div id="invocations"></div>
+      </section>
+
+      <div class="notice" id="notice"></div>
+      <section class="grid" id="skills"></section>
+    </section>
+
+    <section data-tab-panel data-tab="evals" hidden>
+      <div class="tab-toolbar">
+        <button id="evalsRefreshBtn">Refresh</button>
+      </div>
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Run a Health Check</h2><div class="sub">Sends every enabled test question to Zade for a real answer, then checks each answer against what it should contain. This is a real model call per question, so it can take a minute or two.</div></div>
+        </div>
+        <div class="form">
+          <div class="row3">
+            <label>Label <span class="hint">A name for this run, so you can find it later</span><input id="runLabel" value="manual"></label>
+            <label>Categories <span class="hint">Only run certain groups of questions (comma-separated). Leave blank to run all.</span><input id="runCategories" placeholder="instruction_probe, governed_contract"></label>
+            <label>Max questions <span class="hint">Stop after this many test questions</span><input id="runMaxCases" type="number" min="1" max="200" value="50"></label>
+          </div>
+          <label>Specific questions only <span class="hint">Comma-separated question names. If set, this overrides the category filter above.</span><input id="runCaseNames" placeholder="probe-exact-ack, probe-json-object"></label>
+          <div class="actions">
+            <button id="runBtn" title="Runs every enabled test question through Zade's real models right now">Run Health Check</button>
+            <span class="notice" id="runNotice"></span>
+          </div>
+        </div>
+        <section class="metric-row" id="runMetrics" style="margin-top:14px;"></section>
+        <div id="runComparison" class="muted" style="margin-bottom:10px;"></div>
+        <div class="list" id="runResults"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Test Questions <span class="muted" id="caseCount"></span></h2><div class="sub">Each one is a question or task Zade must answer correctly, plus the rule used to check the answer. A starter set is included automatically; add your own to cover what matters to you.</div></div>
+          <div class="filters">
+            <input id="fCategory" placeholder="filter by category">
+            <select id="fEnabled">
+              <option value="">All</option>
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
+            <button class="secondary tiny" id="loadCasesBtn">Load</button>
+          </div>
+        </div>
+        <div class="list" id="cases"></div>
+
+        <details class="create-form">
+          <summary>+ Add or Update a Test Question</summary>
+          <div class="form" style="margin-top:10px;">
+            <div class="row3">
+              <label>Name <span class="hint">Must be unique — reuse an existing name to update that question</span><input id="cName" placeholder="probe-my-check"></label>
+              <label>Category <span class="hint">Group this question belongs to</span><input id="cCategory" value="custom"></label>
+              <label>Executor <span class="hint">Which of Zade's response modes to test</span>
+                <select id="cExecutor"><option value="generate">generate — free-form answer</option><option value="respond">respond — normal conversation reply</option><option value="critic">critic — reviews a draft</option></select>
+              </label>
+            </div>
+            <div class="row">
+              <label>Task type <span class="hint">What kind of task this is, for grouping</span>
+                <select id="cTaskType"><option value="general">general</option><option value="reasoning">reasoning</option><option value="coding">coding</option><option value="embedding">embedding</option></select>
+              </label>
+              <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="cEnabled" checked style="width:auto;"> Included in health check runs</label>
+            </div>
+            <label>Description <span class="hint">A short human-readable note on what this checks</span><input id="cDescription" placeholder="what this case verifies"></label>
+            <label>Prompt <span class="hint">The question or instruction sent to Zade</span><textarea id="cPrompt" rows="2"></textarea></label>
+            <label>Draft <span class="hint">Only used when Executor is "critic" — the text Zade is asked to review</span><textarea id="cDraft" rows="2"></textarea></label>
+            <label>Pass/fail rules (JSON list) <span class="hint">Each rule checks something about the answer — contains, contains_any, not_contains, regex, json_parseable, json_keys, min_chars, max_chars</span>
+              <textarea id="cChecks" rows="3" class="mono">[{"type": "contains", "value": "ACK"}]</textarea>
+            </label>
+            <div class="row">
+              <label>Respond options <span class="hint">JSON, only used when Executor is "respond"</span><textarea id="cRespondOptions" rows="2" class="mono">{}</textarea></label>
+              <label>Setup memories <span class="hint">JSON list of memories to seed before the question runs</span><textarea id="cSetupMemories" rows="2" class="mono">[]</textarea></label>
+            </div>
+            <div class="actions">
+              <button id="createCaseBtn">Save Question</button>
+              <span class="notice" id="createCaseNotice"></span>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Past Health Checks</h2><div class="sub">Previous runs, most recent first.</div></div>
+          <button class="secondary tiny" id="loadRunsBtn">Load</button>
+        </div>
+        <div class="list" id="runs"></div>
+      </section>
+    </section>
+
+    <section data-tab-panel data-tab="charters" hidden>
+      <div class="tab-toolbar">
+        <button id="charterRefreshBtn">Refresh</button>
+      </div>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>What Zade is actually using right now</h2>
+            <div class="sub">A live snapshot of the charters below, exactly as Zade reads them before answering you. If Zade is acting oddly, this is the first place to check.</div>
+          </div>
+          <div id="stackPills"></div>
+        </div>
+        <div id="stackSummary" class="muted">Loading&hellip;</div>
+        <details>
+          <summary>Advanced: view the raw data Zade reads (JSON)</summary>
+          <pre id="stackOut" style="margin-top:10px;">Loading&hellip;</pre>
+        </details>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Identity Charter</h2>
+            <div class="sub">Zade's mission and judgment — what it prioritizes, how it thinks through problems, and where it holds back. This shapes what Zade will decide on its own.</div>
+          </div>
+        </div>
+        <div class="form">
+          <div class="row">
+            <label>Name <span class="hint">What Zade calls itself — usually just "Zade"</span><input id="idName" placeholder="Zade"></label>
+            <label>Source <span class="hint">Who last edited this charter, for your own tracking</span><input id="idSource" placeholder="founder:web-editor"></label>
+          </div>
+          <label>Mission <span class="hint">The one-sentence purpose Zade is working toward</span><textarea id="idMission" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+          <label>Advanced settings (JSON) <span class="hint">Guiding principles, thinking and communication style, risk controls, and more. Only edit this if you're comfortable with JSON — leave it as-is otherwise.</span>
+            <textarea id="idRest" rows="14"></textarea>
+          </label>
+          <div class="actions">
+            <button id="idSaveBtn" title="Applies immediately — Zade uses this on its very next reply">Save Identity Charter</button>
+            <span class="notice" id="idNotice"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Voice Charter</h2>
+            <div class="sub">How Zade should sound when it talks to you — tone, word choice, humor, and how it expresses confidence or doubt.</div>
+          </div>
+        </div>
+        <div class="form">
+          <div class="row">
+            <label>Name <span class="hint">What Zade calls itself — usually just "Zade"</span><input id="voName" placeholder="Zade"></label>
+            <label>Source <span class="hint">Who last edited this charter, for your own tracking</span><input id="voSource" placeholder="founder:web-editor"></label>
+          </div>
+          <label>Overall voice <span class="hint">A plain description of how Zade should come across, in a sentence or two</span><textarea id="voOverall" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+          <label>Advanced settings (JSON) <span class="hint">Sentence style, vocabulary, rhythm, humor, nicknames, and more. Only edit this if you're comfortable with JSON — leave it as-is otherwise.</span>
+            <textarea id="voRest" rows="14"></textarea>
+          </label>
+          <div class="actions">
+            <button id="voSaveBtn" title="Applies immediately — Zade uses this on its very next reply">Save Voice Charter</button>
+            <span class="notice" id="voNotice"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Relationship Charters</h2>
+            <div class="sub">Special instructions for how Zade should treat one specific named person — separate from how it treats you. One charter per person per relationship type.</div>
+          </div>
+        </div>
+        <div class="rel-list" id="relList"></div>
+        <div class="form">
+          <div class="row">
+            <label>Person's name <span class="hint">Exactly as Zade should recognize them</span><input id="relSubject" placeholder="Ellie"></label>
+            <label>Relationship type <span class="hint">A short category label, e.g. protected_principal — shown in plain words on the chips above</span><input id="relType" placeholder="protected_principal"></label>
+          </div>
+          <label>Source <span class="hint">Who last edited this charter, for your own tracking</span><input id="relSource" placeholder="founder:web-editor"></label>
+          <label>First principle <span class="hint">The one rule that matters most for how Zade treats this person</span><textarea id="relFirst" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+          <label>Advanced settings (JSON) <span class="hint">Devotion, protection rules, trust, boundaries, and more. Only edit this if you're comfortable with JSON — leave it as-is otherwise.</span>
+            <textarea id="relRest" rows="14"></textarea>
+          </label>
+          <div class="actions">
+            <button id="relSaveBtn" title="Applies immediately — Zade uses this on its very next reply">Save Relationship Charter</button>
+            <button class="secondary" id="relNewBtn" title="Clears the form so you can add a charter for a different person, without changing the one currently shown">New Relationship Charter</button>
+            <span class="notice" id="relNotice"></span>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section data-tab-panel data-tab="ops" hidden>
+      <div class="tab-toolbar">
+        <button id="opsRefreshBtn">Refresh</button>
+      </div>
+      <section class="metric-row" id="metrics"></section>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>Is Zade Healthy?</h2>
+          <div class="sub" style="margin-bottom:10px;">A quick check of the parts Zade needs to work: its data, its web pages, and the AI models it talks to.</div>
+          <div id="healthSummary" style="margin:10px 0;"></div>
+          <details>
+            <summary>Technical details (for troubleshooting)</summary>
+            <pre id="healthOut" style="margin-top:8px;">Loading&hellip;</pre>
+          </details>
+        </div>
+
+        <div class="panel">
+          <h2>Restart &amp; Watchdog History</h2>
+          <div class="sub" style="margin-bottom:10px;">A background watcher checks on Zade automatically and restarts it if it stops responding. This is that watcher's history — the kernel only reads it, it doesn't write it.</div>
+          <div class="list" id="supervision"></div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>Backups</h2>
+          <div class="sub" style="margin-bottom:10px;">A backup is a saved copy of everything Zade knows — objectives, memory, decisions — that you can fall back on if something goes wrong.</div>
+          <div class="form">
+            <div class="row">
+              <label>Label <span class="hint">A name to help you recognize this backup later</span><input id="bkLabel" placeholder="manual" value="manual"></label>
+              <label>Keep last N <span class="hint">How many recent backups to keep when pruning older ones</span><input id="bkKeepLast" type="number" min="1" value="10"></label>
+            </div>
+            <div class="actions">
+              <button id="bkCreateBtn" title="Saves a backup of Zade's data right now">Create Backup</button>
+              <button class="secondary" id="bkPruneDryBtn" title="Shows which old backups would be deleted, without deleting anything">Preview Cleanup</button>
+              <button class="secondary" id="bkPruneBtn" title="Permanently deletes old backups beyond the number you keep">Delete Old Backups</button>
+              <span class="notice" id="bkNotice"></span>
+            </div>
+          </div>
+          <div class="list" id="backups" style="margin-top:12px;"></div>
+        </div>
+
+        <div class="panel">
+          <h2>AI Models In Use</h2>
+          <div class="sub" style="margin-bottom:10px;">Which AI model handles each type of task, and how fast it responds.</div>
+          <div id="modelRoles" class="list" style="margin-bottom:12px;"></div>
+          <div class="actions" style="margin-bottom:10px;">
+            <button class="secondary" id="benchBtn" title="Sends a test prompt to each model and times how long it takes to respond">Test Model Speed</button>
+            <span class="notice" id="benchNotice"></span>
+          </div>
+          <details>
+            <summary>Performance details (for troubleshooting)</summary>
+            <pre id="telemetryOut" style="margin-top:8px;">Loading&hellip;</pre>
+          </details>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Test What Zade Would Be Allowed To Do</h2>
+        <div class="sub" style="margin-bottom:10px;">Describe an action and see whether Zade's rules would allow it automatically, block it, or require your approval first — nothing happens for real. This is a dry run only.</div>
+        <div class="form">
+          <div class="row">
+            <label>Action <span class="hint">The thing Zade would be doing</span><input id="evAction" placeholder="e.g. local.file.write, browser.open, dev.git.commit"></label>
+            <label>Permission tier <span class="hint">How sensitive this action is, from read-only to irreversible</span>
+              <select id="evTier">
+                <option value="L0_READ">L0 — Read only, no changes</option>
+                <option value="L1_MEMORY_WRITE">L1 — Save notes or memory</option>
+                <option value="L2_FILE_WRITE">L2 — Write or change a file</option>
+                <option value="L3_EXTERNAL_ACTION">L3 — External action (send, post, publish)</option>
+                <option value="L4_IRREVERSIBLE">L4 — Irreversible action</option>
+              </select>
+            </label>
+          </div>
+          <label>Target <span class="hint">Optional — the file, URL, or recipient this action would affect</span><input id="evTarget" placeholder="optional — file path, URL, recipient&hellip;"></label>
+          <div class="actions">
+            <button id="evEvalBtn" title="Checks the rules without Zade actually doing anything">Check the Rules</button>
+            <span class="notice" id="evNotice"></span>
+          </div>
+          <div id="evResult"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+  // ============================================================
+  // Skills tab — verbatim logic from ui/skills.html
+  // ============================================================
+  (function () {
+    const state = { skills: [], summary: null };
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const notice = (text) => { byId('notice').textContent = text || ''; };
+    const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    async function load() {
+      notice('Loading skills.');
+      const enabled = byId('enabled').value;
+      const risk = byId('risk').value;
+      const qs = new URLSearchParams();
+      if (enabled) qs.set('enabled', enabled);
+      if (risk) qs.set('risk_tier', risk);
+      qs.set('limit', '500');
+      const data = await api('/skills?' + qs.toString());
+      state.skills = data.items || [];
+      state.summary = data.summary || {};
+      render();
+      notice('Loaded ' + state.skills.length + ' skills.');
+    }
+
+    function renderSummary() {
+      const s = state.summary || {};
+      const risk = s.by_risk_tier || {};
+      byId('summary').innerHTML = [
+        metric(s.total || 0, 'Installed', 'Skills Zade knows about'),
+        metric(s.enabled || 0, 'Enabled', 'Skills Zade is currently allowed to use'),
+        metric(risk.approval_gated || 0, 'Need approval', "Skills that always ask before doing anything"),
+        metric((s.recently_used || []).length, 'Recently used', 'Skills used in the last activity window')
+      ].join('');
+    }
+
+    function metric(value, label, hint) {
+      return '<div class="metric" title="' + esc(hint || '') + '"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+
+    // Raw enum/snake_case values (risk tiers, statuses) rendered the way a
+    // non-technical founder would expect to read them.
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    const RISK_HINTS = {
+      read_only: 'Only looks things up — cannot change anything',
+      local_write: 'Can change files on this machine',
+      approval_gated: 'Always asks for your sign-off before doing anything'
+    };
+
+    function riskPill(riskTier) {
+      const tier = riskTier || 'read_only';
+      const hint = RISK_HINTS[tier] || '';
+      return '<span class="pill ' + esc(tier) + '" title="' + esc(hint) + '">' + esc(prettyLabel(tier)) + '</span>';
+    }
+
+    // Semantic similarity arrives as a 0–1 cosine score; show it as a percent
+    // match the way a founder would expect, not a raw decimal.
+    function similarityPct(value) {
+      if (value == null || value === '') return null;
+      const num = Number(value);
+      if (Number.isNaN(num)) return null;
+      return Math.round(Math.max(0, Math.min(1, num)) * 100) + '%';
+    }
+
+    function render() {
+      renderSummary();
+      const q = byId('filter').value.trim().toLowerCase();
+      const filtered = state.skills.filter((skill) => {
+        if (!q) return true;
+        return [skill.name, skill.description, skill.source, skill.risk_tier].join(' ').toLowerCase().includes(q);
+      });
+      byId('skills').innerHTML = filtered.map(renderSkill).join('') || '<div class="notice">No skills match.</div>';
+      document.querySelectorAll('[data-toggle]').forEach((btn) => {
+        const label = btn.dataset.enabled === 'true' ? 'Disabling…' : 'Enabling…';
+        btn.addEventListener('click', () => withBusy(btn, label, () => toggleSkill(btn.dataset.toggle, btn.dataset.enabled !== 'true')));
+      });
+    }
+
+    function renderSkill(skill) {
+      return `
+        <article class="skill">
+          <div class="skill-head">
+            <div>
+              <h2>${esc(skill.name)}</h2>
+              <div class="sub">${esc(skill.source || 'local')}</div>
+            </div>
+            <span class="pill ${skill.enabled ? 'enabled' : ''}" title="${skill.enabled ? 'Zade can use this skill' : 'Zade will not use this skill'}">${skill.enabled ? 'Enabled' : 'Disabled'}</span>
+          </div>
+          <div class="desc">${esc(skill.description || 'No description.')}</div>
+          <div class="meta">
+            ${riskPill(skill.risk_tier)}
+            ${skill.default_enabled ? '<span class="pill" title="Turned on automatically for new installs">Default pack</span>' : ''}
+            <span class="pill" title="Changes automatically whenever this skill's file is edited — used to tell versions apart">rev ${esc((skill.content_hash || '').slice(0, 10))}</span>
+          </div>
+          <div class="actions">
+            <button data-toggle="${esc(skill.name)}" data-enabled="${skill.enabled}">${skill.enabled ? 'Disable' : 'Enable'}</button>
+            <a class="button secondary" href="/skills/${encodeURIComponent(skill.name)}" target="_blank" title="View the raw record Zade stores for this skill">Raw details</a>
+          </div>
+        </article>
+      `;
+    }
+
+    async function toggleSkill(name, enabled) {
+      notice((enabled ? 'Enabling ' : 'Disabling ') + name + '.');
+      await api('/skills/' + encodeURIComponent(name) + '/' + (enabled ? 'enable' : 'disable'), { method: 'POST', body: '{}' });
+      await load();
+    }
+
+    byId('scanBtn').addEventListener('click', () => withBusy(byId('scanBtn'), 'Scanning…', async () => {
+      try {
+        notice('Scanning installed skill folders.');
+        const result = await api('/skills/scan', { method: 'POST', body: '{}' });
+        notice('Scan complete: ' + result.scanned + ' scanned, ' + result.created + ' created, ' + result.updated + ' updated.');
+        await load();
+      } catch (err) {
+        notice('Scan failed: ' + err.message);
+      }
+    }));
+
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => load().catch((err) => notice('Refresh failed: ' + err.message))));
+    byId('filter').addEventListener('input', render);
+    byId('enabled').addEventListener('change', () => load().catch((err) => notice('Filter failed: ' + err.message)));
+    byId('risk').addEventListener('change', () => load().catch((err) => notice('Filter failed: ' + err.message)));
+    // Renders the routing test result as plain sentences instead of a raw JSON
+    // dump — a founder shouldn't need to read keyword_score/semantic_score keys
+    // to understand which skill Zade would pick and why.
+    function renderRouteResult(result) {
+      const el = byId('routeOut');
+      const picks = result.selected || [];
+      if (!picks.length) {
+        el.innerHTML = '<span class="muted">No matching skills found for that request.</span>';
+        return;
+      }
+      el.innerHTML = `
+        <div class="muted" style="margin-bottom:8px;">Top ${esc(result.selected_count || picks.length)} skill(s) Zade would consider for a "${esc(prettyLabel(result.task_type))}" request:</div>
+        <div class="list" style="display:grid;gap:8px;">
+          ${picks.map((item, index) => {
+            const simPct = similarityPct(item.semantic_similarity);
+            return `
+              <div class="skill" style="min-height:auto;">
+                <div class="skill-head">
+                  <strong>${index + 1}. ${esc(item.name)}</strong>
+                  ${riskPill(item.risk_tier)}
+                </div>
+                <div class="desc" style="min-height:auto;">${esc(item.description || 'No description.')}</div>
+                <div class="meta">
+                  <span class="pill" title="Combines keyword matching and meaning-based (semantic) matching into one score — higher is a better fit">Match score ${esc(item.score)}</span>
+                  ${simPct != null ? '<span class="pill" title="How close the meaning of your request is to this skill, regardless of exact wording">' + esc(simPct) + ' meaning match</span>' : ''}
+                  <span class="pill">${esc(item.source || 'local')}</span>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    byId('routeBtn').addEventListener('click', () => withBusy(byId('routeBtn'), 'Testing…', async () => {
+      try {
+        const query = byId('routeQuery').value.trim();
+        if (!query) return;
+        const result = await api('/skills/route', {
+          method: 'POST',
+          body: JSON.stringify({ query, task_type: byId('taskType').value, limit: 3 })
+        });
+        renderRouteResult(result);
+      } catch (err) {
+        byId('routeOut').innerHTML = '<span class="muted">Route test failed: ' + esc(err.message) + '</span>';
+      }
+    }));
+
+    async function loadInvocations() {
+      const invNotice = byId('invocationsNotice');
+      invNotice.textContent = '';
+      try {
+        const data = await api('/skills/invocations?limit=50');
+        const items = data.items || [];
+        byId('invocations').innerHTML = items.length ? items.map((inv) => `
+          <div class="invocation">
+            <div>
+              <div><strong>${esc(inv.name)}</strong> <span class="pill">${esc(prettyLabel(inv.task_type || 'general'))}</span></div>
+              <div class="meta">${esc(inv.query || '(no request text recorded)')}</div>
+            </div>
+            <div class="meta" style="text-align:right;flex:none;" title="How well this skill matched the request that used it">match ${esc(inv.score)}<br>${esc((inv.created_at || '').slice(0, 19))}</div>
+          </div>
+        `).join('') : '<div class="notice">No skills have been used yet.</div>';
+        invNotice.textContent = items.length + ' use(s) loaded.';
+      } catch (err) {
+        invNotice.textContent = 'Load failed: ' + err.message;
+      }
+    }
+
+    byId('loadInvocationsBtn').addEventListener('click', () => withBusy(byId('loadInvocationsBtn'), 'Loading…', loadInvocations));
+
+    load().catch((err) => notice('Load failed: ' + err.message));
+    loadInvocations();
+  })();
+
+  // ============================================================
+  // Evals tab — verbatim logic from ui/evals.html
+  // (refreshBtn renamed -> evalsRefreshBtn to avoid an id collision
+  // with the Skills tab's own refreshBtn)
+  // ============================================================
+  (function () {
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const truncate = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+    const csv = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
+    // Category/status/executor values arrive as raw snake_case identifiers;
+    // show them the way a non-technical founder would expect to read them.
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+    const CATEGORY_HINTS = {
+      instruction_probe: 'Follows a direct instruction correctly',
+      critic_contract: 'Reviews a draft the way it should',
+      governed_contract: 'Stays inside its operating rules',
+      grounding: 'Recalls facts it was told earlier'
+    };
+    const EXECUTOR_HINTS = {
+      generate: 'free-form answer',
+      respond: 'normal conversation reply',
+      critic: 'reviews a draft'
+    };
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try { return await fn(); }
+      finally { btn.disabled = false; btn.textContent = original; }
+    }
+
+    function metric(value, label, hint) {
+      return '<div class="metric" title="' + esc(hint || '') + '"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+
+    function renderChecks(checks) {
+      if (!checks || !checks.length) return '';
+      return '<div class="checks">' + checks.map((c) => `<span class="check-pill ${c.passed ? 'ok' : 'bad'}" title="${c.passed ? 'This check passed' : 'This check failed'}">${esc(prettyLabel(c.type))}${c.passed ? '' : ' ✗'}</span>`).join('') + '</div>';
+    }
+
+    function renderResult(r) {
+      const categoryHint = CATEGORY_HINTS[r.category] || '';
+      return `
+        <article class="item">
+          <div class="topline">
+            <div>
+              <strong>${esc(r.case_name)}</strong>
+              <div class="muted" title="${esc(categoryHint)}">${esc(prettyLabel(r.category))} · ${esc(prettyLabel(r.executor))}${r.model ? ' · ' + esc(r.model) : ''} · ${esc(r.latency_ms)}ms to answer</div>
+            </div>
+            <span class="pill ${esc(r.status)}" title="Pass/fail status and score">${esc(prettyLabel(r.status))} · ${esc(r.score)}</span>
+          </div>
+          ${renderChecks(r.checks)}
+          ${r.error ? `<div class="notice err">${esc(r.error)}</div>` : `<div class="muted">${esc(truncate(r.response_excerpt, 240))}</div>`}
+        </article>
+      `;
+    }
+
+    async function runEvals() {
+      const notice = byId('runNotice');
+      notice.textContent = 'Running… Zade is answering each test question live, so this can take a while.';
+      notice.className = 'notice';
+      const body = {
+        label: byId('runLabel').value.trim() || 'manual',
+        categories: csv(byId('runCategories').value),
+        case_names: csv(byId('runCaseNames').value),
+        max_cases: Number(byId('runMaxCases').value || 50)
+      };
+      try {
+        const result = await api('/evals/run', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = `Health check #${result.run_id} finished.`; notice.className = 'notice good';
+        byId('runMetrics').innerHTML = [
+          metric(result.total, 'Questions asked', 'How many test questions were run'),
+          metric(result.passed, 'Passed', 'Answered correctly'),
+          metric(result.failed, 'Failed', 'Answered, but not correctly'),
+          metric(result.errors, 'Errors', "Zade couldn't produce an answer at all"),
+          metric(Math.round(result.pass_rate * 100) + '%', 'Pass rate', 'Share of questions answered correctly')
+        ].join('');
+        const cmp = result.comparison || {};
+        if (cmp.first_run) {
+          byId('runComparison').textContent = 'This is the first health check on record — nothing to compare it against yet.';
+        } else {
+          const deltaPts = Math.round(cmp.pass_rate_delta * 100);
+          const deltaText = deltaPts === 0 ? 'no change' : (deltaPts > 0 ? `improved by ${deltaPts} points` : `dropped by ${Math.abs(deltaPts)} points`);
+          let summary = `Compared to health check #${cmp.previous_run_id}: pass rate ${deltaText}.`;
+          if (cmp.newly_failing.length) summary += ` Newly broken (used to pass, now fails): ${cmp.newly_failing.join(', ')}.`;
+          if (cmp.newly_passing.length) summary += ` Newly fixed (used to fail, now passes): ${cmp.newly_passing.join(', ')}.`;
+          byId('runComparison').textContent = summary;
+        }
+        byId('runResults').innerHTML = (result.results || []).map(renderResult).join('');
+        await loadRuns();
+      } catch (err) { notice.textContent = 'Health check failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadCases() {
+      const params = new URLSearchParams();
+      if (byId('fCategory').value.trim()) params.set('category', byId('fCategory').value.trim());
+      if (byId('fEnabled').value) params.set('enabled', byId('fEnabled').value);
+      const { items } = await api('/evals/cases?' + params.toString());
+      byId('caseCount').textContent = '(' + items.length + ')';
+      byId('cases').innerHTML = items.length ? items.map(renderCase).join('') : '<div class="muted">No test questions match this filter.</div>';
+    }
+
+    function renderCase(c) {
+      const categoryHint = CATEGORY_HINTS[c.category] || '';
+      const executorHint = EXECUTOR_HINTS[c.executor] || '';
+      const checks = Array.isArray(c.checks) ? c.checks : [];
+      return `
+        <article class="item">
+          <div class="topline">
+            <div>
+              <strong>${esc(c.name)}</strong>
+              <div class="muted">${esc(c.description || '')}</div>
+            </div>
+            <div class="pillrow">
+              <span class="pill ${c.enabled ? 'enabled' : 'disabled'}" title="${c.enabled ? 'Runs as part of health checks' : 'Skipped during health checks'}">${c.enabled ? 'included' : 'skipped'}</span>
+              <span class="pill" title="${esc(categoryHint)}">${esc(prettyLabel(c.category))}</span>
+              <span class="pill" title="${esc(executorHint)}">${esc(prettyLabel(c.executor))} / ${esc(prettyLabel(c.task_type))}</span>
+            </div>
+          </div>
+          <div class="muted"><strong style="color:var(--z-text);font-weight:600;">Question:</strong> ${esc(truncate(c.prompt, 200))}</div>
+          <details>
+            <summary style="cursor:pointer;color:var(--z-muted);font-size:11.5px;">Show details</summary>
+            <div style="margin-top:8px;display:grid;gap:6px;font-size:12.5px;">
+              ${c.draft ? `<div><strong>Draft being reviewed:</strong> <span class="muted">${esc(truncate(c.draft, 300))}</span></div>` : ''}
+              <div><strong>How the answer is graded:</strong> ${checks.length
+                ? '<ul style="margin:4px 0 0;padding-left:18px;">' + checks.map((chk) => `<li>${esc(prettyLabel(chk.type))}${chk.value != null && chk.value !== '' ? `: <span class="muted">${esc(typeof chk.value === 'string' ? chk.value : JSON.stringify(chk.value))}</span>` : ''}</li>`).join('') + '</ul>'
+                : '<span class="muted">No grading rules set.</span>'}
+              </div>
+              ${c.respond_options && Object.keys(c.respond_options).length ? `<div><strong>Reply settings:</strong> <span class="muted">${esc(JSON.stringify(c.respond_options))}</span></div>` : ''}
+              ${Array.isArray(c.setup_memories) && c.setup_memories.length ? `<div><strong>Memories seeded first:</strong> ${esc(c.setup_memories.length)}</div>` : ''}
+              <div class="muted">Created ${esc(c.created_at || 'unknown time')}</div>
+            </div>
+          </details>
+        </article>
+      `;
+    }
+
+    async function saveCase() {
+      const notice = byId('createCaseNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const name = byId('cName').value.trim();
+      const prompt = byId('cPrompt').value.trim();
+      if (!name || !prompt) { notice.textContent = 'A name and a question/prompt are both required.'; notice.className = 'notice err'; return; }
+      let checks, respondOptions, setupMemories;
+      try { checks = JSON.parse(byId('cChecks').value || '[]'); }
+      catch (e) { notice.textContent = 'Checks: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+      try { respondOptions = JSON.parse(byId('cRespondOptions').value || '{}'); }
+      catch (e) { notice.textContent = 'Respond options: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+      try { setupMemories = JSON.parse(byId('cSetupMemories').value || '[]'); }
+      catch (e) { notice.textContent = 'Setup memories: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+      const body = {
+        name,
+        category: byId('cCategory').value.trim() || 'custom',
+        executor: byId('cExecutor').value,
+        task_type: byId('cTaskType').value,
+        description: byId('cDescription').value,
+        prompt,
+        draft: byId('cDraft').value,
+        checks,
+        respond_options: respondOptions,
+        setup_memories: setupMemories,
+        enabled: byId('cEnabled').checked
+      };
+      try {
+        await api('/evals/cases', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        await loadCases();
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadRuns() {
+      const { items } = await api('/evals/runs?limit=25');
+      byId('runs').innerHTML = items.length ? items.map(renderRun).join('') : '<div class="muted">No health checks have been run yet.</div>';
+    }
+
+    function renderRun(r) {
+      const total = r.passed + r.failed + r.errors;
+      return `
+        <article class="item">
+          <div class="topline">
+            <div>
+              <strong>#${esc(r.id)} · ${esc(r.label)}</strong>
+              <div class="muted">${esc(r.created_at)} · took ${esc(r.duration_ms)}ms</div>
+            </div>
+            <span class="pill ${r.pass_rate >= 1 ? 'pass' : 'fail'}" title="Pass rate for this health check">${Math.round(r.pass_rate * 100)}% passed · ${esc(r.passed)}/${esc(total)} questions</span>
+          </div>
+        </article>
+      `;
+    }
+
+    async function loadAll() {
+      await Promise.all([loadCases(), loadRuns()]);
+    }
+
+    byId('evalsRefreshBtn').addEventListener('click', () => withBusy(byId('evalsRefreshBtn'), 'Refreshing…', () => loadAll().catch((err) => { console.error(err); })));
+    byId('runBtn').addEventListener('click', () => withBusy(byId('runBtn'), 'Running…', runEvals));
+    byId('loadCasesBtn').addEventListener('click', () => withBusy(byId('loadCasesBtn'), 'Loading…', () => loadCases().catch((err) => { byId('cases').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('createCaseBtn').addEventListener('click', () => withBusy(byId('createCaseBtn'), 'Saving…', saveCase));
+    byId('loadRunsBtn').addEventListener('click', () => withBusy(byId('loadRunsBtn'), 'Loading…', () => loadRuns().catch((err) => { byId('runs').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    loadAll().catch((err) => { console.error('Initial evals load failed', err); });
+  })();
+
+  // ============================================================
+  // Charters tab — verbatim logic from ui/charter.html
+  // (refreshBtn renamed -> charterRefreshBtn to avoid an id collision
+  // with the Skills tab's own refreshBtn)
+  // ============================================================
+  (function () {
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    // Relationship types and status values arrive as raw snake_case; show them
+    // the way a non-technical founder would expect to read them.
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    }
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    // Split a charter record into its "headline" fields (shown as plain inputs)
+    // and everything else (shown as one editable JSON blob) — these charters
+    // nest 8-15 nested lists/objects each; a fully structured form per field
+    // would dwarf the page. This keeps the frequently-tuned fields quick to
+    // edit while still exposing full power-editing for the rest.
+    function splitRecord(record, headlineKeys) {
+      const headline = {};
+      const rest = {};
+      for (const [k, v] of Object.entries(record || {})) {
+        if (['id', 'created_at', 'updated_at'].includes(k)) continue;
+        if (headlineKeys.includes(k)) headline[k] = v;
+        else rest[k] = v;
+      }
+      return { headline, rest };
+    }
+
+    let relationships = [];
+    let activeRel = null;
+
+    async function loadStack() {
+      const stack = await api('/runtime/charter-stack');
+      byId('stackOut').textContent = JSON.stringify(stack, null, 2);
+      byId('stackSummary').innerHTML = renderStackSummary(stack);
+      const s = stack.summary || {};
+      byId('stackPills').innerHTML = [
+        `<span class="pill ${s.identity_seeded ? 'ok' : 'warn'}" title="Whether an identity charter has been set up yet">identity ${s.identity_seeded ? 'set up' : 'not set up'}</span>`,
+        `<span class="pill ${s.voice_seeded ? 'ok' : 'warn'}" title="Whether a voice charter has been set up yet">voice ${s.voice_seeded ? 'set up' : 'not set up'}</span>`,
+        `<span class="pill ${s.relationship_charters_active ? 'ok' : 'warn'}" title="How many people have an active relationship charter">${s.relationship_charters_active || 0} relationship charter(s)</span>`
+      ].join('');
+    }
+
+    // Renders the same charter-stack response as plain text instead of raw
+    // JSON — the "Advanced" details block below still exposes the full JSON
+    // for anyone who wants it.
+    function renderStackSummary(stack) {
+      const identity = stack.identity || {};
+      const voice = stack.voice || {};
+      const relationships = Array.isArray(stack.relationships) ? stack.relationships : [];
+      const relList = relationships.length
+        ? '<ul style="margin:4px 0 0; padding-left:18px;">' + relationships.map((r) => '<li>' + esc(r.subject_name) + ' — ' + esc(prettyLabel(r.relationship_type)) + '</li>').join('') + '</ul>'
+        : '<div class="muted">No relationship charters active.</div>';
+      return `
+        <div><strong>Mission Zade is working from</strong><div class="muted">${esc(identity.mission) || 'Not set yet.'}</div></div>
+        <div style="margin-top:10px;"><strong>How Zade should sound</strong><div class="muted">${esc(voice.overall_voice) || 'Not set yet.'}</div></div>
+        <div style="margin-top:10px;"><strong>People with a relationship charter</strong>${relList}</div>
+      `;
+    }
+
+    async function loadIdentity() {
+      const { charter } = await api('/identity/charter');
+      const { headline, rest } = splitRecord(charter, ['name', 'source', 'mission']);
+      byId('idName').value = headline.name || 'Zade';
+      byId('idSource').value = headline.source || '';
+      byId('idMission').value = headline.mission || '';
+      byId('idRest').value = JSON.stringify(rest, null, 2);
+    }
+
+    async function saveIdentity() {
+      const notice = byId('idNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      let rest;
+      try { rest = JSON.parse(byId('idRest').value || '{}'); }
+      catch (e) { notice.textContent = 'Invalid JSON in "everything else": ' + e.message; notice.className = 'notice err'; return; }
+      const body = { name: byId('idName').value.trim() || 'Zade', source: byId('idSource').value.trim() || 'founder:web-editor', mission: byId('idMission').value, ...rest };
+      try {
+        await api('/identity/charter', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        await Promise.all([loadIdentity(), loadStack()]);
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadVoice() {
+      const { charter } = await api('/identity/voice');
+      const { headline, rest } = splitRecord(charter, ['name', 'source', 'overall_voice']);
+      byId('voName').value = headline.name || 'Zade';
+      byId('voSource').value = headline.source || '';
+      byId('voOverall').value = headline.overall_voice || '';
+      byId('voRest').value = JSON.stringify(rest, null, 2);
+    }
+
+    async function saveVoice() {
+      const notice = byId('voNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      let rest;
+      try { rest = JSON.parse(byId('voRest').value || '{}'); }
+      catch (e) { notice.textContent = 'Invalid JSON in "everything else": ' + e.message; notice.className = 'notice err'; return; }
+      const body = { name: byId('voName').value.trim() || 'Zade', source: byId('voSource').value.trim() || 'founder:web-editor', overall_voice: byId('voOverall').value, ...rest };
+      try {
+        await api('/identity/voice', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        await Promise.all([loadVoice(), loadStack()]);
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadRelationships() {
+      const { charters } = await api('/identity/relationships?limit=50');
+      relationships = charters || [];
+      byId('relList').innerHTML = relationships.length
+        ? relationships.map((r) => `<div class="rel-chip${activeRel && activeRel.subject_name === r.subject_name && activeRel.relationship_type === r.relationship_type ? ' active' : ''}" data-subject="${esc(r.subject_name)}" data-type="${esc(r.relationship_type)}" title="Relationship type: ${esc(r.relationship_type)}">${esc(r.subject_name)} &middot; ${esc(prettyLabel(r.relationship_type))}</div>`).join('')
+        : '<div class="muted">No relationship charters yet.</div>';
+      document.querySelectorAll('.rel-chip').forEach((chip) => {
+        chip.addEventListener('click', () => selectRelationship(chip.dataset.subject, chip.dataset.type));
+      });
+      if (!activeRel && relationships.length) selectRelationship(relationships[0].subject_name, relationships[0].relationship_type);
+    }
+
+    async function selectRelationship(subjectName, relationshipType) {
+      activeRel = { subject_name: subjectName, relationship_type: relationshipType };
+      const { charter } = await api('/identity/relationships/' + encodeURIComponent(subjectName) + '?relationship_type=' + encodeURIComponent(relationshipType));
+      fillRelForm(charter);
+      loadRelationships();
+    }
+
+    function fillRelForm(charter) {
+      const { headline, rest } = splitRecord(charter, ['subject_name', 'relationship_type', 'source', 'first_principle']);
+      byId('relSubject').value = headline.subject_name || '';
+      byId('relType').value = headline.relationship_type || 'protected_principal';
+      byId('relSource').value = headline.source || '';
+      byId('relFirst').value = headline.first_principle || '';
+      byId('relRest').value = JSON.stringify(rest, null, 2);
+    }
+
+    function newRelationship() {
+      activeRel = null;
+      byId('relSubject').value = '';
+      byId('relType').value = 'protected_principal';
+      byId('relSource').value = '';
+      byId('relFirst').value = '';
+      byId('relRest').value = '{}';
+      loadRelationships();
+      byId('relSubject').focus();
+    }
+
+    async function saveRelationship() {
+      const notice = byId('relNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const subjectName = byId('relSubject').value.trim();
+      if (!subjectName) { notice.textContent = 'Subject name is required.'; notice.className = 'notice err'; return; }
+      let rest;
+      try { rest = JSON.parse(byId('relRest').value || '{}'); }
+      catch (e) { notice.textContent = 'Invalid JSON in "everything else": ' + e.message; notice.className = 'notice err'; return; }
+      const body = {
+        subject_name: subjectName,
+        relationship_type: byId('relType').value.trim() || 'protected_principal',
+        source: byId('relSource').value.trim() || 'founder:web-editor',
+        first_principle: byId('relFirst').value,
+        ...rest
+      };
+      try {
+        await api('/identity/relationships', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        activeRel = { subject_name: body.subject_name, relationship_type: body.relationship_type };
+        await Promise.all([loadRelationships(), loadStack()]);
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadAll() {
+      await Promise.all([loadStack(), loadIdentity(), loadVoice(), loadRelationships()]);
+    }
+
+    byId('charterRefreshBtn').addEventListener('click', () => withBusy(byId('charterRefreshBtn'), 'Refreshing…', () => loadAll().catch((err) => { byId('idNotice').textContent = err.message; })));
+    byId('idSaveBtn').addEventListener('click', () => withBusy(byId('idSaveBtn'), 'Saving…', saveIdentity));
+    byId('voSaveBtn').addEventListener('click', () => withBusy(byId('voSaveBtn'), 'Saving…', saveVoice));
+    byId('relSaveBtn').addEventListener('click', () => withBusy(byId('relSaveBtn'), 'Saving…', saveRelationship));
+    byId('relNewBtn').addEventListener('click', () => newRelationship());
+    loadAll().catch((err) => { byId('idNotice').textContent = 'Load failed: ' + err.message; });
+  })();
+
+  // ============================================================
+  // Ops tab — verbatim logic from ui/ops.html
+  // (refreshBtn renamed -> opsRefreshBtn to avoid an id collision
+  // with the Skills tab's own refreshBtn)
+  // ============================================================
+  (function () {
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const fmtBytes = (n) => n == null ? '' : n > 1e6 ? (n / 1e6).toFixed(1) + ' MB' : (n / 1e3).toFixed(0) + ' KB';
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    // Status values and event/role names arrive as raw booleans/snake_case;
+    // show them the way a non-technical founder would expect to read them.
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    }
+
+    function metric(value, label, hint) {
+      return '<div class="metric" title="' + esc(hint || '') + '"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+
+    function renderHealthSummary(health, security) {
+      const lines = [];
+      lines.push('Overall status: ' + (health.ok === false ? 'Something needs attention' : 'Healthy') + (health.name ? ' (' + health.name + ')' : ''));
+      lines.push('Checked at: ' + (health.generated_at || 'unknown'));
+      lines.push('');
+      lines.push('Component checks:');
+      const checks = health.checks || {};
+      Object.entries(checks).forEach(([name, check]) => {
+        const ok = check && check.ok;
+        lines.push('  - ' + prettyLabel(name) + ': ' + (ok ? 'OK' : 'Needs attention') + (check && check.error ? ' — ' + check.error : ''));
+      });
+      lines.push('');
+      lines.push('Security posture:');
+      lines.push('  - Requires a security token for changes: ' + (security.mutation_token_required ? 'Yes' : 'No'));
+      lines.push('  - Browser security policy (CSP) enabled: ' + (security.content_security_policy ? 'Yes' : 'No'));
+      lines.push('  - Only reachable from this computer: ' + (security.local_only ? 'Yes' : 'No'));
+      lines.push('  - Listening on: ' + security.host + ':' + security.port);
+      lines.push('  - Security token source: ' + (security.token_bootstrapped ? 'Generated automatically' : 'Set manually'));
+      lines.push('');
+      lines.push('Recent backups on file: ' + ((health.backups || []).length));
+      return lines.join('\n');
+    }
+
+    async function loadHealth() {
+      const [health, security] = await Promise.all([api('/ops/health-check'), api('/ops/security')]);
+      byId('healthOut').textContent = renderHealthSummary(health, security);
+      const checks = health.checks || {};
+      byId('healthSummary').innerHTML = [
+        pill(checks.database && checks.database.ok, 'Data storage', 'Whether Zade can read and write its saved data'),
+        pill(checks.ui && checks.ui.ok, 'Web interface', 'Whether these web pages are being served correctly'),
+        pill(checks.ollama && checks.ollama.ok, 'AI models', 'Whether Zade can reach the local AI models it thinks with'),
+        pill(security.mutation_token_required, 'Security token required', 'Whether a security token is required before Zade will make changes'),
+        pill(security.content_security_policy, 'Browser security policy', 'Whether the browser-level security policy is turned on'),
+        pill(security.local_only, 'Local-only access', 'Whether this can only be reached from this computer, not the internet')
+      ].join(' ');
+      byId('metrics').innerHTML = [
+        metric(health.ok === false ? 'Needs attention' : 'Healthy', 'Overall', "Zade's overall health status"),
+        metric((checks.queue && checks.queue.counts && checks.queue.counts.pending) || 0, 'Tasks waiting', 'Tasks queued up for Zade to work on'),
+        metric(security.host + ':' + security.port, 'Network address', 'Where Zade is listening for requests'),
+        metric(security.token_bootstrapped ? 'Automatic' : 'Manual', 'Security token', 'How the security token used for changes was set up')
+      ].join('');
+      return { health, security };
+    }
+
+    function pill(ok, label, hint) {
+      return `<span class="pill ${ok ? 'ok' : 'bad'}" title="${esc(hint || '')}">${ok ? '&#10003;' : '&#10007;'} ${esc(label)}</span>`;
+    }
+
+    // Raw event names from the watchdog script, translated into what actually
+    // happened in plain terms.
+    const SUPERVISION_EVENT_LABELS = {
+      unreachable: "Couldn't reach Zade — restart attempted",
+      start_failed: 'Restart attempt failed',
+      started: 'Restarted successfully and is healthy again'
+    };
+
+    function supervisionEventLabel(event) {
+      return SUPERVISION_EVENT_LABELS[event] || prettyLabel(event) || 'Event';
+    }
+
+    async function loadSupervision() {
+      const data = await api('/ops/supervision?limit=25');
+      const events = data.events || [];
+      byId('supervision').innerHTML = events.length
+        ? events.map((e) => `
+          <div class="item">
+            <div class="topline"><strong title="${esc(e.event || '')}">${esc(supervisionEventLabel(e.event || e.status))}</strong><span class="muted">${esc((e.timestamp || e.ts || '').slice(0, 19).replace('T', ' '))}</span></div>
+            ${e.detail ? `<div class="muted">${esc(e.detail)}</div>` : ''}
+          </div>`).join('')
+        : '<div class="muted">No restarts or watchdog events recorded yet — Zade has been running without interruption.</div>';
+    }
+
+    async function loadBackups() {
+      const { items } = await api('/ops/backups?limit=25');
+      byId('backups').innerHTML = items.length
+        ? items.map((b) => `
+          <div class="item">
+            <div class="topline"><strong>${esc(b.name)}</strong><span class="muted">${fmtBytes(b.size_bytes)}</span></div>
+            <div class="muted">${esc((b.modified_at || '').slice(0, 19))}</div>
+          </div>`).join('')
+        : '<div class="muted">No backups yet.</div>';
+    }
+
+    // Turns the raw telemetry summary into readable lines instead of a JSON
+    // blob — how many calls, by outcome and by role, plus the most recent one.
+    function renderTelemetrySummary(telemetry) {
+      const lines = [];
+      lines.push('Model calls in this window: ' + (telemetry.window || 0));
+      lines.push('Average response time: ' + (telemetry.avg_latency_ms || 0) + ' ms');
+      const byStatus = telemetry.by_status || {};
+      if (Object.keys(byStatus).length) {
+        lines.push('');
+        lines.push('By outcome:');
+        Object.entries(byStatus).forEach(([status, count]) => lines.push('  - ' + prettyLabel(status) + ': ' + count));
+      }
+      const byRole = telemetry.by_role || {};
+      if (Object.keys(byRole).length) {
+        lines.push('');
+        lines.push('By task type:');
+        Object.entries(byRole).forEach(([role, count]) => lines.push('  - ' + prettyLabel(role) + ': ' + count));
+      }
+      if (telemetry.latest) {
+        const latest = telemetry.latest;
+        lines.push('');
+        lines.push('Most recent call: ' + prettyLabel(latest.role || latest.operation || 'call') + ' via ' + (latest.model || 'unknown model') + ' — ' + prettyLabel(latest.status) + ', ' + (latest.latency_ms || 0) + ' ms');
+      }
+      return lines.join('\n') || 'No model activity recorded yet.';
+    }
+
+    // Turns a benchmark run's results (one entry per model role) into
+    // readable lines instead of a JSON blob.
+    function renderBenchmarkSummary(result) {
+      const items = result.results || [];
+      if (!items.length) return 'No results.';
+      return items.map((r) => {
+        if (r.status === 'skipped') return prettyLabel(r.role) + ' (' + (r.model || '') + ') — skipped: ' + (r.reason || '');
+        const status = r.status === 'ok' ? 'OK' : 'Failed';
+        return prettyLabel(r.role) + ' via ' + (r.model || 'unknown model') + ' — ' + status + ', ' + (r.latency_ms != null ? r.latency_ms + ' ms' : 'n/a') + (r.error ? ' — ' + r.error : '');
+      }).join('\n');
+    }
+
+    async function loadModels() {
+      const [models, telemetry] = await Promise.all([api('/models'), api('/models/telemetry?limit=250')]);
+      byId('telemetryOut').textContent = renderTelemetrySummary(telemetry);
+      const roles = models.roles || {};
+      const missing = models.missing_roles || {};
+      byId('modelRoles').innerHTML = Object.keys(roles).length
+        ? Object.entries(roles).map(([role, name]) => `
+          <div class="item">
+            <div class="topline">
+              <strong style="text-transform:capitalize;" title="What this AI model is used for">${esc(prettyLabel(role))}</strong>
+              <span class="pill ${missing[role] ? 'bad' : 'ok'}">${missing[role] ? 'Not installed' : 'Installed'}</span>
+            </div>
+            <div class="muted mono">${esc(name)}</div>
+          </div>`).join('')
+        : '<div class="muted">No model roles configured.</div>';
+    }
+
+    async function runBenchmark() {
+      const notice = byId('benchNotice');
+      notice.textContent = 'Testing each model&hellip; this can take a minute.'; notice.className = 'notice';
+      try {
+        const result = await api('/models/benchmark', { method: 'POST', body: JSON.stringify({}) });
+        byId('telemetryOut').textContent = renderBenchmarkSummary(result);
+        notice.textContent = 'Done — see response times below.'; notice.className = 'notice good';
+      } catch (err) { notice.textContent = 'Speed test failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function createBackup() {
+      const notice = byId('bkNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      try {
+        const result = await api('/ops/backup', { method: 'POST', body: JSON.stringify({ label: byId('bkLabel').value.trim() || 'manual' }) });
+        notice.textContent = 'Backup saved (' + fmtBytes(result.size_bytes) + ').'; notice.className = 'notice good';
+        await loadBackups();
+      } catch (err) { notice.textContent = 'Backup failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function pruneBackups(dryRun) {
+      const notice = byId('bkNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      try {
+        const result = await api('/ops/backups/prune', {
+          method: 'POST',
+          body: JSON.stringify({ keep_last: Number(byId('bkKeepLast').value || 10), dry_run: dryRun })
+        });
+        notice.textContent = (dryRun ? 'Would delete ' : 'Deleted ') + (result.deleted_count || 0) + ' old backup(s).';
+        notice.className = 'notice good';
+        if (!dryRun) await loadBackups();
+      } catch (err) { notice.textContent = 'Cleanup failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    // "allow" / "deny" / "approval_required" translated into what it means for
+    // the founder: will this just happen, get blocked, or wait for a yes?
+    const AUTHORITY_DECISION_LABELS = {
+      allow: 'Allowed automatically',
+      deny: 'Blocked',
+      approval_required: 'Needs your approval first'
+    };
+
+    async function evaluateAuthority() {
+      const notice = byId('evNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const action = byId('evAction').value.trim();
+      if (!action) { notice.textContent = 'Action is required.'; notice.className = 'notice err'; return; }
+      try {
+        const result = await api('/authority/evaluate', {
+          method: 'POST',
+          body: JSON.stringify({ action, permission_tier: byId('evTier').value, target: byId('evTarget').value.trim() })
+        });
+        const decisionLabel = AUTHORITY_DECISION_LABELS[result.decision] || prettyLabel(result.decision);
+        byId('evResult').innerHTML = `
+          <div class="item" style="margin-top:10px;">
+            <div class="topline"><strong>${esc(decisionLabel)}</strong><span class="pill ${esc(result.decision)}" title="Internal rule that matched: ${esc(result.matched_rule || 'none')}">${esc(result.matched_rule || '')}</span></div>
+            <div class="muted">${esc(result.reason || '')}</div>
+            ${result.requires_typed_phrase ? '<div class="muted">You would need to type a confirmation phrase before this could go ahead.</div>' : ''}
+          </div>`;
+      } catch (err) { notice.textContent = 'Check failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadAll() {
+      await Promise.all([loadHealth(), loadSupervision(), loadBackups(), loadModels()]);
+    }
+
+    byId('opsRefreshBtn').addEventListener('click', () => withBusy(byId('opsRefreshBtn'), 'Refreshing…', () => loadAll().catch((err) => { byId('bkNotice').textContent = err.message; })));
+    byId('bkCreateBtn').addEventListener('click', () => withBusy(byId('bkCreateBtn'), 'Creating…', createBackup));
+    byId('bkPruneDryBtn').addEventListener('click', () => withBusy(byId('bkPruneDryBtn'), 'Checking…', () => pruneBackups(true)));
+    byId('bkPruneBtn').addEventListener('click', () => withBusy(byId('bkPruneBtn'), 'Deleting…', () => pruneBackups(false)));
+    byId('benchBtn').addEventListener('click', () => withBusy(byId('benchBtn'), 'Testing…', runBenchmark));
+    byId('evEvalBtn').addEventListener('click', () => withBusy(byId('evEvalBtn'), 'Checking…', evaluateAuthority));
+    loadAll().catch((err) => { byId('bkNotice').textContent = 'Load failed: ' + err.message; });
+  })();
+  </script>
+
+  <script>
+  // ============================================================
+  // Tab switcher — new, system.html-specific. Deliberately separate
+  // from the four IIFEs above and kept minimal.
+  // ============================================================
+  (function () {
+    const TABS = ['skills', 'evals', 'charters', 'ops'];
+    const buttons = Array.from(document.querySelectorAll('#systemTabbar [data-tab]'));
+    const panels = Array.from(document.querySelectorAll('main > section[data-tab-panel]'));
+
+    function activate(tab) {
+      if (!TABS.includes(tab)) tab = 'skills';
+      buttons.forEach((btn) => btn.classList.toggle('tab-active', btn.dataset.tab === tab));
+      panels.forEach((panel) => {
+        if (panel.dataset.tab === tab) panel.removeAttribute('hidden');
+        else panel.setAttribute('hidden', '');
+      });
+    }
+
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        location.hash = btn.dataset.tab;
+        activate(btn.dataset.tab);
+      });
+    });
+
+    window.addEventListener('hashchange', () => activate(location.hash.replace('#', '')));
+
+    activate(location.hash.replace('#', ''));
+  })();
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

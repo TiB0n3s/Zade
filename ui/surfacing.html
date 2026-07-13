@@ -3,80 +3,71 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Zade Attention &amp; Briefs</title>
+  <title>Zade Attention &amp; Notifications</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
-      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
-      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
-    }
     * { box-sizing: border-box; }
     body {
       margin: 0; min-height: 100vh;
-      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
-      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--z-bg) 100%);
+      color: var(--z-text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     header {
       display: flex; justify-content: space-between; gap: 16px; align-items: center;
-      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      padding: 22px 28px; border-bottom: 1px solid var(--z-line);
       background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
     }
-    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
-    h2 { margin: 0 0 4px; font-size: 15px; }
-    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
     main { padding: 24px 28px 40px; display: grid; gap: 16px; max-width: 1160px; margin: 0 auto; }
-    .headline { background: rgba(176,71,63,0.1); border: 1px solid rgba(176,71,63,0.4); border-radius: 6px; padding: 16px 20px; }
-    .headline .label { color: var(--accent-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
-    .headline .text { font-size: 16px; }
-    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
-    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
-    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-    input, textarea, select {
-      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
-      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
-    }
-    button, a.button {
-      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
-      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
-    }
-    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
-    button.tiny { padding: 5px 10px; font-size: 12px; }
-    button:disabled { opacity: 0.5; cursor: default; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
-    .check input { width: auto; }
-    .metric-row { display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 12px; }
-    .metric { padding: 13px; background: rgba(255,255,255,0.025); }
-    .metric strong { display: block; font-size: 19px; line-height: 1; margin-bottom: 5px; }
-    .metric span { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; }
-    .muted { color: var(--muted); }
     .list { display: grid; gap: 10px; }
-    .item { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; background: rgba(255,255,255,0.02); display: grid; gap: 6px; }
-    .item.red { border-color: rgba(168,74,74,0.5); }
-    .item.orange { border-color: rgba(198,155,95,0.5); }
-    .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-    .topline strong { font-size: 13.5px; }
-    .pill {
-      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
-      color: var(--muted); font-size: 10.5px; white-space: nowrap; flex: none;
-    }
-    .pill.red { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
-    .pill.orange { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
-    .pill.yellow { color: #e8dfb0; border-color: rgba(198,188,95,0.5); background: rgba(198,188,95,0.1); }
-    .action-line { color: #c9c5bf; font-size: 12.5px; }
-    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
-    .notice.err { color: #f0c4c4; }
-    .notice.good { color: #b9d9c6; }
-    pre {
-      margin: 0; white-space: pre-wrap; max-height: 340px; overflow: auto;
-      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 12px; color: #d8d3cb;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
-    }
+
+    /* Tab bar */
+    .tab-bar { display: flex; gap: 8px; padding: 10px 28px; border-bottom: 1px solid var(--z-line); background: rgba(5,5,6,0.6); }
+    .tab-bar button { background: transparent; border: 1px solid var(--z-line); color: var(--z-muted); border-radius: 5px; padding: 6px 14px; font-size: 12.5px; cursor: pointer; }
+    .tab-bar button.tab-active { color: var(--z-text); border-color: var(--z-accent-2); background: rgba(176,71,63,0.12); }
+
+    /* Attention tab (from surfacing.html) */
+    section[data-tab="attention"] .headline { background: rgba(176,71,63,0.1); border: 1px solid rgba(176,71,63,0.4); border-radius: 6px; padding: 16px 20px; }
+    section[data-tab="attention"] .headline .label { color: var(--z-accent-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+    section[data-tab="attention"] .headline .text { font-size: 16px; }
+    section[data-tab="attention"] .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+    section[data-tab="attention"] .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    section[data-tab="attention"] .check { display: flex; align-items: center; gap: 8px; color: var(--z-text); font-size: 13px; }
+    section[data-tab="attention"] .check input { width: auto; }
+    section[data-tab="attention"] .item.red { border-color: rgba(168,74,74,0.5); }
+    section[data-tab="attention"] .item.orange { border-color: rgba(198,155,95,0.5); }
+    section[data-tab="attention"] .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    section[data-tab="attention"] .topline strong { font-size: 13.5px; }
+    section[data-tab="attention"] .pill.red { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    section[data-tab="attention"] .pill.orange { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    section[data-tab="attention"] .pill.yellow { color: #e8dfb0; border-color: rgba(198,188,95,0.5); background: rgba(198,188,95,0.1); }
+    section[data-tab="attention"] .action-line { color: #c9c5bf; font-size: 12.5px; }
+
+    /* Notifications tab (from notifications.html) */
+    section[data-tab="notifications"] .grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 16px; align-items: start; }
+    section[data-tab="notifications"] .form { display: grid; gap: 10px; }
+    section[data-tab="notifications"] .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    section[data-tab="notifications"] .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    section[data-tab="notifications"] .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    section[data-tab="notifications"] .toolbar select, section[data-tab="notifications"] .toolbar label { width: auto; }
+    section[data-tab="notifications"] .toolbar label { display: flex; flex-direction: row; align-items: center; gap: 6px; color: var(--z-muted); font-size: 12.5px; }
+    section[data-tab="notifications"] .item.unread { border-color: rgba(176,71,63,0.35); }
+    section[data-tab="notifications"] .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    section[data-tab="notifications"] .item strong { display: block; }
+    section[data-tab="notifications"] .pill.info { color: #cfd6e6; border-color: rgba(120,140,190,0.5); background: rgba(120,140,190,0.12); }
+    section[data-tab="notifications"] .pill.warning { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    section[data-tab="notifications"] .pill.critical { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    section[data-tab="notifications"] .pill.delivered { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    section[data-tab="notifications"] .pill.suppressed { color: #a0a0a6; }
+    section[data-tab="notifications"] .channel-card { border: 1px solid var(--z-line); border-radius: 5px; padding: 14px; margin-bottom: 12px; background: rgba(255,255,255,0.02); }
+    section[data-tab="notifications"] .channel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    section[data-tab="notifications"] .channel-head .name { font-size: 14px; text-transform: capitalize; }
+    section[data-tab="notifications"] .switch { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--z-muted); cursor: pointer; }
+    section[data-tab="notifications"] .switch input { width: auto; }
+
     @media (max-width: 900px) {
       header { align-items: flex-start; flex-direction: column; }
-      .grid, .metric-row { grid-template-columns: 1fr; }
+      section[data-tab="attention"] .grid, section[data-tab="attention"] .metric-row { grid-template-columns: 1fr; }
+      section[data-tab="notifications"] .grid, section[data-tab="notifications"] .row, section[data-tab="notifications"] .row3 { grid-template-columns: 1fr; }
     }
   </style>
   <link rel="stylesheet" href="/ui/zade-ui.css">
@@ -84,66 +75,126 @@
 <body>
   <header>
     <div>
-      <h1>Zade Attention &amp; Briefs</h1>
-      <div class="sub">What needs founder attention right now, ranked. Detection never touches a model; narration is optional.</div>
+      <h1>Zade Attention &amp; Notifications</h1>
+      <div class="sub">The things that need your attention right now, most urgent first — plus every alert Zade has sent and where alerts get delivered (screen, voice, or text) and when. Zade finds attention items by checking the facts, no AI guessing.</div>
     </div>
     <div class="actions">
-      <a class="button secondary" href="/ui">Back to Zade</a>
-      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
       <a class="button secondary" href="/ui/ledger.html#sec-cadence-reviews">Cadence Reviews</a>
-      <a class="button secondary" href="/ui/commitments.html">Commitments</a>
       <button id="refreshBtn">Refresh</button>
+      <button id="notifRefreshBtn" title="Reload alert history and channel settings">Refresh Alerts</button>
     </div>
   </header>
 
+  <div class="tab-bar">
+    <button type="button" data-tab="attention">Attention</button>
+    <button type="button" data-tab="notifications">Notifications</button>
+  </div>
+
   <main>
-    <div class="headline">
-      <div class="label">The one thing that matters most</div>
-      <div class="text" id="oneThing">Loading&hellip;</div>
-      <div class="muted" id="underweighted" style="margin-top:8px;"></div>
-    </div>
-
-    <section class="panel">
-      <div class="panel-head">
-        <div><h2>Attention Queue</h2><div class="sub">Deterministic scan of the operating layer — kill criteria, integrity warnings, conflicts, overdue predictions, commitments, and more.</div></div>
-        <button class="secondary tiny" id="scanBtn">Rescan</button>
+    <section data-tab="attention">
+      <div class="headline">
+        <div class="label">The one thing that matters most</div>
+        <div class="text" id="oneThing">Loading&hellip;</div>
+        <div class="muted" id="underweighted" style="margin-top:8px;"></div>
       </div>
-      <section class="metric-row" id="scanMetrics"></section>
-      <div class="list" id="scanItems"></div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Attention Queue</h2><div class="sub">A plain check of what's overdue, stuck, or contradicted — missed commitments, decisions waiting on you, predictions due for scoring, and more. Red is most urgent, then orange, then yellow.</div></div>
+          <button class="secondary tiny" id="scanBtn" title="Re-check everything for anything new">Rescan</button>
+        </div>
+        <section class="metric-row" id="scanMetrics"></section>
+        <div class="list" id="scanItems"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Initiated Brief</h2><div class="sub">Turns the queue above into a short written summary, saves it, and notifies you — skipped automatically if there's nothing to report.</div></div>
+        </div>
+        <div class="actions" style="margin-bottom:12px;">
+          <label class="check" title="Have Zade rewrite the summary as 3 plain-English sentences"><input type="checkbox" id="narrate"> Add a 3-sentence plain-English summary</label>
+          <label class="check" title="Save and notify even when there's nothing new to report"><input type="checkbox" id="force"> Save anyway, even if quiet</label>
+          <button id="briefBtn" title="Write up the current queue as a brief and save it">Generate Brief</button>
+          <span class="notice" id="briefNotice"></span>
+        </div>
+        <div id="briefMeta" class="muted" style="margin-bottom:8px;"></div>
+        <pre id="briefOut">No brief generated yet.</pre>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Other Brief Generators</h2><div class="sub">Two more summaries you can pull up any time — these only read existing data, they don't change anything.</div></div>
+        </div>
+        <div class="grid">
+          <div>
+            <div class="actions" style="margin-bottom:8px;">
+              <button class="secondary tiny" id="founderBriefBtn" title="A summary built from your founder dashboard (objectives, recommendations, health)">Founder Brief</button>
+            </div>
+            <pre id="founderBriefOut">Not loaded.</pre>
+          </div>
+          <div>
+            <div class="actions" style="margin-bottom:8px;">
+              <button class="secondary tiny" id="dailyBriefBtn" title="A summary of today's overall activity">Daily Brief</button>
+            </div>
+            <pre id="dailyBriefOut">Not loaded.</pre>
+          </div>
+        </div>
+      </section>
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div><h2>Initiated Brief</h2><div class="sub">Composes the queue into a brief, logs it as memory, and notifies — unless the queue is quiet.</div></div>
-      </div>
-      <div class="actions" style="margin-bottom:12px;">
-        <label class="check"><input type="checkbox" id="narrate"> Narrate with the model (3-sentence executive read)</label>
-        <label class="check"><input type="checkbox" id="force"> Force (log even if quiet)</label>
-        <button id="briefBtn">Generate Brief</button>
-        <span class="notice" id="briefNotice"></span>
-      </div>
-      <div id="briefMeta" class="muted" style="margin-bottom:8px;"></div>
-      <pre id="briefOut">No brief generated yet.</pre>
-    </section>
+    <section data-tab="notifications" hidden>
+      <section class="grid">
+        <div class="panel">
+          <h2>Send a Test Alert</h2>
+          <div class="sub" style="margin-bottom:10px;">This is a real alert, not a preview — the same quiet hours, rate limits, and duplicate-blocking rules below still apply to it.</div>
+          <div class="form">
+            <div class="row">
+              <label>Topic <span class="hint">A short category tag, e.g. "billing" or "founder.test"</span><input id="nTopic" placeholder="founder.test"></label>
+              <label>Urgency
+                <span class="hint">How urgent this is — controls which channels are allowed to send it</span>
+                <select id="nSeverity" title="Info: FYI, no urgency. Warning: worth a look soon. Critical: needs attention now.">
+                  <option value="info">Info — just FYI</option>
+                  <option value="warning">Warning — worth a look soon</option>
+                  <option value="critical">Critical — needs attention now</option>
+                </select>
+              </label>
+            </div>
+            <label>Title <input id="nTitle" placeholder="A short headline"></label>
+            <label>Body <span class="hint">The full message text</span><textarea id="nBody" rows="2"></textarea></label>
+            <div class="row">
+              <label>Source <span class="hint">Where this alert is coming from</span><input id="nSource" value="founder-ui"></label>
+              <label>Dedupe key <span class="hint">Optional — alerts sent again with the same key are blocked as duplicates</span><input id="nDedupe" placeholder="optional"></label>
+            </div>
+            <div class="actions">
+              <button id="sendBtn" title="Sends this alert through the same system real alerts use">Send</button>
+              <span class="notice" id="sendNotice"></span>
+            </div>
+          </div>
+        </div>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div><h2>Other Brief Generators</h2><div class="sub">Two more read-only briefs, composed from the founder dashboard and the legacy daily-brief inputs.</div></div>
-      </div>
-      <div class="grid">
-        <div>
-          <div class="actions" style="margin-bottom:8px;">
-            <button class="secondary tiny" id="founderBriefBtn">Founder Brief</button>
-          </div>
-          <pre id="founderBriefOut">Not loaded.</pre>
+        <div class="panel">
+          <h2>Delivery Channels</h2>
+          <div class="sub" style="margin-bottom:10px;">Where alerts can go — your screen (UI), spoken aloud (voice), or a text message (SMS) — and the rules for each: whether it's on, the lowest urgency it accepts, quiet hours, and how many alerts per hour it allows.</div>
+          <div id="channels"></div>
         </div>
-        <div>
-          <div class="actions" style="margin-bottom:8px;">
-            <button class="secondary tiny" id="dailyBriefBtn">Daily Brief</button>
-          </div>
-          <pre id="dailyBriefOut">Not loaded.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Alert History</h2>
+        <div class="sub" style="margin:-4px 0 12px;">Everything Zade has sent, including alerts that were held back and why.</div>
+        <div class="toolbar">
+          <select id="fStatus" title="Delivered: it reached a channel. Suppressed: it was held back (quiet hours, rate limit, or a duplicate).">
+            <option value="">All statuses</option>
+            <option value="queued">Queued (waiting to send)</option>
+            <option value="delivered">Delivered</option>
+            <option value="suppressed">Held back (suppressed)</option>
+          </select>
+          <input id="fTopic" placeholder="Filter by topic" style="max-width:220px;">
+          <label><input id="fUnread" type="checkbox"> Unread only</label>
+          <button class="secondary tiny" id="filterBtn" title="Apply the filters above">Apply filters</button>
         </div>
-      </div>
+        <div class="list" id="history"></div>
+      </section>
     </section>
   </main>
 
@@ -175,20 +226,55 @@
       finally { btn.disabled = false; btn.textContent = original; }
     }
 
-    function metric(value, label) {
-      return '<div class="metric"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    function metric(value, label, hint) {
+      return '<div class="metric" title="' + esc(hint || '') + '"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+
+    // Signal codes and severities arrive as raw snake_case/enum values from the
+    // scan; show them the way a non-technical founder would expect to read them.
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    }
+
+    // Plain-English description of what triggered each signal type, so a founder
+    // understands why something is flagged instead of just seeing a raw code.
+    const KIND_LABELS = {
+      kill_criteria_overdue: 'Kill/keep decision overdue',
+      integrity_warning: 'Integrity warning',
+      experiment_needs_decision: 'Experiment awaiting a decision',
+      thesis_conflict: 'New evidence conflicts with an assumption',
+      prediction_overdue: 'Prediction needs scoring',
+      decision_revisit_due: 'Decision due for a second look',
+      confidence_drop: 'Confidence dropped',
+      override_review_due: 'Your override is due for review',
+      assumption_review_due: 'Assumption due for review',
+      experiment_needs_evidence: 'Experiment short on evidence',
+      approvals_pending: 'Approvals waiting on you',
+      connector_items_staged: 'External items staged for review',
+      commitment_overdue: 'Commitment overdue',
+      commitment_drifting: 'Commitment keeps getting pushed back',
+      action_plan_stalled: 'Action plan stalled'
+    };
+    function kindLabel(kind) {
+      return KIND_LABELS[kind] || prettyLabel(kind);
+    }
+
+    const SEVERITY_LABELS = { red: 'Urgent', orange: 'Important', yellow: 'Worth a look' };
+    function severityLabel(severity) {
+      return SEVERITY_LABELS[severity] || prettyLabel(severity);
     }
 
     function renderItem(item) {
       return `
         <article class="item ${esc(item.severity)}">
           <div class="topline">
-            <strong>${esc(item.title)}</strong>
-            <span class="pill ${esc(item.severity)}">${esc(item.severity)} · ${esc(item.score)}</span>
+            <strong title="${esc(kindLabel(item.kind))}">${esc(item.title)}</strong>
+            <span class="pill ${esc(item.severity)}" title="How urgent this is (score ${esc(item.score)} of 100 — higher means more urgent)">${esc(severityLabel(item.severity))} · ${esc(item.score)}</span>
           </div>
           <div class="muted">${esc(item.detail)}</div>
           <div class="action-line">&rarr; ${esc(item.recommended_action)}</div>
-          <div class="muted mono" style="font-size:11.5px;">${esc(item.kind)} · ${esc(item.subject_type)}${item.subject_id ? ' #' + esc(item.subject_id) : ''}${item.opened_at ? ' · open since ' + esc(item.opened_at) : ''}</div>
+          <div class="muted mono" style="font-size:11.5px;">${esc(kindLabel(item.kind))} · ${esc(prettyLabel(item.subject_type))}${item.subject_id ? ' #' + esc(item.subject_id) : ''}${item.opened_at ? ' · open since ' + esc(item.opened_at) : ''}</div>
         </article>
       `;
     }
@@ -199,10 +285,10 @@
       byId('underweighted').textContent = scan.underweighted ? 'Also watch: ' + scan.underweighted : '';
       const bySeverity = scan.items.reduce((acc, i) => { acc[i.severity] = (acc[i.severity] || 0) + 1; return acc; }, {});
       byId('scanMetrics').innerHTML = [
-        metric(scan.count, 'Total items'),
-        metric(bySeverity.red || 0, 'Red'),
-        metric(bySeverity.orange || 0, 'Orange'),
-        metric(bySeverity.yellow || 0, 'Yellow')
+        metric(scan.count, 'Total items', 'Everything currently flagged for your attention'),
+        metric(bySeverity.red || 0, 'Urgent', 'Needs a decision now'),
+        metric(bySeverity.orange || 0, 'Important', 'Should be handled soon'),
+        metric(bySeverity.yellow || 0, 'Worth a look', 'Not urgent, but overdue for a check')
       ].join('');
       byId('scanItems').innerHTML = scan.items.length ? scan.items.map(renderItem).join('') : '<div class="muted">Nothing needs founder attention right now. Signals are clear.</div>';
       return scan;
@@ -216,10 +302,10 @@
           method: 'POST',
           body: JSON.stringify({ narrate: byId('narrate').checked, force: byId('force').checked })
         });
-        byId('briefOut').textContent = result.brief + (result.narrative ? '\n\nExecutive read:\n' + result.narrative : '');
+        byId('briefOut').textContent = result.brief + (result.narrative ? '\n\nPlain-English summary:\n' + result.narrative : '');
         byId('briefMeta').textContent = [
-          result.quiet ? 'quiet (nothing logged unless forced)' : 'logged',
-          result.memory_id ? 'memory #' + result.memory_id : '',
+          result.quiet ? 'Nothing new to report (not saved unless "Save anyway" is checked)' : 'Saved',
+          result.memory_id ? 'saved as memory #' + result.memory_id : '',
           result.notification_id ? 'notification #' + result.notification_id : '',
           'event #' + result.event_id
         ].filter(Boolean).join(' · ');
@@ -248,6 +334,217 @@
     byId('founderBriefBtn').addEventListener('click', () => withBusy(byId('founderBriefBtn'), 'Loading…', () => loadFounderBrief().catch((err) => { byId('founderBriefOut').textContent = 'Failed: ' + err.message; })));
     byId('dailyBriefBtn').addEventListener('click', () => withBusy(byId('dailyBriefBtn'), 'Loading…', () => loadDailyBrief().catch((err) => { byId('dailyBriefOut').textContent = 'Failed: ' + err.message; })));
     loadAll().catch((err) => { console.error('Initial surfacing load failed', err); });
+  </script>
+
+  <script>
+  (function () {
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    async function loadHistory() {
+      const params = new URLSearchParams();
+      if (byId('fStatus').value) params.set('status', byId('fStatus').value);
+      if (byId('fTopic').value.trim()) params.set('topic', byId('fTopic').value.trim());
+      if (byId('fUnread').checked) params.set('unread_only', 'true');
+      params.set('limit', '75');
+      const { items } = await api('/notifications?' + params.toString());
+      byId('history').innerHTML = items.length ? items.map(renderNotification).join('') : '<div class="muted">No notifications in this view.</div>';
+      document.querySelectorAll('[data-read]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Marking…', async () => {
+          await api('/notifications/' + encodeURIComponent(btn.dataset.read) + '/read', { method: 'POST', body: '{}' });
+          await loadHistory();
+        }));
+      });
+    }
+
+    // Severity/status/suppression reasons arrive as raw snake_case or short
+    // codes from the backend; show them the way a non-technical founder would
+    // expect to read them.
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    }
+
+    const SUPPRESSED_REASONS = {
+      duplicate_within_window: 'Blocked as a duplicate — the same alert was already sent recently',
+      no_channel_delivered: 'No channel was allowed to deliver this (check your channel settings)',
+      quiet_hours: 'Held back — it arrived during quiet hours for that channel',
+      rate_limited: 'Held back — that channel already hit its per-hour limit'
+    };
+
+    function prettySuppressedReason(reason) {
+      if (!reason) return '';
+      if (SUPPRESSED_REASONS[reason]) return SUPPRESSED_REASONS[reason];
+      if (reason.startsWith('recipient not in whitelist')) {
+        return "Held back — the recipient isn't on that channel's allowed list";
+      }
+      return prettyLabel(reason);
+    }
+
+    function renderNotification(n) {
+      const unread = !n.read_at;
+      return `
+        <article class="item${unread ? ' unread' : ''}">
+          <div class="topline">
+            <div>
+              <strong>${esc(n.title)}</strong>
+              <div class="muted">${esc(n.topic)} &middot; ${esc(n.source)} &middot; ${esc((n.created_at || '').slice(0, 16))}</div>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;flex:none;">
+              <span class="pill ${esc(n.severity)}" title="How urgent this alert was">${esc(prettyLabel(n.severity))}</span>
+              <span class="pill ${esc(n.status)}" title="Delivered reached a channel; held back means a rule blocked it">${esc(prettyLabel(n.status === 'suppressed' ? 'held back' : n.status))}</span>
+              ${unread ? `<button class="tiny secondary" data-read="${n.id}" title="Mark this alert as read">Mark read</button>` : ''}
+            </div>
+          </div>
+          ${n.body ? `<div style="margin-top:8px;">${esc(n.body)}</div>` : ''}
+          ${n.suppressed_reason ? `<div class="muted" style="margin-top:6px;">${esc(prettySuppressedReason(n.suppressed_reason))}</div>` : ''}
+        </article>
+      `;
+    }
+
+    async function loadChannels() {
+      const { items } = await api('/notify/channels');
+      byId('channels').innerHTML = items.map(renderChannel).join('');
+      items.forEach((ch) => {
+        const btn = byId('save-' + ch.channel);
+        btn.addEventListener('click', () => withBusy(btn, 'Saving…', () => saveChannel(ch.channel)));
+      });
+    }
+
+    const CHANNEL_NOTES = {
+      ui: 'Shows up on-screen in Zade\'s dashboards.',
+      voice: 'Spoken aloud through the voice assistant.',
+      sms: 'Sent as a text message — needs an SMS gateway (e.g. an Android phone forwarding texts) configured to receive these.'
+    };
+
+    function renderChannel(ch) {
+      return `
+        <div class="channel-card" id="card-${esc(ch.channel)}">
+          <div class="channel-head">
+            <span class="name">${esc(ch.channel)}</span>
+            <label class="switch" title="Turn this delivery method on or off entirely"><input type="checkbox" id="en-${esc(ch.channel)}" ${ch.enabled ? 'checked' : ''}> enabled</label>
+          </div>
+          <div class="muted" style="font-size:12px;margin:-4px 0 10px;">${esc(CHANNEL_NOTES[ch.channel] || '')}</div>
+          <div class="row3">
+            <label>Lowest urgency it accepts
+              <span class="hint">Alerts below this level won't be sent here</span>
+              <select id="sev-${esc(ch.channel)}">
+                <option value="info" ${ch.min_severity === 'info' ? 'selected' : ''}>Info and up (everything)</option>
+                <option value="warning" ${ch.min_severity === 'warning' ? 'selected' : ''}>Warning and up</option>
+                <option value="critical" ${ch.min_severity === 'critical' ? 'selected' : ''}>Critical only</option>
+              </select>
+            </label>
+            <label>Quiet hours start <span class="hint">e.g. 22:00 — only critical alerts get through after this</span><input id="qs-${esc(ch.channel)}" placeholder="22:00" value="${esc(ch.quiet_start)}"></label>
+            <label>Quiet hours end <span class="hint">e.g. 07:00 — normal delivery resumes at this time</span><input id="qe-${esc(ch.channel)}" placeholder="07:00" value="${esc(ch.quiet_end)}"></label>
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <label>Max alerts per hour <span class="hint">Any more than this in an hour get held back, not lost</span><input id="rl-${esc(ch.channel)}" type="number" min="1" max="1000" value="${esc(ch.rate_limit_per_hour)}"></label>
+            <label>Allowed recipients <span class="hint">Comma-separated. For SMS, phone numbers your gateway app is allowed to send to. Leave blank to allow any.</span><input id="rc-${esc(ch.channel)}" value="${esc((ch.recipients || []).join(', '))}"></label>
+          </div>
+          <div class="actions" style="margin-top:10px;">
+            <button class="tiny" id="save-${esc(ch.channel)}" title="Save these settings for the ${esc(ch.channel)} channel">Save</button>
+            <span class="notice" id="notice-${esc(ch.channel)}"></span>
+          </div>
+        </div>
+      `;
+    }
+
+    async function saveChannel(channel) {
+      const notice = byId('notice-' + channel);
+      notice.textContent = ''; notice.className = 'notice';
+      const body = {
+        enabled: byId('en-' + channel).checked,
+        min_severity: byId('sev-' + channel).value,
+        quiet_start: byId('qs-' + channel).value.trim(),
+        quiet_end: byId('qe-' + channel).value.trim(),
+        rate_limit_per_hour: Number(byId('rl-' + channel).value || 30),
+        recipients: byId('rc-' + channel).value.split(',').map((s) => s.trim()).filter(Boolean)
+      };
+      try {
+        await api('/notify/channels/' + encodeURIComponent(channel), { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function sendNotification() {
+      const notice = byId('sendNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const body = {
+        topic: byId('nTopic').value.trim(),
+        title: byId('nTitle').value.trim(),
+        body: byId('nBody').value,
+        severity: byId('nSeverity').value,
+        source: byId('nSource').value.trim() || 'founder-ui',
+        dedupe_key: byId('nDedupe').value.trim()
+      };
+      if (!body.topic || !body.title) { notice.textContent = 'Topic and title are required.'; notice.className = 'notice err'; return; }
+      try {
+        const result = await api('/notify', { method: 'POST', body: JSON.stringify(body) });
+        const resultStatus = result.item ? result.item.status : 'ok';
+        notice.textContent = 'Sent — ' + (resultStatus === 'suppressed' ? 'held back: ' + prettySuppressedReason(result.item && result.item.suppressed_reason) : prettyLabel(resultStatus));
+        notice.className = 'notice good';
+        byId('nTitle').value = ''; byId('nBody').value = ''; byId('nDedupe').value = '';
+        await loadHistory();
+      } catch (err) { notice.textContent = 'Send failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    byId('notifRefreshBtn').addEventListener('click', () => withBusy(byId('notifRefreshBtn'), 'Refreshing…', () => Promise.all([loadHistory(), loadChannels()]).catch((err) => { byId('sendNotice').textContent = err.message; })));
+    byId('sendBtn').addEventListener('click', () => withBusy(byId('sendBtn'), 'Sending…', sendNotification));
+    byId('filterBtn').addEventListener('click', () => withBusy(byId('filterBtn'), 'Applying…', () => loadHistory().catch((err) => { byId('sendNotice').textContent = err.message; })));
+    Promise.all([loadHistory(), loadChannels()]).catch((err) => { byId('sendNotice').textContent = 'Load failed: ' + err.message; });
+  })();
+  </script>
+
+  <script>
+  (function () {
+    const tabs = Array.prototype.slice.call(document.querySelectorAll('.tab-bar [data-tab]'));
+    const sections = Array.prototype.slice.call(document.querySelectorAll('main > section[data-tab]'));
+    function activate(name) {
+      sections.forEach((s) => { s.hidden = s.getAttribute('data-tab') !== name; });
+      tabs.forEach((t) => { t.classList.toggle('tab-active', t.getAttribute('data-tab') === name); });
+    }
+    function tabFromHash() {
+      const h = (location.hash || '').replace('#', '');
+      return h === 'notifications' ? 'notifications' : 'attention';
+    }
+    tabs.forEach((t) => {
+      t.addEventListener('click', () => {
+        const name = t.getAttribute('data-tab');
+        location.hash = name;
+        activate(name);
+      });
+    });
+    window.addEventListener('hashchange', () => activate(tabFromHash()));
+    activate(tabFromHash());
+  })();
   </script>
   <script src="/ui/zade-ui.js"></script>
 </body>

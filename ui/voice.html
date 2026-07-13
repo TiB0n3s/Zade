@@ -5,53 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Zade Voice</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #050506;
-      --panel: #0c0c0e;
-      --panel-2: #121216;
-      --line: rgba(255,255,255,0.08);
-      --text: #eeeae5;
-      --muted: #8a8a91;
-      --accent: #b0473f;
-      --accent-2: #d07d74;
-      --ok: #5a8a72;
-      --warn: #c69b5f;
-    }
+    /* Page-specific layout/structure only — colors, surfaces, and base
+       component styling come from the shared /ui/zade-ui.css, which loads
+       after this block and wins the cascade unconditionally on body. */
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background: radial-gradient(ellipse 120% 90% at 30% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
-      color: var(--text);
-      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    header {
-      display: flex; align-items: center; justify-content: space-between; gap: 16px;
-      padding: 22px 28px; border-bottom: 1px solid var(--line);
-      background: rgba(5,5,6,0.76); position: sticky; top: 0; backdrop-filter: blur(16px); z-index: 10;
-    }
-    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
-    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
-    main { padding: 24px 28px 40px; display: grid; gap: 18px; max-width: 900px; margin: 0 auto; }
-    section {
-      background: rgba(12,12,14,0.9); border: 1px solid var(--line);
-      border-radius: 8px; padding: 18px;
-    }
-    h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+    h1 { margin: 0; }
+    main { display: grid; }
+    section { padding: 18px; }
     .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; overflow: hidden; border-radius: 6px; }
-    .status-cell { padding: 12px 14px; background: rgba(255,255,255,0.02); }
-    .status-cell strong { display: block; font-size: 15px; margin-bottom: 4px; }
-    .status-cell span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; }
-    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: var(--muted); }
-    .dot.ok { background: var(--ok); box-shadow: 0 0 8px rgba(90,138,114,0.7); }
-    .dot.bad { background: var(--accent); }
-    button, a.button {
-      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
-      border-radius: 6px; padding: 10px 14px; cursor: pointer; text-decoration: none; font: inherit;
-    }
-    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
-    button:disabled { opacity: 0.4; cursor: default; }
+    .status-cell strong { display: block; margin-bottom: 4px; }
+    .status-cell span { color: var(--z-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: var(--z-muted); }
+    .dot.ok { background: var(--z-ok); box-shadow: 0 0 8px rgba(90,138,114,0.7); }
+    .dot.bad { background: var(--z-accent); }
+    a.button { text-decoration: none; }
     .mic-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
     .mic-btn {
       width: 76px; height: 76px; border-radius: 50%; font-size: 26px; padding: 0;
@@ -59,7 +26,7 @@
       transition: transform 0.1s, background 0.2s, box-shadow 0.2s;
     }
     .mic-btn.recording {
-      background: var(--accent); border-color: var(--accent-2);
+      background: var(--z-accent); border-color: var(--z-accent-2);
       box-shadow: 0 0 0 0 rgba(176,71,63,0.6); animation: pulse 1.4s infinite;
     }
     @keyframes pulse {
@@ -67,28 +34,23 @@
       70% { box-shadow: 0 0 0 18px rgba(176,71,63,0); }
       100% { box-shadow: 0 0 0 0 rgba(176,71,63,0); }
     }
-    .mic-hint { color: var(--muted); font-size: 13px; }
-    .options { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; color: var(--muted); font-size: 13px; }
+    .mic-hint { color: var(--z-muted); font-size: 13px; }
+    .options { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; color: var(--z-muted); font-size: 13px; }
     .options label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
-    textarea, input, select {
-      background: #09090b; color: var(--text); border: 1px solid var(--line);
-      border-radius: 5px; padding: 10px; outline: none; font: inherit; width: 100%;
-    }
-    textarea:focus, input:focus { border-color: rgba(208,125,116,0.65); }
+    textarea, input, select { width: 100%; }
     .speak-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
     .exchange { display: grid; gap: 14px; }
-    .bubble { border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    .bubble { border: 1px solid var(--z-line); border-radius: 8px; padding: 14px; }
     .bubble.you { background: rgba(255,255,255,0.03); }
     .bubble.zade { background: rgba(176,71,63,0.08); border-color: rgba(176,71,63,0.28); }
-    .bubble .who { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; }
+    .bubble .who { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--z-muted); margin-bottom: 8px; display: flex; justify-content: space-between; }
     .bubble .body { white-space: pre-wrap; color: #e7e2db; }
     audio { width: 100%; margin-top: 12px; filter: invert(0.92) hue-rotate(180deg); }
-    .notice { min-height: 20px; color: var(--muted); font-size: 13px; }
-    .notice.err { color: var(--accent-2); }
+    .notice { min-height: 20px; }
     .contrarian { margin-top: 10px; padding: 10px 12px; border-left: 2px solid rgba(198,155,95,0.6); background: rgba(198,155,95,0.06); color: #e8d6b6; font-size: 13px; border-radius: 0 5px 5px 0; }
-    .caption-hint { font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 400; }
+    .caption-hint { font-size: 11px; color: var(--z-muted); text-transform: none; letter-spacing: 0; font-weight: 400; }
     .caption { white-space: pre-wrap; color: #e7e2db; font-size: 15px; line-height: 1.55; min-height: 22px; }
-    .caption.placeholder { color: var(--muted); font-style: italic; }
+    .caption.placeholder { color: var(--z-muted); font-style: italic; }
     #captionWrap { border-color: rgba(176,71,63,0.28); background: rgba(176,71,63,0.06); }
     @media (max-width: 620px) { .speak-row { grid-template-columns: 1fr; } }
   </style>
@@ -98,20 +60,14 @@
   <header>
     <div>
       <h1>Talk to Zade</h1>
-      <div class="sub">Speech in, governed answer out. Authority, memory, and the contrarian pass all apply.</div>
-    </div>
-    <div>
-      <a class="button secondary" href="/ui">Back to Zade</a>
-      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
-      <a class="button secondary" href="/ui/charter.html">Charters</a>
-      <a class="button secondary" href="/ui/notifications.html">Notifications</a>
-      <a class="button secondary" href="/ui/ops.html">Ops</a>
+      <div class="sub">Speak to Zade out loud, or type it — he answers with the same checks, memory, and second-guessing he uses in text chat.</div>
     </div>
   </header>
 
   <main>
     <section>
       <h2>Voice engines</h2>
+      <p class="sub" style="margin:-4px 0 12px;">Which tools Zade is using to hear you and talk back, and whether they're set up and working.</p>
       <div class="status-grid" id="status">
         <div class="status-cell"><strong>&hellip;</strong><span>loading</span></div>
       </div>
@@ -124,15 +80,15 @@
         <div>
           <div id="micState" class="mic-hint">Click to speak — stops and sends automatically when you stop talking.</div>
           <div class="options">
-            <label><input type="checkbox" id="playAudio" checked> Play reply audio</label>
-            <label><input type="checkbox" id="remember" checked> Remember this thread</label>
-            <label><input type="checkbox" id="speakFull"> Speak the contrarian check too</label>
+            <label title="Automatically play Zade's spoken reply out loud when it's ready"><input type="checkbox" id="playAudio" checked> Play reply audio</label>
+            <label title="Keeps this conversation linked so Zade has context from earlier in the chat"><input type="checkbox" id="remember" checked> Remember this thread</label>
+            <label title="Reads the full response aloud, including the contrarian-check analysis, not just the short reply"><input type="checkbox" id="speakFull"> Speak the full answer, including the contrarian check</label>
             <label>
-              <span>Mode</span>
+              <span>Mode <span class="hint">What kind of task this is, so Zade picks the right way to think it through</span></span>
               <select id="taskType" style="width:auto;padding:4px 8px;">
-                <option value="general">general</option>
-                <option value="reasoning">reasoning</option>
-                <option value="coding">coding</option>
+                <option value="general">General</option>
+                <option value="reasoning">Reasoning (needs careful thought)</option>
+                <option value="coding">Coding</option>
               </select>
             </label>
           </div>
@@ -194,9 +150,23 @@
 
     const state = { recorder: null, chunks: [], recording: false, conversationId: null, ready: false };
 
-    function statusCell(value, label, dot) {
+    function statusCell(value, label, dot, hint) {
       const d = dot ? `<span class="dot ${dot}"></span>` : '';
-      return `<div class="status-cell"><strong>${d}${esc(value)}</strong><span>${esc(label)}</span></div>`;
+      return `<div class="status-cell" title="${esc(hint || '')}"><strong>${d}${esc(value)}</strong><span>${esc(label)}</span></div>`;
+    }
+
+    // Engine names arrive as raw config values ("command", "deepgram",
+    // "elevenlabs"); show them the way a non-technical founder would expect.
+    function prettyEngineLabel(engine) {
+      if (engine === 'command') return 'Local command-line tool';
+      if (engine === 'deepgram') return 'Deepgram (cloud)';
+      if (engine === 'elevenlabs') return 'ElevenLabs (cloud)';
+      return prettyLabel(engine);
+    }
+
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
     }
 
     async function loadStatus() {
@@ -206,19 +176,19 @@
         const ttsDot = s.tts.configured && (s.tts.engine === 'command' ? s.tts.binary_found : s.tts.credential_set) ? 'ok' : 'bad';
         state.ready = s.ready && sttDot === 'ok' && ttsDot === 'ok';
         byId('status').innerHTML = [
-          statusCell(s.stt.engine, 'Speech-to-text', sttDot),
-          statusCell(s.tts.engine, 'Text-to-speech', ttsDot),
-          statusCell(s.cloud_engines_in_use ? 'cloud' : 'local', 'Location', s.cloud_engines_in_use ? 'warn' : 'ok'),
-          statusCell(state.ready ? 'ready' : 'not ready', 'Status', state.ready ? 'ok' : 'bad')
+          statusCell(prettyEngineLabel(s.stt.engine), 'Listens to you (speech-to-text)', sttDot, 'The tool Zade uses to turn your voice into text'),
+          statusCell(prettyEngineLabel(s.tts.engine), 'Talks back (text-to-speech)', ttsDot, 'The tool Zade uses to say his reply out loud'),
+          statusCell(s.cloud_engines_in_use ? 'Sent to a cloud service' : 'Stays on this computer', 'Where your audio goes', s.cloud_engines_in_use ? 'warn' : 'ok', s.cloud_engines_in_use ? 'At least one engine sends audio to an outside service to process it' : 'Both engines run locally — your audio never leaves this computer'),
+          statusCell(state.ready ? 'Ready' : 'Not ready', 'Overall status', state.ready ? 'ok' : 'bad', 'Whether voice chat is fully set up and usable right now')
         ].join('');
         if (!state.ready) {
           const missing = [];
-          if (sttDot !== 'ok') missing.push('STT (' + (s.stt.credential_env || 'command') + ')');
-          if (ttsDot !== 'ok') missing.push('TTS (' + (s.tts.credential_env || 'command') + ')');
-          notice('Voice not fully ready: ' + missing.join(', ') + '. Set the engine and credentials in config.toml, then restart the kernel.', true);
+          if (sttDot !== 'ok') missing.push('speech-to-text (' + (s.stt.credential_env || 'command') + ')');
+          if (ttsDot !== 'ok') missing.push('text-to-speech (' + (s.tts.credential_env || 'command') + ')');
+          notice('Voice isn\'t fully set up yet: ' + missing.join(', ') + '. Set the engine and credentials in config.toml, then restart the kernel.', true);
         }
       } catch (err) {
-        byId('status').innerHTML = statusCell('error', 'status', 'bad');
+        byId('status').innerHTML = statusCell('Error', 'Status', 'bad');
         notice('Could not read voice status: ' + err.message, true);
       }
     }

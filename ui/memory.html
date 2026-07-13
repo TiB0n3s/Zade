@@ -3,227 +3,281 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Zade Memory &amp; Teaching</title>
+  <title>Zade Memory &amp; Connectors</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
-      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
-      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
-    }
     * { box-sizing: border-box; }
-    body {
-      margin: 0; min-height: 100vh;
-      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
-      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    header {
-      display: flex; justify-content: space-between; gap: 16px; align-items: center;
-      padding: 22px 28px; border-bottom: 1px solid var(--line);
-      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
-    }
-    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
-    h2 { margin: 0 0 4px; font-size: 15px; }
-    h3 { margin: 0 0 6px; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
-    main { padding: 24px 28px 40px; display: grid; gap: 16px; max-width: 1160px; margin: 0 auto; }
+    h1 { margin: 0; }
+    h3 { margin: 0 0 6px; }
+    .sub { margin-top: 5px; }
+    main { display: grid; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
-    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
-    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
-    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-    input, textarea, select {
-      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
-      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
-    }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+    label { display: grid; }
+    input, textarea, select { width: 100%; }
     textarea { resize: vertical; }
-    textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
-    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
     .form { display: grid; gap: 10px; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-    button, a.button {
-      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
-      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
-    }
-    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
-    button.tiny { padding: 5px 10px; font-size: 12px; }
-    button:disabled { opacity: 0.5; cursor: default; }
+    a.button { text-decoration: none; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     .filters select, .filters input { width: auto; max-width: 160px; }
-    .muted { color: var(--muted); }
-    .list { display: grid; gap: 10px; }
-    .item { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; background: rgba(255,255,255,0.02); display: grid; gap: 6px; }
+    .list { display: grid; }
+    .item { display: grid; gap: 6px; }
     .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-    .topline strong { font-size: 13.5px; }
     .pillrow { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
-    .pill {
-      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
-      color: var(--muted); font-size: 10.5px; white-space: nowrap;
-    }
-    .pill.candidate, .pill.ok { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
-    .pill.imported { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
-    .pill.error { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
-    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
-    .notice.err { color: #f0c4c4; }
-    .notice.good { color: #b9d9c6; }
-    pre {
-      margin: 0; white-space: pre-wrap; max-height: 220px; overflow: auto;
-      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 10px; color: #d8d3cb;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
-    }
-    details.create-form { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 12px; }
-    details.create-form > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
-    hr.split { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
+    .notice { min-height: 18px; }
+    pre { margin: 0; white-space: pre-wrap; max-height: 220px; overflow: auto; }
+    details.create-form > summary { cursor: pointer; color: var(--z-muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+    hr.split { border: none; border-top: 1px solid var(--z-line); margin: 14px 0; }
     @media (max-width: 900px) {
-      header { align-items: flex-start; flex-direction: column; }
       .grid, .row, .row3 { grid-template-columns: 1fr; }
     }
+    .warn-box { background: rgba(198,155,95,0.08); border: 1px solid rgba(198,155,95,0.3); border-radius: 5px; padding: 10px 12px; font-size: 12.5px; color: #e0cfa6; margin-bottom: 12px; }
+    .pill.enabled { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.disabled, .pill.dismissed { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .check-row { display: flex; align-items: center; gap: 6px; }
+    .check-row input { width: auto; }
+    .tabbar { display: flex; gap: 8px; margin: 14px 28px 0; }
+    .tabbar .tab-btn {
+      background: transparent; border: 1px solid var(--z-line); color: var(--z-muted);
+      border-radius: 5px; padding: 6px 14px; cursor: pointer; font: inherit;
+    }
+    .tabbar .tab-btn.tab-active { color: var(--z-text); border-color: var(--z-accent, var(--z-line)); background: rgba(255,255,255,0.04); }
+    section[data-tab].tab-hidden { display: none; }
   </style>
   <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
 <body>
   <header>
     <div>
-      <h1>Zade Memory &amp; Teaching</h1>
-      <div class="sub">What Zade knows, how it got here, and the Deep Thought bridge that teaches from your existing notes.</div>
+      <h1>Zade Memory &amp; Connectors</h1>
+      <div class="sub">Everything Zade has stored, a way to search it, tools for feeding in your existing notes and files, and syncing in email/calendar sources so Zade can read from them (read-only).</div>
     </div>
     <div class="actions">
-      <a class="button secondary" href="/ui">Back to Zade</a>
-      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
       <a class="button secondary" href="/ui/ledger.html#sec-evidence">Evidence</a>
       <button id="refreshBtn">Refresh</button>
     </div>
   </header>
 
+  <nav class="tabbar">
+    <button type="button" class="tab-btn" data-tab="memory">Memory</button>
+    <button type="button" class="tab-btn" data-tab="connectors">Connectors</button>
+  </nav>
+
   <main>
-    <section class="grid">
-      <div class="panel">
-        <h2>Write a Memory</h2>
-        <div class="sub" style="margin-bottom:10px;">A raw note or fact, stored directly — not graded evidence.</div>
-        <div class="form">
-          <div class="row">
-            <label>Kind <input id="mKind" value="note"></label>
-            <label>Source <input id="mSource" value="local"></label>
-          </div>
-          <label>Title <input id="mTitle" placeholder="Short headline"></label>
-          <label>Content <textarea id="mContent" rows="3"></textarea></label>
-          <div class="actions">
-            <button id="writeMemoryBtn">Write Memory</button>
-            <span class="notice" id="writeMemoryNotice"></span>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h2>Search Memory</h2>
-        <div class="sub" style="margin-bottom:10px;">Keyword (FTS) and semantic (hybrid vector+keyword) search.</div>
-        <div class="form">
-          <div class="row">
-            <label>Query <input id="sQuery" placeholder="pricing, retention, onboarding..."></label>
-            <label>Mode
-              <select id="sMode"><option value="hybrid">hybrid</option><option value="vector">vector</option><option value="keyword">keyword</option><option value="fts-only">fts (memory only)</option></select>
-            </label>
-          </div>
-          <div class="actions">
-            <button id="searchBtn">Search</button>
-            <span class="notice" id="searchNotice"></span>
+    <section data-tab="memory">
+      <section class="grid">
+        <div class="panel">
+          <h2>Write a Memory</h2>
+          <div class="sub" style="margin-bottom:10px;">Jot down a quick note or fact and Zade stores it as-is — this isn't run through the evidence grading Zade uses for decisions.</div>
+          <div class="form">
+            <div class="row">
+              <label>Kind <span class="hint">What type of note this is</span><input id="mKind" value="note"></label>
+              <label>Source <span class="hint">Where this came from</span><input id="mSource" value="local"></label>
+            </div>
+            <label>Title <input id="mTitle" placeholder="Short headline"></label>
+            <label>Content <textarea id="mContent" rows="3"></textarea></label>
+            <div class="actions">
+              <button id="writeMemoryBtn">Save Note</button>
+              <span class="notice" id="writeMemoryNotice"></span>
+            </div>
           </div>
         </div>
-        <div class="list" id="searchResults" style="margin-top:12px;"></div>
-      </div>
-    </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div><h2>Manual Ingestion</h2><div class="sub">Pull text, a local file, or a local folder into the document/chunk store for semantic search.</div></div>
-      </div>
-      <div class="grid">
+        <div class="panel">
+          <h2>Search Memory</h2>
+          <div class="sub" style="margin-bottom:10px;">Look through everything Zade has stored — notes, ingested documents, and imported evidence.</div>
+          <div class="form">
+            <div class="row">
+              <label>Query <input id="sQuery" placeholder="pricing, retention, onboarding..."></label>
+              <label>Search style <span class="hint">How Zade should look for matches</span>
+                <select id="sMode" title="Hybrid combines both methods and works best for most searches">
+                  <option value="hybrid">Hybrid (recommended) — meaning + exact words</option>
+                  <option value="vector">Meaning-based only — finds related ideas, even different wording</option>
+                  <option value="keyword">Exact words only — finds the words you typed</option>
+                  <option value="fts-only">Notes only — exact words, skips ingested documents</option>
+                </select>
+              </label>
+            </div>
+            <div class="actions">
+              <button id="searchBtn">Search</button>
+              <span class="notice" id="searchNotice"></span>
+            </div>
+          </div>
+          <div class="list" id="searchResults" style="margin-top:12px;"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Add Documents to Memory</h2><div class="sub">Paste text, or point Zade at a file or folder, and it gets broken into searchable pieces so meaning-based search can find it later.</div></div>
+        </div>
+        <div class="grid">
+          <div class="form">
+            <h3>Paste Text</h3>
+            <label>Title <input id="itTitle" placeholder="Interview notes — founder #4"></label>
+            <label>Text <textarea id="itText" rows="4"></textarea></label>
+            <label>Source <span class="hint">Where this text came from</span><input id="itSource" value="api:text"></label>
+            <div class="actions"><button id="ingestTextBtn">Add This Text</button></div>
+          </div>
+          <div class="form">
+            <h3>Add a File</h3>
+            <label>File path <span class="hint">Must be inside a folder Zade is allowed to read</span><input id="ifPath" placeholder="C:/LocalAICofounder/data/notes.md"></label>
+            <div class="actions"><button id="ingestFileBtn">Add This File</button></div>
+            <h3 style="margin-top:12px;">Add a Whole Folder</h3>
+            <label>Folder path <input id="idPath" placeholder="C:/LocalAICofounder/data/notes"></label>
+            <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="idRecursive" checked style="width:auto;"> Include subfolders too</label>
+            <div class="actions"><button id="ingestFolderBtn">Add This Folder</button></div>
+          </div>
+        </div>
+        <div class="notice" id="ingestNotice" style="margin-top:10px;"></div>
+        <hr class="split">
+        <div class="panel-head">
+          <div><h3 style="margin:0;">Recent Additions</h3></div>
+          <button class="secondary tiny" id="loadJobsBtn">Load</button>
+        </div>
+        <div class="list" id="jobs"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Import From Your Existing Notes</h2><div class="sub">Scan folders of notes you already have (Deep Thought or local files), review what Zade found, then bring the useful pieces in as trusted evidence Zade can cite in decisions.</div></div>
+        </div>
         <div class="form">
-          <h3>Text</h3>
-          <label>Title <input id="itTitle" placeholder="Interview notes — founder #4"></label>
-          <label>Text <textarea id="itText" rows="4"></textarea></label>
-          <label>Source <input id="itSource" value="api:text"></label>
-          <div class="actions"><button id="ingestTextBtn">Ingest Text</button></div>
-        </div>
-        <div class="form">
-          <h3>File</h3>
-          <label>Path (must be under an allowed local root) <input id="ifPath" placeholder="C:/LocalAICofounder/data/notes.md"></label>
-          <div class="actions"><button id="ingestFileBtn">Ingest File</button></div>
-          <h3 style="margin-top:12px;">Folder</h3>
-          <label>Path <input id="idPath" placeholder="C:/LocalAICofounder/data/notes"></label>
-          <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="idRecursive" checked style="width:auto;"> Recursive</label>
-          <div class="actions"><button id="ingestFolderBtn">Ingest Folder</button></div>
-        </div>
-      </div>
-      <div class="notice" id="ingestNotice" style="margin-top:10px;"></div>
-      <hr class="split">
-      <div class="panel-head">
-        <div><h3 style="margin:0;">Recent Ingestion Jobs</h3></div>
-        <button class="secondary tiny" id="loadJobsBtn">Load</button>
-      </div>
-      <div class="list" id="jobs"></div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <div><h2>Deep Thought Teaching Bridge</h2><div class="sub">Scan your existing Deep Thought / local notes for source material, stage it as candidates, then import the useful pieces as graded evidence.</div></div>
-      </div>
-      <div class="form">
-        <div class="row3">
-          <label>Paths (comma-separated, blank = default source roots) <input id="scanPaths" placeholder="optional"></label>
-          <label>Limit <input id="scanLimit" type="number" min="1" max="200" value="25"></label>
-          <label>Max file bytes <input id="scanMaxBytes" type="number" min="1000" max="5000000" value="500000"></label>
-        </div>
-        <div class="actions">
-          <button id="scanBtn">Scan for Sources</button>
-          <span class="notice" id="scanNotice"></span>
-        </div>
-      </div>
-
-      <hr class="split">
-      <div class="panel-head">
-        <div><h3 style="margin:0;">Candidates <span class="muted" id="candCount"></span></h3></div>
-        <div class="filters">
-          <select id="fCandStatus">
-            <option value="candidate" selected>Candidate</option>
-            <option value="">All</option>
-            <option value="imported">Imported</option>
-          </select>
-          <button class="secondary tiny" id="loadCandBtn">Load</button>
-        </div>
-      </div>
-      <div class="form" style="border:1px solid var(--line);border-radius:5px;padding:12px;margin-bottom:10px;">
-        <div class="row">
-          <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="impDocuments" checked style="width:auto;"> Ingest as document</label>
-          <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="impEvidence" checked style="width:auto;"> Create graded evidence</label>
-        </div>
-        <div class="actions">
-          <button id="importSelectedBtn">Import Selected</button>
-          <button class="secondary" id="autoLinkBtn">Auto-Link Imported</button>
-          <span class="notice" id="importNotice"></span>
-        </div>
-      </div>
-      <div class="list" id="candidates"></div>
-
-      <details class="create-form">
-        <summary>+ Manually link imported evidence to a ledger object</summary>
-        <div class="form" style="margin-top:10px;">
           <div class="row3">
-            <label>Evidence ID <input id="linkEvidenceId" type="number"></label>
-            <label>To type <input id="linkToType" placeholder="assumption, goal, decision_memo..."></label>
-            <label>To ID <input id="linkToId" type="number"></label>
-          </div>
-          <div class="row">
-            <label>Relation <input id="linkRelation" value="supports"></label>
-            <label>Strength (0-100) <input id="linkStrength" type="number" min="0" max="100" value="60"></label>
+            <label>Folders to scan <span class="hint">Comma-separated. Leave blank to use the default note locations.</span><input id="scanPaths" placeholder="optional"></label>
+            <label>Max results <span class="hint">Stop after finding this many</span><input id="scanLimit" type="number" min="1" max="200" value="25"></label>
+            <label>Max file size (bytes) <span class="hint">Skip files larger than this</span><input id="scanMaxBytes" type="number" min="1000" max="5000000" value="500000"></label>
           </div>
           <div class="actions">
-            <button id="linkBtn">Link</button>
-            <span class="notice" id="linkNotice"></span>
+            <button id="scanBtn">Scan for Notes</button>
+            <span class="notice" id="scanNotice"></span>
           </div>
         </div>
-      </details>
+
+        <hr class="split">
+        <div class="panel-head">
+          <div><h3 style="margin:0;">What Zade Found <span class="muted" id="candCount"></span></h3></div>
+          <div class="filters">
+            <select id="fCandStatus" title="Filter by whether each item has already been imported">
+              <option value="candidate" selected>Not yet imported</option>
+              <option value="">All</option>
+              <option value="imported">Already imported</option>
+            </select>
+            <button class="secondary tiny" id="loadCandBtn">Load</button>
+          </div>
+        </div>
+        <div class="form" style="border:1px solid var(--z-line);border-radius:5px;padding:12px;margin-bottom:10px;">
+          <div class="row">
+            <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="impDocuments" checked style="width:auto;"> Make searchable (add to Zade's document store)</label>
+            <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="impEvidence" checked style="width:auto;"> Treat as evidence Zade can cite in decisions</label>
+          </div>
+          <div class="actions">
+            <button id="importSelectedBtn" title="Bring the checked items into memory using the options above">Import Checked Items</button>
+            <button class="secondary" id="autoLinkBtn" title="Automatically connect already-imported evidence to related goals and decisions">Auto-Connect Imported Items</button>
+            <span class="notice" id="importNotice"></span>
+          </div>
+        </div>
+        <div class="list" id="candidates"></div>
+
+        <details class="create-form">
+          <summary>+ Manually connect a piece of evidence to something in the ledger</summary>
+          <div class="form" style="margin-top:10px;">
+            <div class="row3">
+              <label>Evidence ID <span class="hint">The number shown on the evidence item</span><input id="linkEvidenceId" type="number"></label>
+              <label>Connect to <span class="hint">What kind of thing it supports, e.g. assumption, goal, decision_memo</span><input id="linkToType" placeholder="assumption, goal, decision_memo..."></label>
+              <label>Its ID <input id="linkToId" type="number"></label>
+            </div>
+            <div class="row">
+              <label>Relationship <span class="hint">How this evidence relates to it</span><input id="linkRelation" value="supports"></label>
+              <label>Strength <span class="hint">How strongly it applies, 0-100</span><input id="linkStrength" type="number" min="0" max="100" value="60"></label>
+            </div>
+            <div class="actions">
+              <button id="linkBtn">Save Connection</button>
+              <span class="notice" id="linkNotice"></span>
+            </div>
+          </div>
+        </details>
+      </section>
+    </section>
+
+    <section data-tab="connectors">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Connectors <span class="muted" id="connCount"></span></h2><div class="sub">An email inbox (IMAP) or calendar (ICS) Zade can read from. Clicking "Queue Sync" doesn't import anything by itself — it just queues a work item that still needs your approval before Zade actually reads the account.</div></div>
+          <div class="filters">
+            <select id="fEnabled">
+              <option value="">All</option>
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
+            <button class="secondary tiny" id="loadConnBtn" title="Reload the connector list with the filter above">Load</button>
+          </div>
+        </div>
+        <div class="list" id="connectors"></div>
+
+        <details class="create-form">
+          <summary>+ Connect an inbox or calendar</summary>
+          <div class="warn-box" style="margin-top:10px;">Never put an actual password or token in the config below. Instead, name the environment variable that holds it — e.g. <code>"password_env": "IMAP_PASSWORD"</code> — and set that variable outside this UI. Zade only ever sees the variable name, never the secret itself.</div>
+          <div class="form">
+            <div class="row">
+              <label>Name <span class="hint">A short label you'll recognize later, e.g. work-inbox</span><input id="cName" placeholder="work-inbox"></label>
+              <label>Type <span class="hint">Email inbox (IMAP) or Calendar (ICS)?</span>
+                <select id="cType"><option value="imap">Email inbox (IMAP)</option><option value="ics">Calendar (ICS)</option></select>
+              </label>
+            </div>
+            <label>Description <span class="hint">Optional note to remind yourself what this is</span><input id="cDescription" placeholder="optional"></label>
+            <label class="check-row"><input type="checkbox" id="cEnabled" checked> Enabled <span class="hint">Only enabled connectors can be synced</span></label>
+            <label>Connection details (JSON) <span class="hint">Email inbox needs host, username, password_env, and optionally mailbox/port/fetch_limit. Calendar needs a url or file path.</span>
+              <textarea id="cConfig" rows="5" class="mono">{
+  "host": "imap.example.com",
+  "username": "you@example.com",
+  "password_env": "IMAP_PASSWORD",
+  "mailbox": "INBOX"
+}</textarea>
+            </label>
+            <div class="actions">
+              <button id="createConnBtn" title="Save this connector. It won't read anything until you queue a sync below.">Save Connector</button>
+              <span class="notice" id="createConnNotice"></span>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Staged Items <span class="muted" id="itemCount"></span></h2><div class="sub">Emails and calendar events Zade found during a sync land here as candidates first — nothing is used automatically. Import the useful ones so Zade can reason about them as evidence; dismiss the ones that don't matter.</div></div>
+          <div class="filters">
+            <select id="fStatus">
+              <option value="candidate" selected>Waiting for review</option>
+              <option value="">All statuses</option>
+              <option value="imported">Imported</option>
+              <option value="dismissed">Dismissed</option>
+            </select>
+            <input id="fConnector" placeholder="connector name">
+            <button class="secondary tiny" id="loadItemsBtn" title="Reload the staged items list with the filters above">Load</button>
+          </div>
+        </div>
+
+        <div class="form" style="margin-bottom:14px;border:1px solid var(--z-line);border-radius:5px;padding:12px;">
+          <div class="row3">
+            <label>Reliability <span class="hint">How trustworthy this source is, A (best) to F (worst)</span><input id="impReliability" value="C" maxlength="2"></label>
+            <label>Strength (0-100) <span class="hint">How much weight Zade should give this evidence</span><input id="impStrength" type="number" min="0" max="100" value="60"></label>
+            <label>Linked assumption ID <span class="hint">Optional — attach this evidence to a specific assumption you're tracking</span><input id="impAssumption" type="number" placeholder="optional"></label>
+          </div>
+          <div class="row">
+            <label class="check-row"><input type="checkbox" id="impCreateEvidence" checked> Create graded evidence <span class="hint">Lets Zade cite this when reasoning about decisions</span></label>
+            <label class="check-row"><input type="checkbox" id="impIngestDocs" checked> Also save the full text <span class="hint">Keeps the complete email/event body searchable, not just a summary</span></label>
+          </div>
+          <div class="actions">
+            <button id="connImportBtn" title="Turn the checked items into evidence Zade can use — this is the only action that actually uses the content">Import Selected</button>
+            <span class="notice" id="connImportNotice"></span>
+          </div>
+        </div>
+
+        <div class="list" id="items"></div>
+      </section>
     </section>
   </main>
 
@@ -249,6 +303,44 @@
     const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const truncate = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
     const csv = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
+
+    // Raw values like "api:text" or "in_progress" arrive as machine-friendly
+    // strings; show them the way a non-technical founder would expect to read them.
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/[_:]/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    }
+
+    // Similarity/relevance scores come back as 0-1 floats (or occasionally 0-100);
+    // show them as a rounded percent instead of a raw decimal.
+    function confidencePct(value) {
+      if (value == null || value === '') return null;
+      const num = Number(value);
+      if (Number.isNaN(num)) return null;
+      return Math.round((num > 1 ? num : num * 100)) + '%';
+    }
+
+    // Explains the hybrid retrieval metadata (vector_rank/keyword_rank/rrf_score/
+    // degraded_to_keyword from the ingestion backend) in plain terms instead of
+    // dumping the raw fields.
+    function retrievalSummary(retrieval) {
+      if (!retrieval) return '';
+      const parts = [];
+      if (retrieval.mode === 'hybrid') {
+        parts.push(retrieval.degraded_to_keyword
+          ? 'Found by exact words (meaning-based search was unavailable this time)'
+          : 'Found by combining meaning-based and exact-word search');
+      } else if (retrieval.mode === 'vector') {
+        parts.push('Found by meaning-based search');
+      } else if (retrieval.mode === 'keyword') {
+        parts.push('Found by exact-word search');
+      } else if (retrieval.mode) {
+        parts.push(prettyLabel(retrieval.mode));
+      }
+      if (retrieval.vector_rank != null) parts.push('meaning-match rank ' + retrieval.vector_rank);
+      if (retrieval.keyword_rank != null) parts.push('keyword-match rank ' + retrieval.keyword_rank);
+      return parts.join(' · ');
+    }
     async function withBusy(btn, workingLabel, fn) {
       const original = btn.textContent;
       btn.disabled = true;
@@ -275,16 +367,21 @@
 
     function renderMatch(m) {
       const headline = m.title || m.document_title || m.chunk_title || '(untitled)';
-      const sub = [m.kind, m.source, m.source_uri, m.retrieval && m.retrieval.mode].filter(Boolean).join(' · ');
+      const sub = [prettyLabel(m.kind), prettyLabel(m.source), m.source_uri].filter(Boolean).join(' · ');
+      const pct = confidencePct(m.score);
+      const retrievalNote = retrievalSummary(m.retrieval);
       return `
         <article class="item">
           <div class="topline">
             <strong>${esc(headline)}</strong>
-            <span class="pill">${esc(m.kind || m.media_type || '')}</span>
+            <span class="pill">${esc(prettyLabel(m.kind || m.media_type || ''))}</span>
           </div>
-          ${sub ? `<div class="muted mono" style="font-size:11px;">${esc(sub)}</div>` : ''}
+          ${sub ? `<div class="muted" style="font-size:11px;">${esc(sub)}</div>` : ''}
           <div class="muted">${esc(truncate(m.content || m.text || m.excerpt || '', 260))}</div>
-          <details><summary style="cursor:pointer;color:var(--muted);font-size:11.5px;">Full record</summary><pre>${esc(JSON.stringify(m, null, 2))}</pre></details>
+          <div class="pillrow" style="margin-top:2px;">
+            ${pct != null ? '<span class="pill" title="How closely this matches your search">' + esc(pct) + ' match</span>' : ''}
+            ${retrievalNote ? '<span class="pill" title="How Zade found this result">' + esc(retrievalNote) + '</span>' : ''}
+          </div>
         </article>
       `;
     }
@@ -355,12 +452,12 @@
       byId('jobs').innerHTML = jobs.length ? jobs.map((j) => `
         <article class="item">
           <div class="topline">
-            <strong>${esc(j.job_type)} · ${esc(j.source)}</strong>
-            <span class="pill ${esc(j.status)}">${esc(j.status)}</span>
+            <strong>${esc(prettyLabel(j.job_type))} · ${esc(prettyLabel(j.source))}</strong>
+            <span class="pill ${esc(j.status)}">${esc(prettyLabel(j.status))}</span>
           </div>
-          <div class="muted mono" style="font-size:11.5px;">${esc(j.created_at)}${j.documents_count != null ? ' · ' + esc(j.documents_count) + ' doc(s)' : ''}${j.chunks_count != null ? ' · ' + esc(j.chunks_count) + ' chunk(s)' : ''}</div>
+          <div class="muted" style="font-size:11.5px;">${esc(j.created_at)}${j.documents_count != null ? ' · ' + esc(j.documents_count) + ' document(s)' : ''}${j.chunks_count != null ? ' · ' + esc(j.chunks_count) + ' piece(s)' : ''}</div>
         </article>
-      `).join('') : '<div class="muted">No ingestion jobs yet.</div>';
+      `).join('') : '<div class="muted">Nothing added yet.</div>';
     }
 
     async function runScan() {
@@ -397,12 +494,12 @@
               ${selectable ? `<input type="checkbox" data-select="${c.id}" style="margin-top:3px;">` : '<span style="width:13px;"></span>'}
               <div>
                 <strong>${esc(c.title)}</strong>
-                <div class="muted">${esc(c.source_system || '')} · ${esc(truncate(c.source_uri || '', 80))}</div>
+                <div class="muted">${esc(prettyLabel(c.source_system || ''))} · ${esc(truncate(c.source_uri || '', 80))}</div>
               </div>
             </div>
             <div class="pillrow">
-              <span class="pill ${esc(c.status)}">${esc(c.status)}</span>
-              <span class="pill">${esc(c.reliability || '')}</span>
+              <span class="pill ${esc(c.status)}" title="${c.status === 'candidate' ? 'Found but not yet brought into memory' : 'Already brought into memory'}">${esc(c.status === 'candidate' ? 'Not yet imported' : prettyLabel(c.status))}</span>
+              ${c.reliability ? '<span class="pill" title="How trustworthy this source is">' + esc(prettyLabel(c.reliability)) + '</span>' : ''}
             </div>
           </div>
           <div class="muted">${esc(truncate(c.excerpt || '', 220))}</div>
@@ -434,7 +531,8 @@
       notice.textContent = ''; notice.className = 'notice';
       try {
         const result = await api('/teach/deepthought/auto-link?limit=50', { method: 'POST' });
-        notice.textContent = 'Auto-link: ' + JSON.stringify(result).slice(0, 200);
+        const skippedNote = result.skipped_count ? ', ' + result.skipped_count + ' already connected or skipped' : '';
+        notice.textContent = 'Connected ' + (result.linked_count || 0) + ' item(s) automatically' + skippedNote + '.';
         notice.className = 'notice good';
       } catch (err) { notice.textContent = 'Auto-link failed: ' + err.message; notice.className = 'notice err'; }
     }
@@ -478,6 +576,252 @@
     byId('autoLinkBtn').addEventListener('click', () => withBusy(byId('autoLinkBtn'), 'Linking…', autoLink));
     byId('linkBtn').addEventListener('click', () => withBusy(byId('linkBtn'), 'Linking…', linkEvidence));
     loadAll().catch((err) => { console.error('Initial memory page load failed', err); });
+  </script>
+  <script>
+    (function () {
+      const token = () => localStorage.getItem('zadeKernelToken') || '';
+      // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+      // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+      // so fire-and-forget is safe — the token lands before any button is clicked.
+      (async () => {
+        if (localStorage.getItem('zadeKernelToken')) return;
+        try {
+          const r = await fetch('/session/token');
+          if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+        } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+      })();
+      const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+      const api = async (path, opts = {}) => {
+        const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      };
+      const byId = (id) => document.getElementById(id);
+      const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      const truncate = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+      // Raw status/type values arrive as short codes or snake_case; show them the
+      // way a non-technical founder would expect to read them.
+      function prettyLabel(value) {
+        if (value == null || value === '') return '';
+        return String(value).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+      }
+      const CONNECTOR_TYPE_LABELS = { imap: 'Email inbox (IMAP)', ics: 'Calendar (ICS)' };
+      const connectorTypeLabel = (type) => CONNECTOR_TYPE_LABELS[type] || prettyLabel(type);
+      const ITEM_TYPE_LABELS = { email: 'Email', calendar_event: 'Calendar event' };
+      const itemTypeLabel = (type) => ITEM_TYPE_LABELS[type] || prettyLabel(type);
+      const ITEM_STATUS_LABELS = { candidate: 'Waiting for review', imported: 'Imported', dismissed: 'Dismissed' };
+      const itemStatusLabel = (status) => ITEM_STATUS_LABELS[status] || prettyLabel(status);
+      // Config values are safe to show as-is (secrets are only ever referenced by
+      // *_env name, never stored) but a raw JSON dump reads as noise to a founder —
+      // render the handful of fields that matter as a plain list instead.
+      const CONFIG_FIELD_LABELS = {
+        host: 'Mail server', username: 'Username', password_env: 'Password comes from env var',
+        mailbox: 'Mailbox', port: 'Port', fetch_limit: 'Max messages per sync',
+        url: 'Calendar URL', path: 'Calendar file path'
+      };
+      function renderConnectorSummary(c) {
+        const config = c.config || {};
+        const rows = Object.keys(config)
+          .filter((key) => config[key] !== '' && config[key] != null)
+          .map((key) => '<div><span class="muted">' + esc(CONFIG_FIELD_LABELS[key] || prettyLabel(key)) + ':</span> ' + esc(config[key]) + '</div>')
+          .join('');
+        return `
+          <div style="font-size:12.5px;display:grid;gap:4px;">
+            <div><span class="muted">Type:</span> ${esc(connectorTypeLabel(c.connector_type))}</div>
+            <div><span class="muted">Status:</span> ${c.enabled ? 'Enabled' : 'Disabled'}</div>
+            <div><span class="muted">Last sync:</span> ${c.last_sync_at ? esc(c.last_sync_at) + ' (' + esc(prettyLabel(c.last_sync_status || 'unknown')) + ')' : 'Never synced'}</div>
+            ${rows || '<div class="muted">No connection details set.</div>'}
+          </div>
+        `;
+      }
+      async function withBusy(btn, workingLabel, fn) {
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = workingLabel;
+        try { return await fn(); }
+        finally { btn.disabled = false; btn.textContent = original; }
+      }
+
+      async function loadConnectors() {
+        const params = new URLSearchParams();
+        if (byId('fEnabled').value) params.set('enabled', byId('fEnabled').value);
+        params.set('limit', '100');
+        const { items } = await api('/connectors?' + params.toString());
+        byId('connCount').textContent = '(' + items.length + ')';
+        byId('connectors').innerHTML = items.length ? items.map(renderConnector).join('') : '<div class="muted">No connectors configured yet.</div>';
+        wireConnectorActions();
+      }
+
+      function renderConnector(c) {
+        return `
+          <article class="item" data-connector="${esc(c.name)}">
+            <div class="topline">
+              <div>
+                <strong>${esc(c.name)}</strong>
+                ${c.description ? `<div class="muted">${esc(c.description)}</div>` : ''}
+              </div>
+              <div class="pillrow">
+                <span class="pill ${c.enabled ? 'enabled' : 'disabled'}">${c.enabled ? 'Enabled' : 'Disabled'}</span>
+                <span class="pill" title="${esc(c.connector_type === 'imap' ? 'Reads email over IMAP' : 'Reads events from an ICS calendar feed')}">${esc(connectorTypeLabel(c.connector_type))}</span>
+              </div>
+            </div>
+            <div class="muted mono" style="font-size:12px;">
+              ${c.last_sync_at ? 'Last synced ' + esc(c.last_sync_at) + ' (' + esc(prettyLabel(c.last_sync_status || 'unknown')) + ')' : 'Never synced yet'}
+            </div>
+            <div class="notice" id="connnotice-${esc(c.name)}"></div>
+            <div class="actions">
+              <button class="secondary tiny" data-sync="${esc(c.name)}" ${c.enabled ? '' : 'disabled'} title="Queues a read-only check for new messages/events. Nothing is imported until you review and approve the staged items below.">Queue Sync</button>
+            </div>
+            <details><summary style="cursor:pointer;color:var(--z-muted);font-size:11.5px;">Connection details (passwords are never stored here — only the name of the env var that holds one)</summary>${renderConnectorSummary(c)}</details>
+          </article>
+        `;
+      }
+
+      function wireConnectorActions() {
+        document.querySelectorAll('[data-sync]').forEach((btn) => {
+          btn.addEventListener('click', () => withBusy(btn, 'Queuing…', async () => {
+            const name = btn.dataset.sync;
+            const notice = byId('connnotice-' + name);
+            notice.textContent = ''; notice.className = 'notice';
+            try {
+              const result = await api('/connectors/' + encodeURIComponent(name) + '/sync', { method: 'POST' });
+              notice.textContent = result.note || 'Queued.';
+              notice.className = 'notice good';
+            } catch (err) { notice.textContent = 'Failed: ' + err.message; notice.className = 'notice err'; }
+          }));
+        });
+      }
+
+      async function createConnector() {
+        const notice = byId('createConnNotice');
+        notice.textContent = ''; notice.className = 'notice';
+        const name = byId('cName').value.trim();
+        if (!name) { notice.textContent = 'Name is required.'; notice.className = 'notice err'; return; }
+        let config;
+        try { config = JSON.parse(byId('cConfig').value || '{}'); }
+        catch (e) { notice.textContent = 'Config: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+        const body = {
+          name,
+          connector_type: byId('cType').value,
+          description: byId('cDescription').value,
+          enabled: byId('cEnabled').checked,
+          config
+        };
+        try {
+          await api('/connectors', { method: 'POST', body: JSON.stringify(body) });
+          notice.textContent = 'Created.'; notice.className = 'notice good';
+          byId('cName').value = ''; byId('cDescription').value = '';
+          await loadConnectors();
+        } catch (err) { notice.textContent = 'Create failed: ' + err.message; notice.className = 'notice err'; }
+      }
+
+      let itemsState = [];
+
+      async function loadItems() {
+        const params = new URLSearchParams();
+        if (byId('fStatus').value) params.set('status', byId('fStatus').value);
+        if (byId('fConnector').value.trim()) params.set('connector', byId('fConnector').value.trim());
+        params.set('limit', '100');
+        const { items } = await api('/connectors/items?' + params.toString());
+        itemsState = items;
+        byId('itemCount').textContent = '(' + items.length + ')';
+        byId('items').innerHTML = items.length ? items.map(renderItem).join('') : '<div class="muted">Nothing in this view.</div>';
+        wireItemActions();
+      }
+
+      function renderItem(item) {
+        const selectable = item.status === 'candidate';
+        return `
+          <article class="item" data-item="${item.id}">
+            <div class="topline">
+              <div style="display:flex;gap:10px;align-items:flex-start;">
+                ${selectable ? `<input type="checkbox" data-select="${item.id}" style="margin-top:3px;">` : '<span style="width:13px;"></span>'}
+                <div>
+                  <strong>${esc(item.title)}</strong>
+                  <div class="muted">${esc(item.sender || 'unknown sender')}${item.occurred_at ? ' · ' + esc(item.occurred_at) : ''}</div>
+                </div>
+              </div>
+              <div class="pillrow">
+                <span class="pill ${esc(item.status)}" title="${item.status === 'candidate' ? 'Not used by Zade yet — import it or dismiss it' : item.status === 'imported' ? 'Saved as evidence Zade can reason about' : 'Discarded — not used by Zade'}">${esc(itemStatusLabel(item.status))}</span>
+                <span class="pill">${esc(item.connector_name)}</span>
+                <span class="pill">${esc(itemTypeLabel(item.item_type))}</span>
+              </div>
+            </div>
+            <div class="muted">${esc(truncate(item.excerpt, 260))}</div>
+            ${item.status === 'candidate' ? `<div class="actions"><button class="secondary tiny" data-dismiss="${item.id}" title="Discard this item — it will not become evidence and this can't be undone from here">Dismiss</button></div>` : ''}
+            <div class="notice" id="itemnotice-${item.id}"></div>
+          </article>
+        `;
+      }
+
+      function wireItemActions() {
+        document.querySelectorAll('[data-dismiss]').forEach((btn) => {
+          btn.addEventListener('click', () => withBusy(btn, 'Dismissing…', async () => {
+            const id = btn.dataset.dismiss;
+            try {
+              await api('/connectors/items/' + encodeURIComponent(id) + '/dismiss', { method: 'POST', body: JSON.stringify({ reason: 'Dismissed from Zade UI.' }) });
+              await loadItems();
+            } catch (err) { byId('itemnotice-' + id).textContent = 'Failed: ' + err.message; byId('itemnotice-' + id).className = 'notice err'; }
+          }));
+        });
+      }
+
+      async function importSelected() {
+        const notice = byId('connImportNotice');
+        notice.textContent = ''; notice.className = 'notice';
+        const ids = Array.from(document.querySelectorAll('[data-select]:checked')).map((el) => Number(el.dataset.select));
+        if (!ids.length) { notice.textContent = 'Select at least one candidate item.'; notice.className = 'notice err'; return; }
+        const body = {
+          item_ids: ids,
+          create_evidence: byId('impCreateEvidence').checked,
+          ingest_documents: byId('impIngestDocs').checked,
+          reliability: byId('impReliability').value.trim() || 'C',
+          strength: Number(byId('impStrength').value || 60)
+        };
+        const assumption = byId('impAssumption').value.trim();
+        if (assumption) body.linked_assumption_id = Number(assumption);
+        try {
+          const result = await api('/connectors/items/import', { method: 'POST', body: JSON.stringify(body) });
+          notice.textContent = `Imported ${result.count}, skipped ${result.skipped.length}.`;
+          notice.className = 'notice good';
+          await loadItems();
+        } catch (err) { notice.textContent = 'Import failed: ' + err.message; notice.className = 'notice err'; }
+      }
+
+      async function loadAll() {
+        await Promise.all([loadConnectors(), loadItems()]);
+      }
+
+      byId('connRefreshBtn').addEventListener('click', () => withBusy(byId('connRefreshBtn'), 'Refreshing…', () => loadAll().catch((err) => { console.error(err); })));
+      byId('loadConnBtn').addEventListener('click', () => withBusy(byId('loadConnBtn'), 'Loading…', () => loadConnectors().catch((err) => { byId('connectors').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+      byId('createConnBtn').addEventListener('click', () => withBusy(byId('createConnBtn'), 'Creating…', createConnector));
+      byId('loadItemsBtn').addEventListener('click', () => withBusy(byId('loadItemsBtn'), 'Loading…', () => loadItems().catch((err) => { byId('items').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+      byId('connImportBtn').addEventListener('click', () => withBusy(byId('connImportBtn'), 'Importing…', importSelected));
+      loadAll().catch((err) => { console.error('Initial connectors load failed', err); });
+    })();
+  </script>
+  <script>
+    (function () {
+      const TABS = ['memory', 'connectors'];
+      function activate(tab) {
+        if (!TABS.includes(tab)) tab = 'memory';
+        TABS.forEach((t) => {
+          const section = document.querySelector('section[data-tab="' + t + '"]');
+          const btn = document.querySelector('.tab-btn[data-tab="' + t + '"]');
+          if (section) section.classList.toggle('tab-hidden', t !== tab);
+          if (btn) btn.classList.toggle('tab-active', t === tab);
+        });
+      }
+      document.querySelectorAll('.tab-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab;
+          location.hash = '#' + tab;
+          activate(tab);
+        });
+      });
+      window.addEventListener('hashchange', () => activate(location.hash.replace('#', '')));
+      activate(location.hash.replace('#', ''));
+    })();
   </script>
   <script src="/ui/zade-ui.js"></script>
 </body>

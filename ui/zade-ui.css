@@ -1,277 +1,686 @@
+/* ============================================================
+   ZADE UI v2 — one design system for all 16 pages
+   ------------------------------------------------------------
+   Drop-in replacement for ui/zade-ui.css. Loads AFTER each
+   page's local <style>, so these rules win on specificity
+   (body prefix) without touching page markup.
+   Reference point: the Command dashboard (ui/index.html).
+   ============================================================ */
+
+/* ---------- 1 · Fonts (self-hosted, local-first) ---------- */
+/* Same woff2 files the dashboard bundle embeds. Keep them in
+   ui/fonts/ next to this stylesheet. */
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: italic;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("fonts/cormorant-garamond-italic-latin.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: italic;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("fonts/cormorant-garamond-italic-latin-ext.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("fonts/cormorant-garamond-latin.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Cormorant Garamond';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("fonts/cormorant-garamond-latin-ext.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("fonts/inter-latin.woff2") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("fonts/inter-latin-ext.woff2") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ---------- 2 · Tokens (reconciled: dashboard is canon) ---------- */
 :root {
   color-scheme: dark;
-  --z-bg: #070707;
-  --z-bg-2: #0b0a0a;
-  --z-panel: rgba(14, 14, 16, 0.94);
-  --z-panel-2: rgba(20, 20, 22, 0.86);
-  --z-line: rgba(238, 234, 229, 0.105);
-  --z-line-strong: rgba(238, 234, 229, 0.18);
-  --z-text: #f0ede8;
-  --z-muted: #9b9892;
-  --z-faint: #68666b;
-  --z-accent: #b34f46;
-  --z-accent-2: #d18a80;
-  --z-ok: #6e9b80;
-  --z-warn: #c6a05e;
-  --z-bad: #b65a57;
-  --z-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
-  --z-radius: 6px;
-  --z-radius-sm: 4px;
-  --z-sans: "Segoe UI Variable", "Aptos", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --z-mono: "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, ui-monospace, monospace;
+
+  /* surfaces */
+  --z-bg: #050506;              /* page base — shared by both layers already */
+  --z-bg-glow: radial-gradient(ellipse 120% 90% at 28% -10%, #141013 0%, #0a0a0b 45%, #050506 100%);
+  --z-panel: #0e0e10;           /* quiet card — dashboard panel value */
+  --z-panel-2: #101013;         /* raised / hover surface */
+  --z-well: #0b0b0d;            /* inputs, code wells — dashboard input bg */
+  --z-well-deep: #08080a;       /* pre/JSON blocks */
+
+  /* hairlines — dashboard uses white at 4–5% everywhere */
+  --z-line: rgba(255, 255, 255, 0.05);
+  --z-line-soft: rgba(255, 255, 255, 0.04);
+  --z-line-strong: rgba(255, 255, 255, 0.11);
+
+  /* ink — dashboard's five-step neutral ramp */
+  --z-text: #f0eee9;            /* headlines, key values */
+  --z-ink: #c9c6c0;             /* body copy */
+  --z-ink-hi: #e8e6e2;          /* emphasized body */
+  --z-muted: #96959a;           /* secondary */
+  --z-faint: #5e5e64;           /* kickers, captions */
+  --z-ghost: #46464b;           /* disabled, rules */
+
+  /* accent — terracotta, single source of truth */
+  --z-accent: #b0473f;
+  --z-accent-2: #d07d74;        /* interactive text, hover */
+  --z-accent-3: #d8938a;        /* soft alert text (dashboard conflict color) */
+  --z-accent-dim: rgba(176, 71, 63, 0.4);
+  --z-accent-wash: rgba(176, 71, 63, 0.1);
+
+  /* semantic — muted, editorial; text tints for on-dark legibility */
+  --z-ok: #5a8a72;      --z-ok-text: #a9c9b7;
+  --z-warn: #c2a06a;    --z-warn-text: #e3cda4;
+  --z-bad: #a84a4a;     --z-bad-text: #eab8b2;
+  --z-info: #806bb8;    --z-info-text: #cdc2ea;  /* deferred / observed */
+
+  /* grade ramp (evidence reliability) — from the dashboard */
+  --z-grade-a: #7fa892; --z-grade-b: #9aa88a; --z-grade-c: #c2a06a;
+  --z-grade-d: #84848a; --z-grade-f: #d8938a;
+
+  /* type */
+  --z-serif: 'Cormorant Garamond', Georgia, serif;
+  --z-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --z-mono: ui-monospace, "Cascadia Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* spacing scale — 4-base, used everywhere below */
+  --z-s1: 4px;  --z-s2: 8px;  --z-s3: 12px; --z-s4: 16px;
+  --z-s5: 24px; --z-s6: 32px; --z-s7: 48px;
+
+  /* geometry — dashboard is sharp */
+  --z-radius: 3px;
+  --z-radius-sm: 2px;
+
+  --z-sidebar-w: 246px;
 }
 
-html {
-  scroll-behavior: smooth;
-  background: var(--z-bg);
-}
+/* ---------- 3 · Base ---------- */
+html { scroll-behavior: smooth; background: var(--z-bg); }
 
-body.zade-enhanced-ui {
+body {
   min-height: 100dvh;
-  background:
-    linear-gradient(120deg, rgba(179, 79, 70, 0.08), transparent 30%),
-    radial-gradient(1200px 720px at 14% -12%, rgba(255, 255, 255, 0.06), transparent 50%),
-    linear-gradient(180deg, var(--z-bg-2), var(--z-bg) 42%, #050505);
-  color: var(--z-text);
+  margin: 0;
+  background: var(--z-bg-glow);
+  color: var(--z-ink);
   font-family: var(--z-sans);
+  font-size: 13.5px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
   font-variant-numeric: tabular-nums;
-  text-rendering: geometricPrecision;
+}
+body::before { content: none; } /* v1 grid overlay retired */
+
+body a { color: var(--z-accent-2); text-decoration: none; }
+body a:hover { color: #e09a92; }
+body ::selection { background: rgba(176, 71, 63, 0.2); color: var(--z-text); }
+body * { scrollbar-width: thin; scrollbar-color: #26262a transparent; }
+body ::-webkit-scrollbar { width: 8px; height: 8px; }
+body ::-webkit-scrollbar-thumb { background: #26262a; border-radius: 4px; }
+
+/* ---------- 4 · Sidebar (injected by zade-ui.js) ---------- */
+body.zade-has-sidebar { padding-left: var(--z-sidebar-w); }
+
+.zade-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 40;
+  width: var(--z-sidebar-w);
+  display: flex;
+  flex-direction: column;
+  padding: 26px 16px 18px;
+  background: linear-gradient(180deg, #0c0c0e, #08080a);
+  border-right: 1px solid var(--z-line);
+  overflow-y: auto;
+  font-family: var(--z-sans);
+}
+.zade-sidebar-logo {
+  display: flex; align-items: center; gap: 11px;
+  padding: 0 8px 22px;
+  border-bottom: 1px solid var(--z-line);
+  margin-bottom: 16px;
+  color: inherit; text-decoration: none;
+}
+.zade-sidebar-logo .zade-mark {
+  width: 34px; height: 34px; flex: none;
+  border: 1px solid var(--z-accent-dim); border-radius: var(--z-radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--z-serif); font-style: italic; font-size: 19px; color: var(--z-accent-2);
+}
+.zade-sidebar-logo .zade-name {
+  font-family: var(--z-serif); font-size: 17px; letter-spacing: 0.05em;
+  color: var(--z-text); line-height: 1.1;
+}
+.zade-sidebar-logo .zade-tag {
+  font-size: 9.5px; letter-spacing: 0.14em; color: var(--z-faint);
+  text-transform: uppercase; margin-top: 3px;
+}
+.zade-nav-group { margin-bottom: 14px; }
+.zade-nav-kicker {
+  font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--z-ghost); padding: 0 12px; margin: 0 0 6px;
+}
+.zade-nav-group nav { display: flex; flex-direction: column; gap: 2px; }
+.zade-sidebar a.zade-nav-item {
+  display: flex; align-items: center; gap: 11px;
+  padding: 8px 12px;
+  border-left: 2px solid transparent; border-radius: var(--z-radius);
+  color: #84848a; font-size: 13px; letter-spacing: 0.01em;
+  text-decoration: none;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+.zade-sidebar a.zade-nav-item svg { flex: none; opacity: 0.85; }
+.zade-sidebar a.zade-nav-item:hover { color: var(--z-ink-hi); background: rgba(255, 255, 255, 0.03); }
+.zade-sidebar a.zade-nav-item[aria-current="page"] {
+  color: var(--z-text);
+  background: var(--z-accent-wash);
+  border-left-color: var(--z-accent);
+}
+.zade-sidebar-foot {
+  margin-top: auto;
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 14px 10px 0;
+  border-top: 1px solid var(--z-line);
+}
+.zade-sidebar-foot .zade-status { display: flex; align-items: center; gap: 8px; }
+.zade-sidebar-foot .zade-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: var(--z-ghost);
+}
+.zade-sidebar-foot .zade-dot.live { background: var(--z-ok); animation: zade-pulse 3s ease-in-out infinite; }
+.zade-sidebar-foot .zade-status span { font-size: 10.5px; letter-spacing: 0.05em; color: var(--z-faint); }
+@keyframes zade-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* legacy horizontal strip: retired when the sidebar is present */
+body.zade-has-sidebar .zade-workspace-nav { display: none; }
+
+/* ---------- 5 · Page header = a Command-style masthead ---------- */
+body header {
+  position: static;               /* let the page breathe; sidebar carries nav */
+  display: block;
+  padding: 42px 40px 0;
+  border-bottom: 0;
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+body header > div:first-child { max-width: 880px; }
+
+/* h1 → editorial voice (two-tier system: serif for narrative) */
+body h1 {
+  font-family: var(--z-serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 34px;
+  line-height: 1.08;
+  letter-spacing: 0;
+  color: var(--z-text);
+  text-wrap: balance;
+}
+/* the sub line under h1 → the "zade line": quiet first-person voice */
+body header .sub {
+  font-family: var(--z-serif);
+  font-style: italic;
+  font-size: 17px;
+  line-height: 1.45;
+  color: #cfccc6;
+  margin-top: 10px;
+  max-width: 64ch;
+}
+/* page actions row */
+body header .actions { margin-top: 18px; }
+
+/* ---------- 6 · Content shell ---------- */
+body main {
+  width: auto;
+  max-width: 1520px;
+  margin-inline: auto;
+  padding: 28px 40px 72px;
+  gap: var(--z-s5);
 }
 
-body.zade-enhanced-ui::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  opacity: 0.28;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.014) 1px, transparent 1px);
-  background-size: 28px 28px, 28px 28px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.7), transparent 72%);
+/* ---------- 7 · Typography inside panels ---------- */
+/* h2 → kicker (dashboard section-label voice) */
+body h2 {
+  font-family: var(--z-sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--z-muted);
+  margin: 0 0 var(--z-s4);
+}
+body h3 {
+  font-family: var(--z-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--z-faint);
+}
+body .sub { color: var(--z-faint); font-size: 12px; line-height: 1.55; }
+body .muted { color: var(--z-muted); }
+body .count { color: var(--z-faint); font-size: 11px; font-weight: 400; letter-spacing: 0.05em; }
+body .mono { font-family: var(--z-mono); font-size: 12px; }
+
+/* Optional serif-everywhere variant (type option B):
+   <body data-zade-type="serif"> */
+body[data-zade-type="serif"] h2 {
+  font-family: var(--z-serif);
+  font-size: 20px;
+  font-weight: 500;
+  font-style: normal;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--z-ink-hi);
 }
 
-.zade-skip {
-  position: fixed;
-  left: 16px;
+/* ---------- 8 · Panels — quiet cards, not admin boxes ---------- */
+body .panel,
+body .toolbar,
+body .card,
+body main > section:not(.grid):not(.metric-row):not(.metrics):not(.summary) {
+  background: var(--z-panel);
+  border: 1px solid var(--z-line);
+  border-radius: var(--z-radius);
+  box-shadow: none;
+}
+body .panel { padding: 22px 24px 24px; }
+body .card { padding: 18px 20px; }
+body .toolbar { padding: 10px 14px; }
+body .panel-head { margin-bottom: var(--z-s4); }
+body .panel-head .sub { margin-top: 5px; }
+
+/* list items — de-boxed: hairline rows like the dashboard's lists */
+body .item,
+body .history-item,
+body .mm-card,
+body .skill {
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--z-line-soft);
+  border-radius: 0;
+  padding: 13px 2px;
+}
+body .list { gap: 0; }
+body .item strong,
+body .history-item strong,
+body .mm-card strong {
+  color: var(--z-ink-hi);
+  font-weight: 500;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+/* cards that stay cards (approval requests) keep their frame */
+body .card { border: 1px solid var(--z-line); border-radius: var(--z-radius); }
+body .wants {
+  font-family: var(--z-serif);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 19px;
+  line-height: 1.3;
+  color: var(--z-text);
+}
+body .detail { color: var(--z-muted); font-size: 12.5px; margin-top: 3px; }
+
+/* evidence/risk field wells inside cards */
+body .field {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--z-line-strong);
+  border-radius: 0;
+  padding: 2px 0 2px 14px;
+  min-height: 0;
+}
+body .field strong {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--z-faint);
+  margin-bottom: 7px;
+}
+body .field ul { margin: 0; padding-left: 16px; }
+body .field li { margin-bottom: 3px; font-size: 12.5px; color: var(--z-ink); }
+
+/* metric strips → dashboard stat voice.
+   Keeps the pages' 1px-gap divider trick so separators work in any
+   column count; cells sit on the panel surface. */
+body .metric-row,
+body .metrics,
+body .summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  overflow: hidden;
+  background: var(--z-line-soft);
+  border: 1px solid var(--z-line);
+  border-radius: var(--z-radius);
+  gap: 1px;
+}
+body .metric,
+body .status-cell {
+  background: var(--z-panel);
+  border: 0;
+  padding: 16px 20px 14px;
+}
+body .metric strong,
+body .status-cell strong {
+  display: block;
+  margin-bottom: 5px;
+  font-family: var(--z-serif);
+  font-style: normal;
+  font-weight: 400;
+  font-size: 27px;
+  color: var(--z-text);
+  letter-spacing: 0;
+}
+body .metric span {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--z-faint);
+}
+
+/* ---------- 9 · Buttons ---------- */
+body button,
+body a.button {
+  font-family: var(--z-sans);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  min-height: 34px;
+  padding: 8px 15px;
+  border-radius: var(--z-radius-sm);
+  cursor: pointer;
+  color: var(--z-accent-2);
+  background: transparent;
+  border: 1px solid var(--z-accent-dim);
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease, transform 0.16s ease, opacity 0.2s ease;
+}
+body button:hover:not(:disabled),
+body a.button:hover {
+  background: rgba(176, 71, 63, 0.14);
+  border-color: rgba(208, 125, 116, 0.65);
+  color: #e09a92;
+}
+body button:active:not(:disabled) { transform: translateY(1px); }
+body button:disabled { opacity: 0.4; cursor: not-allowed; }
+body [aria-busy="true"] { cursor: progress; }
+
+body button.secondary,
+body a.button.secondary {
+  color: var(--z-muted);
+  border-color: var(--z-line-strong);
+  background: transparent;
+}
+body button.secondary:hover:not(:disabled),
+body a.button.secondary:hover {
+  color: var(--z-ink-hi);
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+}
+body button.tiny { min-height: 26px; padding: 4px 10px; font-size: 11.5px; }
+
+/* semantic actions: color the border + text, never fill */
+body button.ok   { color: var(--z-ok-text);   border-color: rgba(90, 138, 114, 0.55); background: transparent; }
+body button.warn { color: var(--z-warn-text); border-color: rgba(194, 160, 106, 0.5); background: transparent; }
+body button.bad  { color: var(--z-bad-text);  border-color: rgba(168, 74, 74, 0.55);  background: transparent; }
+body button.ok:hover:not(:disabled)   { background: rgba(90, 138, 114, 0.13);  border-color: rgba(90, 138, 114, 0.8); color: #cde5d8; }
+body button.warn:hover:not(:disabled) { background: rgba(194, 160, 106, 0.12); border-color: rgba(194, 160, 106, 0.75); color: #eedcb8; }
+body button.bad:hover:not(:disabled)  { background: rgba(168, 74, 74, 0.13);   border-color: rgba(168, 74, 74, 0.8); color: #f3cbc5; }
+
+/* ---------- 10 · Forms ---------- */
+body label {
+  color: var(--z-faint);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  gap: 5px;
+}
+body .hint {
+  color: var(--z-faint);
+  font-size: 11px;
+  margin-top: -3px;
+}
+body input,
+body textarea,
+body select {
+  font-family: var(--z-sans);
+  font-size: 13px;
+  background: var(--z-well);
+  color: var(--z-ink-hi);
+  border: 1px solid var(--z-line);
+  border-radius: var(--z-radius-sm);
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+body input::placeholder,
+body textarea::placeholder { color: var(--z-ghost); }
+body input:hover,
+body textarea:hover,
+body select:hover { border-color: var(--z-line-strong); }
+body input:focus,
+body textarea:focus,
+body select:focus {
+  border-color: rgba(208, 125, 116, 0.55);
+  background: #0c0b0d;
+}
+/* JSON / structured textareas stay mono — the honest tool for the job */
+body textarea { font-family: var(--z-mono); font-size: 12px; line-height: 1.6; color: #d8d3cb; }
+body input[type="checkbox"] { accent-color: var(--z-accent); }
+
+body :focus-visible { outline: 2px solid rgba(208, 125, 116, 0.7); outline-offset: 2px; }
+
+/* ---------- 11 · Pills — square editorial chips ---------- */
+body .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--z-radius-sm);
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--z-muted);
+  background: rgba(255, 255, 255, 0.05);
+}
+body .pill.pending,
+body .pill.approval_required,
+body .pill.candidate,
+body .pill.warn { color: var(--z-warn-text); background: rgba(194, 160, 106, 0.13); }
+body .pill.approved,
+body .pill.done,
+body .pill.imported,
+body .pill.hit,
+body .pill.ok,
+body .pill.allow { color: var(--z-ok-text); background: rgba(90, 138, 114, 0.15); }
+body .pill.denied,
+body .pill.miss,
+body .pill.error,
+body .pill.deny { color: var(--z-bad-text); background: rgba(168, 74, 74, 0.15); }
+body .pill.deferred,
+body .pill.observed { color: var(--z-info-text); background: rgba(128, 107, 184, 0.15); }
+
+/* ---------- 12 · Tables — data with rhythm ---------- */
+body .table-wrap { border: 1px solid var(--z-line); border-radius: var(--z-radius); }
+body table.results { font-size: 12px; font-family: var(--z-mono); }
+body table.results th {
+  font-family: var(--z-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--z-faint);
+  background: #0a0a0c;
+  border-bottom: 1px solid var(--z-line-strong);
+  padding: 9px 12px;
+}
+body table.results td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--z-line-soft);
+  color: var(--z-ink);
+}
+body table.results tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
+body table.results tbody tr:last-child td { border-bottom: 0; }
+
+/* ---------- 13 · Code / JSON wells ---------- */
+body pre {
+  font-family: var(--z-mono);
+  font-size: 11.5px;
+  line-height: 1.65;
+  background: var(--z-well-deep);
+  border: 1px solid var(--z-line);
+  border-radius: var(--z-radius-sm);
+  color: #cfc9c0;
+  padding: 12px 14px;
+}
+
+/* ---------- 14 · Collapsible create-forms ---------- */
+body details > summary {
+  cursor: pointer;
+  color: var(--z-faint);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  list-style: none;
+  transition: color 0.2s ease;
+}
+body details > summary::-webkit-details-marker { display: none; }
+body details > summary::before {
+  content: "+";
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--z-accent-2);
+  font-size: 13px;
+  font-weight: 500;
+  transition: transform 0.2s ease;
+}
+body details[open] > summary::before { transform: rotate(45deg); }
+body details > summary:hover { color: var(--z-ink-hi); }
+body details.create-form,
+body details.schema-table {
+  border: 0;
+  border-top: 1px solid var(--z-line-soft);
+  margin-top: var(--z-s4);
+  padding-top: var(--z-s3);
+}
+body details.schema-table { padding: 10px 2px 6px; margin-top: 0; border-radius: 0; }
+body details.schema-table summary { font-family: var(--z-mono); text-transform: none; letter-spacing: 0.02em; font-size: 12px; color: var(--z-muted); }
+
+/* pages that hand-rolled the summary style inline: neutralize */
+body details > summary[style] {
+  color: var(--z-faint) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.14em !important;
+}
+
+/* ---------- 15 · Notices, errors, empty states ---------- */
+body .notice { color: var(--z-faint); font-size: 12px; }
+body .notice.good { color: var(--z-ok-text); }
+body .notice.err,
+body .error { color: var(--z-bad-text); }
+body .empty {
+  border: 1px dashed var(--z-line-strong);
+  border-radius: var(--z-radius);
+  background: transparent;
+  color: var(--z-faint);
+  font-size: 12.5px;
+  padding: 26px 20px;
+}
+
+/* ---------- 16 · Jumpnav (ledger) ---------- */
+body .jumpnav {
+  background: rgba(8, 8, 10, 0.85);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--z-line);
+  border-radius: var(--z-radius);
   top: 12px;
-  z-index: 1000;
+  padding: 9px 12px;
+}
+body .jumpnav a {
+  border: 0;
+  border-radius: var(--z-radius-sm);
+  padding: 4px 9px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--z-faint);
+}
+body .jumpnav a:hover { color: var(--z-text); background: var(--z-accent-wash); }
+
+/* ---------- 17 · Skip link ---------- */
+.zade-skip {
+  position: fixed; left: 16px; top: 12px; z-index: 1000;
   transform: translateY(-160%);
   border: 1px solid var(--z-line-strong);
   border-radius: var(--z-radius-sm);
-  background: #121214;
-  color: var(--z-text);
-  padding: 8px 11px;
-  text-decoration: none;
+  background: #121214; color: var(--z-text);
+  padding: 8px 11px; text-decoration: none;
 }
+.zade-skip:focus { transform: translateY(0); }
 
-.zade-skip:focus {
-  transform: translateY(0);
-}
-
-body.zade-enhanced-ui header {
-  border-bottom-color: var(--z-line);
-  background: rgba(7, 7, 8, 0.88);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035);
-}
-
-body.zade-enhanced-ui h1,
-body.zade-enhanced-ui h2,
-body.zade-enhanced-ui h3 {
-  text-wrap: balance;
-}
-
-body.zade-enhanced-ui h1 {
-  color: var(--z-text);
-}
-
-body.zade-enhanced-ui h2 {
-  color: #e8e2da;
-}
-
-body.zade-enhanced-ui main {
-  width: min(100%, 1240px);
-  margin-inline: auto;
-}
-
-.zade-workspace-nav {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 28px;
-  border-bottom: 1px solid var(--z-line);
-  background: rgba(9, 9, 10, 0.78);
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
-.zade-workspace-nav a {
-  flex: 0 0 auto;
-  border: 1px solid transparent;
-  border-radius: var(--z-radius-sm);
-  color: var(--z-muted);
-  padding: 6px 9px;
-  text-decoration: none;
-  font-size: 12px;
-  line-height: 1.1;
-  transition: color 180ms ease, border-color 180ms ease, background 180ms ease, transform 180ms ease;
-}
-
-.zade-workspace-nav a:hover {
-  color: var(--z-text);
-  border-color: var(--z-line);
-  background: rgba(255, 255, 255, 0.035);
-}
-
-.zade-workspace-nav a[aria-current="page"] {
-  color: #f2ebe5;
-  border-color: rgba(179, 79, 70, 0.44);
-  background: rgba(179, 79, 70, 0.12);
-}
-
-.zade-header-link-hidden {
-  display: none !important;
-}
-
-body.zade-enhanced-ui .panel,
-body.zade-enhanced-ui .toolbar,
-body.zade-enhanced-ui .card,
-body.zade-enhanced-ui .item,
-body.zade-enhanced-ui .skill,
-body.zade-enhanced-ui .route-box,
-body.zade-enhanced-ui main > section:not(.grid):not(.metric-row):not(.metrics):not(.summary) {
-  border-color: var(--z-line);
-  background-color: var(--z-panel);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
-}
-
-body.zade-enhanced-ui .metric-row,
-body.zade-enhanced-ui .metrics,
-body.zade-enhanced-ui .summary {
-  border-color: var(--z-line);
-  background: var(--z-line);
-}
-
-body.zade-enhanced-ui .metric,
-body.zade-enhanced-ui .status-cell {
-  background: rgba(255, 255, 255, 0.027);
-}
-
-body.zade-enhanced-ui .metric strong,
-body.zade-enhanced-ui .status-cell strong {
-  letter-spacing: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-body.zade-enhanced-ui .sub,
-body.zade-enhanced-ui .muted,
-body.zade-enhanced-ui label {
-  color: var(--z-muted);
-}
-
-body.zade-enhanced-ui button,
-body.zade-enhanced-ui a.button,
-body.zade-enhanced-ui input,
-body.zade-enhanced-ui textarea,
-body.zade-enhanced-ui select {
-  border-radius: var(--z-radius-sm);
-  border-color: var(--z-line);
-  font-family: var(--z-sans);
-}
-
-body.zade-enhanced-ui input,
-body.zade-enhanced-ui textarea,
-body.zade-enhanced-ui select {
-  background: rgba(6, 6, 7, 0.92);
-  color: var(--z-text);
-}
-
-body.zade-enhanced-ui textarea,
-body.zade-enhanced-ui pre,
-body.zade-enhanced-ui .mono {
-  font-family: var(--z-mono);
-}
-
-body.zade-enhanced-ui button,
-body.zade-enhanced-ui a.button {
-  min-height: 34px;
-  transition: transform 160ms ease, border-color 180ms ease, background 180ms ease, color 180ms ease, opacity 180ms ease;
-}
-
-body.zade-enhanced-ui button:hover:not(:disabled),
-body.zade-enhanced-ui a.button:hover {
-  border-color: rgba(209, 138, 128, 0.62);
-  background: rgba(179, 79, 70, 0.18);
-}
-
-body.zade-enhanced-ui button:active:not(:disabled),
-body.zade-enhanced-ui a.button:active {
-  transform: translateY(1px);
-}
-
-body.zade-enhanced-ui button.secondary:hover:not(:disabled),
-body.zade-enhanced-ui a.button.secondary:hover {
-  border-color: var(--z-line-strong);
-  background: rgba(255, 255, 255, 0.055);
-}
-
-body.zade-enhanced-ui button:disabled,
-body.zade-enhanced-ui [aria-busy="true"] {
-  cursor: progress;
-}
-
-body.zade-enhanced-ui :focus-visible {
-  outline: 2px solid rgba(209, 138, 128, 0.85);
-  outline-offset: 2px;
-}
-
-body.zade-enhanced-ui .pill {
-  border-radius: var(--z-radius-sm);
-  letter-spacing: 0.01em;
-}
-
-body.zade-enhanced-ui .error,
-body.zade-enhanced-ui .notice.err {
-  color: #f4c6c1;
-}
-
-body.zade-enhanced-ui pre {
-  background: rgba(4, 4, 5, 0.88);
-  border-color: var(--z-line);
-  color: #ddd7cf;
-}
-
-body.zade-enhanced-ui .empty {
-  border-color: var(--z-line);
-  background: rgba(255, 255, 255, 0.018);
-}
-
-@media (max-width: 760px) {
-  body.zade-enhanced-ui header {
-    padding: 18px 18px;
+/* ---------- 18 · Responsive ---------- */
+@media (max-width: 899px) {
+  body.zade-has-sidebar { padding-left: 0; }
+  .zade-sidebar { display: none; }
+  body.zade-has-sidebar .zade-workspace-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--z-line);
+    background: rgba(8, 8, 10, 0.9);
+    backdrop-filter: blur(14px);
+    position: sticky; top: 0; z-index: 30;
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
-
-  .zade-workspace-nav {
-    padding-inline: 18px;
+  .zade-workspace-nav a {
+    flex: 0 0 auto;
+    border-radius: var(--z-radius-sm);
+    color: var(--z-muted);
+    padding: 6px 9px;
+    text-decoration: none;
+    font-size: 12px;
+    line-height: 1.1;
   }
-
-  body.zade-enhanced-ui main {
-    padding-inline: 18px;
-  }
+  .zade-workspace-nav a:hover { color: var(--z-text); background: rgba(255, 255, 255, 0.04); }
+  .zade-workspace-nav a[aria-current="page"] { color: var(--z-text); background: var(--z-accent-wash); }
+  body header { padding: 26px 20px 0; }
+  body main { padding: 20px 20px 56px; }
+  body h1 { font-size: 28px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
-
-  body.zade-enhanced-ui *,
-  body.zade-enhanced-ui *::before,
-  body.zade-enhanced-ui *::after {
+  html { scroll-behavior: auto; }
+  body *,
+  body *::before,
+  body *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

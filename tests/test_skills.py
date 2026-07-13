@@ -60,7 +60,7 @@ def test_skill_registry_scan_route_and_toggle(tmp_path: Path, monkeypatch) -> No
     config = make_config(tmp_path, skills_dir)
     client = TestClient(create_app(config))
 
-    page = client.get("/ui/skills.html")
+    page = client.get("/ui/system.html")
     scan = client.post("/skills/scan")
     listed = client.get("/skills")
     routed = client.post(
@@ -76,7 +76,7 @@ def test_skill_registry_scan_route_and_toggle(tmp_path: Path, monkeypatch) -> No
     detail = client.get("/skills/verification-before-completion")
 
     assert page.status_code == 200
-    assert "Zade Skill Registry" in page.text
+    assert "Test Skill Routing" in page.text
     assert scan.status_code == 200
     assert scan.json()["scanned"] == 2
     assert listed.status_code == 200

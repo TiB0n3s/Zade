@@ -5,78 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Zade Operating Ledger</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
-      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
-      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
-    }
     * { box-sizing: border-box; }
-    body {
-      margin: 0; min-height: 100vh;
-      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
-      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    header {
-      display: flex; justify-content: space-between; gap: 16px; align-items: center;
-      padding: 22px 28px; border-bottom: 1px solid var(--line);
-      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
-    }
-    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
-    h2 { margin: 0 0 4px; font-size: 15px; }
-    h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
-    .count { color: var(--muted); font-size: 11.5px; font-weight: 400; }
-    main { padding: 20px 28px 40px; display: grid; gap: 14px; max-width: 1200px; margin: 0 auto; }
-    .jumpnav { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px; background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; position: sticky; top: 78px; z-index: 9; }
-    .jumpnav a { color: var(--muted); font-size: 11.5px; text-decoration: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 9px; }
-    .jumpnav a:hover { color: var(--text); border-color: rgba(176,71,63,0.5); }
-    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; scroll-margin-top: 130px; }
+    /* main needs display:grid for its own layout AND because zade-ui.css's
+       `body main { gap: var(--z-s5) }` only has an effect on a grid/flex box */
+    main { display: grid; }
+    /* keeps scroll-anchored sections from hiding under the sticky jumpnav */
+    .panel { scroll-margin-top: 130px; }
+    /* panel-head's side-by-side title/action layout isn't provided by zade-ui.css */
     .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
     .panel-head .sub { margin-top: 3px; max-width: 62ch; }
-    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-    input, textarea, select {
-      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
-      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
-    }
-    textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; resize: vertical; }
-    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
+    /* label needs to stack its text + hint + input; zade-ui.css only styles color/size */
+    label { display: grid; }
+    input, textarea, select { width: 100%; }
+    textarea { resize: vertical; }
     .form { display: grid; gap: 10px; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    button, a.button {
-      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
-      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
-    }
-    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
-    button.tiny { padding: 5px 10px; font-size: 12px; }
-    button:disabled { opacity: 0.5; cursor: default; }
+    a.button { text-decoration: none; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     .filters input { width: auto; max-width: 150px; }
-    .muted { color: var(--muted); }
-    .list { display: grid; gap: 8px; margin-bottom: 4px; }
-    .item { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; background: rgba(255,255,255,0.02); }
+    .list { display: grid; margin-bottom: 4px; }
     .item .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-    .item strong { display: block; font-size: 13px; }
-    .pill {
-      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
-      color: var(--muted); font-size: 10.5px; white-space: nowrap; flex: none;
-    }
-    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
-    .notice.err { color: #f0c4c4; }
-    .notice.good { color: #b9d9c6; }
-    pre {
-      margin: 8px 0 0; white-space: pre-wrap; max-height: 260px; overflow: auto;
-      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 10px; color: #d8d3cb;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
-    }
-    details > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
-    details.create-form { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
-    details.create-form > summary { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
-    .mm-card { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; background: rgba(255,255,255,0.02); margin-bottom: 8px; }
+    /* prevents the status pill from shrinking inside the flex topline row */
+    .pill { flex: none; }
+    /* reserves height so the notice line doesn't shift layout when it appears */
+    .notice { min-height: 18px; }
+    pre { margin: 8px 0 0; white-space: pre-wrap; max-height: 260px; overflow: auto; }
+    /* zade-ui.css's .jumpnav has no `position`, so the sticky behavior stays local */
+    .jumpnav { display: flex; flex-wrap: wrap; gap: 6px; position: sticky; z-index: 9; }
+    .jumpnav a { text-decoration: none; }
+    /* mm-cards aren't wrapped in .list, so they need their own spacing */
+    .mm-card { margin-bottom: 8px; }
     .mm-card strong { display: block; margin-bottom: 3px; }
     @media (max-width: 900px) {
-      header { align-items: flex-start; flex-direction: column; }
       .row { grid-template-columns: 1fr; }
       .jumpnav { position: static; }
     }
@@ -87,14 +48,10 @@
   <header>
     <div>
       <h1>Zade Operating Ledger</h1>
-      <div class="sub">Goals, tasks, thesis, strategy, evidence, predictions — the founder operating layer, read and write.</div>
+      <div class="sub">The full record of what Zade believes and why: goals, tasks, strategy, and the evidence behind every belief. Everything here can be viewed and edited directly.</div>
     </div>
     <div class="actions">
-      <a class="button secondary" href="/ui">Back to Zade</a>
-      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
-      <a class="button secondary" href="/ui/charter.html">Charters</a>
-      <a class="button secondary" href="/ui/ops.html">Ops</a>
-      <button id="loadAllBtn">Load All</button>
+      <button id="loadAllBtn" title="Reload every section on this page">Load All</button>
     </div>
   </header>
 
@@ -103,21 +60,21 @@
 
     <section class="panel" id="sec-thesis">
       <div class="panel-head">
-        <div><h2>Company Thesis</h2><div class="sub">Vision, mission, customer, moats, and the assumptions the whole company rests on. Single record, upserted.</div></div>
+        <div><h2>Company Thesis</h2><div class="sub">The core story of the company: why it exists, who it's for, and what has to stay true for it to work. There's only one of these — saving here overwrites the last version.</div></div>
       </div>
       <div class="form">
-        <label>Vision <textarea id="th-vision" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
-        <label>Mission <textarea id="th-mission" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+        <label>Vision <span class="hint">The big long-term picture you're building toward</span><textarea id="th-vision" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+        <label>Mission <span class="hint">What the company actually does, day to day</span><textarea id="th-mission" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
         <div class="row">
-          <label>Why now <textarea id="th-why_now" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
-          <label>Customer <textarea id="th-customer" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+          <label>Why now <span class="hint">Why this is the right moment for this bet</span><textarea id="th-why_now" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+          <label>Customer <span class="hint">Who you're building this for</span><textarea id="th-customer" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
         </div>
-        <label>Status <input id="th-status" placeholder="draft"></label>
-        <label>Everything else (JSON) — unfair_advantages, core_assumptions, strategic_moats, success_metrics, failure_modes, unknown_unknowns, evidence
+        <label>Status <span class="hint">e.g. draft, active</span><input id="th-status" placeholder="draft"></label>
+        <label>Everything else (JSON) <span class="hint">Advanced fields: unfair advantages, core assumptions, strategic moats, success metrics, failure modes, unknown unknowns, evidence</span>
           <textarea id="th-rest" rows="8"></textarea>
         </label>
         <div class="actions">
-          <button id="th-saveBtn">Save Thesis</button>
+          <button id="th-saveBtn" title="Overwrites the single stored company thesis with the fields above">Save Thesis</button>
           <span class="notice" id="th-notice"></span>
         </div>
       </div>
@@ -125,8 +82,8 @@
 
     <section class="panel" id="sec-mental-models">
       <div class="panel-head">
-        <div><h2>Mental Models</h2><div class="sub">Reference lenses for hard calls. Read-only.</div></div>
-        <button class="secondary tiny" id="mm-loadBtn">Load</button>
+        <div><h2>Mental Models</h2><div class="sub">Reference lenses Zade can apply to hard calls (e.g. first-principles thinking, second-order effects). Built in, not editable here.</div></div>
+        <button class="secondary tiny" id="mm-loadBtn" title="Fetch the list of mental models Zade has available">Load</button>
       </div>
       <div id="mm-list"><div class="muted">Not loaded yet.</div></div>
     </section>
@@ -155,6 +112,46 @@
     const byId = (id) => document.getElementById(id);
     const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const truncate = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+
+    // Raw snake_case/enum values (statuses, review types, etc.) read as jargon
+    // to a non-technical founder; show them as plain capitalized phrases instead.
+    function prettyLabel(value) {
+      if (value == null || value === '') return '';
+      return String(value).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    // A "field_name" turned into "Field name" for use as a display label.
+    function prettyFieldName(key) {
+      return String(key).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    function confidencePct(value) {
+      if (value == null || value === '') return null;
+      const num = Number(value);
+      if (Number.isNaN(num)) return null;
+      return Math.round(num > 1 ? num : num * 100) + '%';
+    }
+
+    // Evidence is graded A-F for how much weight it should carry when Zade
+    // updates a belief's confidence. Grade meanings, from src/cofounder_kernel/founder.py.
+    const GRADE_MEANINGS = {
+      A: 'Strong, directly observed evidence (e.g. hard data you measured yourself) — moves belief the most.',
+      B: 'Solid evidence from a credible source — moves belief a good amount.',
+      C: 'Weak or anecdotal evidence (a single conversation, an impression) — moves belief a little.',
+      D: 'Very weak evidence — barely moves belief. Used as the default when no grade is set.',
+      F: 'Unreliable or junk evidence — does not move belief at all.'
+    };
+    const GRADE_HINT = 'A = strong, directly observed. B = solid, credible source. C = weak/anecdotal. D = very weak (default). F = unreliable, ignored.';
+
+    function prettyGrade(letter) {
+      const g = String(letter == null ? '' : letter).toUpperCase();
+      return g || 'D';
+    }
+
+    function gradeMeaning(letter) {
+      const g = prettyGrade(letter);
+      return GRADE_MEANINGS[g] || GRADE_MEANINGS.D;
+    }
     async function withBusy(btn, workingLabel, fn) {
       const original = btn.textContent;
       btn.disabled = true;
@@ -189,21 +186,21 @@
           { key: 'target', label: 'Target', type: 'text' },
           { key: 'deadline', label: 'Deadline', type: 'text', placeholder: '2026-08-01' },
           { key: 'owner', label: 'Owner', type: 'text' },
-          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How sure Zade is this goal is on track' },
           { key: 'status', label: 'Status', type: 'text', default: 'active' },
-          { key: 'evidence_ids', label: 'Evidence IDs (JSON list)', type: 'json', default: '[]' },
+          { key: 'evidence_ids', label: 'Evidence IDs (JSON list)', type: 'json', default: '[]', hint: 'IDs of Evidence entries that back this goal' },
           { key: 'blockers', label: 'Blockers (JSON list)', type: 'json', default: '[]' },
           { key: 'related_assumption_ids', label: 'Related assumption IDs (JSON list)', type: 'json', default: '[]' },
           { key: 'related_decision_ids', label: 'Related decision IDs (JSON list)', type: 'json', default: '[]' },
           { key: 'related_bet_ids', label: 'Related bet IDs (JSON list)', type: 'json', default: '[]' },
-          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}', hint: 'Free-form extra data, only if you need it' }
         ],
         itemTitle: (i) => i.name,
-        itemSub: (i) => [i.status, i.owner, i.metric, i.deadline].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.status), i.owner, i.metric, i.deadline].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
-        key: 'initiatives', title: 'Initiatives', sub: 'Larger efforts that stage from proposed to shipped, staffed with tasks.',
+        key: 'initiatives', title: 'Initiatives', sub: 'Bigger projects that move through stages from proposed to shipped, made up of individual tasks.',
         listPath: (f) => '/founder/initiatives?' + buildQuery({ status: f.status, limit: 50 }),
         filters: [{ id: 'status', placeholder: 'status filter' }],
         createPath: '/founder/initiatives',
@@ -211,22 +208,22 @@
           { key: 'objective', label: 'Objective', type: 'text', required: true },
           { key: 'why_it_matters', label: 'Why it matters', type: 'textarea' },
           { key: 'expected_business_impact', label: 'Expected business impact', type: 'textarea' },
-          { key: 'priority', label: 'Priority (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'priority', label: 'Priority (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How important this is relative to other initiatives' },
           { key: 'owner', label: 'Owner', type: 'text' },
           { key: 'due_date', label: 'Due date', type: 'text', placeholder: '2026-08-01' },
-          { key: 'current_stage', label: 'Current stage', type: 'text', default: 'proposed' },
+          { key: 'current_stage', label: 'Current stage', type: 'text', default: 'proposed', hint: 'e.g. proposed, in progress, shipped' },
           { key: 'dependencies', label: 'Dependencies (JSON list)', type: 'json', default: '[]' },
           { key: 'blockers', label: 'Blockers (JSON list)', type: 'json', default: '[]' },
           { key: 'success_criteria', label: 'Success criteria (JSON list)', type: 'json', default: '[]' },
           { key: 'evidence', label: 'Evidence (JSON list)', type: 'json', default: '[]' },
-          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How sure Zade is this will pay off' },
           { key: 'current_risk', label: 'Current risk', type: 'text', default: 'medium' },
           { key: 'next_review', label: 'Next review', type: 'text', placeholder: '2026-08-01' },
           { key: 'status', label: 'Status', type: 'text', default: 'active' },
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.objective,
-        itemSub: (i) => [i.current_stage, i.status, i.owner, i.due_date].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.current_stage), prettyLabel(i.status), i.owner, i.due_date].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
@@ -246,11 +243,11 @@
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.title,
-        itemSub: (i) => [i.status, i.owner, i.due_date].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.status), i.owner, i.due_date].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
-        key: 'kill-criteria', title: 'Kill Criteria', sub: 'The line that ends a bet, task, or goal before sunk cost decides for us.',
+        key: 'kill-criteria', title: 'Kill Criteria', sub: 'The line that ends a bet, task, or goal before sunk cost makes the call for you — set the condition now, honor it later.',
         listPath: () => '/founder/kill-criteria?' + buildQuery({ limit: 50 }),
         createPath: '/founder/kill-criteria',
         fields: [
@@ -264,12 +261,12 @@
           { key: 'status', label: 'Status', type: 'text', default: 'active' },
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
-        itemTitle: (i) => (i.subject_type || 'subject') + ' #' + i.subject_id,
+        itemTitle: (i) => prettyLabel(i.subject_type || 'subject') + ' #' + i.subject_id,
         itemSub: (i) => [i.metric, i.threshold, i.by_date].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
-        key: 'overrides', title: 'Founder Overrides', sub: "When the founder's call differs from Zade's recommendation, and why.",
+        key: 'overrides', title: 'Founder Overrides', sub: "A record of every time the founder's call differed from Zade's recommendation, and why.",
         listPath: () => '/founder/overrides?' + buildQuery({ limit: 50 }),
         createPath: '/founder/overrides',
         fields: [
@@ -283,10 +280,10 @@
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.founder_decision,
-        itemSub: (i) => [i.subject_type, i.subject_id, i.review_date].filter(Boolean).join(' · ')
+        itemSub: (i) => [prettyLabel(i.subject_type), i.subject_id, i.review_date].filter(Boolean).join(' · ')
       },
       {
-        key: 'thesis-conflicts', title: 'Thesis Conflicts', sub: 'Evidence that contradicts a standing assumption in the company thesis.',
+        key: 'thesis-conflicts', title: 'Thesis Conflicts', sub: 'Cases where new evidence goes against something the company thesis assumes to be true.',
         listPath: (f) => '/founder/thesis-conflicts?' + buildQuery({ status: f.status, limit: 50 }),
         filters: [{ id: 'status', placeholder: 'status filter' }],
         createPath: '/founder/thesis-conflicts',
@@ -294,7 +291,7 @@
           { key: 'evidence_id', label: 'Evidence ID (auto-fills the rest if set)', type: 'number' },
           { key: 'original_assumption', label: 'Original assumption', type: 'textarea' },
           { key: 'new_evidence', label: 'New evidence', type: 'textarea' },
-          { key: 'severity', label: 'Severity', type: 'text' },
+          { key: 'severity', label: 'Severity', type: 'text', hint: 'How serious this conflict is: green = keep watching, yellow = adjust confidence or gather more evidence, orange = needs a decision memo before proceeding' },
           { key: 'affected_assumption', label: 'Affected assumption', type: 'textarea' },
           { key: 'implication', label: 'Implication', type: 'textarea' },
           { key: 'recommended_response', label: 'Recommended response', type: 'textarea' },
@@ -302,7 +299,7 @@
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.affected_assumption || i.original_assumption || 'conflict #' + i.id,
-        itemSub: (i) => [i.severity, i.status].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.severity), prettyLabel(i.status)].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
@@ -320,10 +317,10 @@
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.prediction || i.error_type || 'missed call #' + i.id,
-        itemSub: (i) => [i.error_type].filter(Boolean).join(' · ')
+        itemSub: (i) => [prettyLabel(i.error_type)].filter(Boolean).join(' · ')
       },
       {
-        key: 'cadence-reviews', title: 'Cadence Reviews', sub: 'Daily/weekly/monthly self-review of drift and highest-leverage action.',
+        key: 'cadence-reviews', title: 'Cadence Reviews', sub: "Zade's regular self-check-in — has anything drifted off track, and what's the single most useful thing to do next.",
         listPath: (f) => '/founder/cadence-reviews?' + buildQuery({ review_type: f.review_type, limit: 50 }),
         filters: [{ id: 'review_type', placeholder: 'review type filter' }],
         createPath: '/founder/cadence-reviews',
@@ -341,10 +338,10 @@
         itemSub: (i) => i.highest_leverage_action || '',
         itemPill: (i) => i.drift_detected ? 'drift' : null,
         extraHtml: (sec) => `
-          <div class="actions" style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px;">
+          <div class="actions" style="margin-top:10px;border-top:1px solid var(--z-line);padding-top:10px;">
             <input id="${sec.key}-gen-type" placeholder="review type" value="daily" style="max-width:130px;">
             <input id="${sec.key}-gen-period" placeholder="period (optional)" style="max-width:150px;">
-            <button class="secondary tiny" id="${sec.key}-genBtn">Generate</button>
+            <button class="secondary tiny" id="${sec.key}-genBtn" title="Have Zade generate a new cadence review for this period">Generate</button>
             <span class="notice" id="${sec.key}-gen-notice"></span>
           </div>`,
         afterRender: (sec) => {
@@ -373,7 +370,7 @@
           { key: 'decision', label: 'Decision', type: 'textarea', required: true },
           { key: 'reason', label: 'Reason', type: 'textarea' },
           { key: 'expected_outcome', label: 'Expected outcome', type: 'textarea' },
-          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How sure Zade is this was the right call' },
           { key: 'time_horizon', label: 'Time horizon', type: 'text' },
           { key: 'dependencies', label: 'Dependencies (JSON list)', type: 'json', default: '[]' },
           { key: 'status', label: 'Status', type: 'text', default: 'active' },
@@ -383,44 +380,44 @@
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.title,
-        itemSub: (i) => [i.category, i.status, i.owner].filter(Boolean).join(' · '),
+        itemSub: (i) => [i.category, prettyLabel(i.status), i.owner].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
-        key: 'strategy-objects', title: 'Strategy Objects & Bets', sub: 'Active bets and other tracked strategic objects, with reversal triggers.',
+        key: 'strategy-objects', title: 'Strategy Objects & Bets', sub: 'Big bets and other strategic commitments being tracked, including the condition that would make you reverse course.',
         listPath: (f) => '/founder/strategy-objects?' + buildQuery({ object_type: f.object_type, limit: 50 }),
         filters: [{ id: 'object_type', placeholder: 'object type filter' }],
         createPath: '/founder/strategy-objects',
         fields: [
-          { key: 'object_type', label: 'Object type', type: 'text', required: true, default: 'active_bet' },
+          { key: 'object_type', label: 'Object type', type: 'text', required: true, default: 'active_bet', hint: 'e.g. active_bet' },
           { key: 'title', label: 'Title', type: 'text', required: true },
           { key: 'owner', label: 'Owner', type: 'text' },
           { key: 'deadline', label: 'Deadline', type: 'text', placeholder: '2026-08-01' },
-          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How sure Zade is this bet pays off' },
           { key: 'status', label: 'Status', type: 'text', default: 'active' },
-          { key: 'reversal_trigger', label: 'Reversal trigger', type: 'textarea' },
+          { key: 'reversal_trigger', label: 'Reversal trigger', type: 'textarea', hint: 'What would make you back out of this bet' },
           { key: 'details', label: 'Details (JSON)', type: 'json', default: '{}' },
           { key: 'evidence_ids', label: 'Evidence IDs (JSON list)', type: 'json', default: '[]' },
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.title,
-        itemSub: (i) => [i.object_type, i.status, 'confidence ' + i.confidence].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.object_type), prettyLabel(i.status), confidencePct(i.confidence) ? confidencePct(i.confidence) + ' confident' : ''].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
-        key: 'links', title: 'Links', sub: 'Explicit relationships between any two ledger objects.',
+        key: 'links', title: 'Links', sub: 'How two things in the ledger relate to each other — e.g. "this goal depends on that assumption."',
         listPath: () => '/founder/links?' + buildQuery({ limit: 50 }),
         createPath: '/founder/links',
         fields: [
           { key: 'from_type', label: 'From type', type: 'text', required: true },
           { key: 'from_id', label: 'From ID', type: 'number', required: true },
-          { key: 'relation', label: 'Relation', type: 'text', default: 'related_to' },
+          { key: 'relation', label: 'Relation', type: 'text', default: 'related_to', hint: 'How the two are related, e.g. depends_on, informs, contradicts' },
           { key: 'to_type', label: 'To type', type: 'text', required: true },
           { key: 'to_id', label: 'To ID', type: 'number', required: true },
-          { key: 'strength', label: 'Strength (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'strength', label: 'Strength (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How strong this relationship is' },
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
-        itemTitle: (i) => `${i.from_type}#${i.from_id} —${i.relation}→ ${i.to_type}#${i.to_id}`,
+        itemTitle: (i) => `${prettyLabel(i.from_type)} #${i.from_id} — ${prettyLabel(i.relation)} → ${prettyLabel(i.to_type)} #${i.to_id}`,
         itemSub: (i) => 'strength ' + i.strength
       },
       {
@@ -454,16 +451,16 @@
           { key: 'roles', label: 'Roles (JSON dict, overrides the 9 defaults)', type: 'json', default: '{}' },
           { key: 'top_risks', label: 'Top risks (JSON list)', type: 'json', default: '[]' },
           { key: 'blind_spots', label: 'Blind spots (JSON list)', type: 'json', default: '[]' },
-          { key: 'confidence_adjustment', label: 'Confidence adjustment (-100 to 100)', type: 'number', default: 0, min: -100, max: 100 },
+          { key: 'confidence_adjustment', label: 'Confidence adjustment (-100 to 100)', type: 'number', default: 0, min: -100, max: 100, hint: 'How much this review should shift confidence up or down (negative lowers it)' },
           { key: 'recommendation', label: 'Recommendation', type: 'text', default: 'proceed_with_changes' },
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.title,
-        itemSub: (i) => [i.subject_type, i.recommendation, i.confidence_adjustment != null ? 'adj ' + i.confidence_adjustment : ''].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.subject_type), prettyLabel(i.recommendation), i.confidence_adjustment != null ? 'adjustment ' + i.confidence_adjustment : ''].filter(Boolean).join(' · '),
         itemPill: (i) => i.recommendation
       },
       {
-        key: 'decisions', title: 'Decision Memos', sub: 'Problem, options considered, recommendation, and who disagrees.',
+        key: 'decisions', title: 'Decision Memos', sub: 'The problem, the options considered, what was recommended, and who disagreed.',
         listPath: (f) => '/founder/decisions?' + buildQuery({ status: f.status, limit: 50 }),
         filters: [{ id: 'status', placeholder: 'status filter' }],
         createPath: '/founder/decisions',
@@ -473,7 +470,7 @@
           { key: 'options', label: 'Options considered (JSON list)', type: 'json', default: '[]' },
           { key: 'recommendation', label: 'Recommendation', type: 'textarea' },
           { key: 'why', label: 'Why', type: 'textarea' },
-          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How sure Zade is this was the right call' },
           { key: 'expected_outcome', label: 'Expected outcome', type: 'textarea' },
           { key: 'expected_failure_modes', label: 'Expected failure modes (JSON list)', type: 'json', default: '[]' },
           { key: 'who_disagrees', label: 'Who disagrees', type: 'text' },
@@ -484,48 +481,49 @@
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.problem,
-        itemSub: (i) => [i.status, 'confidence ' + i.confidence, i.decision_date].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.status), confidencePct(i.confidence) ? confidencePct(i.confidence) + ' confident' : '', i.decision_date].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
-        key: 'assumptions', title: 'Assumptions', sub: 'What we believe but have not proven, and what would prove us wrong.',
+        key: 'assumptions', title: 'Assumptions', sub: 'What Zade believes but has not proven, and what evidence would prove it wrong.',
         listPath: (f) => '/founder/assumptions?' + buildQuery({ status: f.status, limit: 50 }),
         filters: [{ id: 'status', placeholder: 'status filter' }],
         createPath: '/founder/assumptions',
         fields: [
           { key: 'statement', label: 'Statement', type: 'textarea', required: true },
           { key: 'category', label: 'Category', type: 'text', default: 'product' },
-          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How sure Zade is this assumption holds' },
           { key: 'status', label: 'Status', type: 'text', default: 'active' },
           { key: 'review_date', label: 'Review date', type: 'text', placeholder: '2026-08-01' },
-          { key: 'invalidation_signal', label: 'Invalidation signal', type: 'textarea' },
+          { key: 'invalidation_signal', label: 'Invalidation signal', type: 'textarea', hint: 'The evidence that would prove this assumption wrong' },
           { key: 'evidence_ids', label: 'Evidence IDs (JSON list)', type: 'json', default: '[]' },
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.statement,
-        itemSub: (i) => [i.category, i.status, 'confidence ' + i.confidence].filter(Boolean).join(' · '),
+        itemSub: (i) => [i.category, prettyLabel(i.status), confidencePct(i.confidence) ? confidencePct(i.confidence) + ' confident' : ''].filter(Boolean).join(' · '),
         itemPill: (i) => i.status
       },
       {
-        key: 'evidence', title: 'Evidence', sub: 'Sourced facts that support or contradict a claim, with a reliability grade.',
+        key: 'evidence', title: 'Evidence', sub: 'Facts that support or contradict a belief, each graded for how much weight it should carry. This is what moves confidence numbers everywhere else in the app.',
         listPath: () => '/founder/evidence?' + buildQuery({ limit: 50 }),
         createPath: '/founder/evidence',
         fields: [
-          { key: 'evidence_type', label: 'Evidence type', type: 'text', default: 'founder observation' },
-          { key: 'source', label: 'Source', type: 'text', required: true },
+          { key: 'evidence_type', label: 'Evidence type', type: 'text', default: 'founder observation', hint: 'What kind of evidence this is, e.g. founder observation, user interview, metric' },
+          { key: 'source', label: 'Source', type: 'text', required: true, hint: 'Where this came from (a person, a document, a data source)' },
           { key: 'evidence_date', label: 'Evidence date', type: 'text', placeholder: '2026-08-01' },
-          { key: 'reliability', label: 'Reliability (A-D)', type: 'text', default: 'D' },
-          { key: 'claim_supported', label: 'Claim supported', type: 'textarea' },
-          { key: 'claim_contradicted', label: 'Claim contradicted', type: 'textarea' },
-          { key: 'strength', label: 'Strength (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'reliability', label: 'Grade (A-F)', type: 'text', default: 'D', hint: GRADE_HINT },
+          { key: 'claim_supported', label: 'Claim supported', type: 'textarea', hint: 'The belief this evidence backs up, if any' },
+          { key: 'claim_contradicted', label: 'Claim contradicted', type: 'textarea', hint: 'The belief this evidence goes against, if any' },
+          { key: 'strength', label: 'Strength (0-100)', type: 'number', default: 50, min: 0, max: 100, hint: 'How strong a signal this specific item is, independent of its grade' },
           { key: 'linked_assumption_id', label: 'Linked assumption ID', type: 'number' },
           { key: 'linked_decision_id', label: 'Linked decision ID', type: 'number' },
           { key: 'notes', label: 'Notes', type: 'textarea' },
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.source,
-        itemSub: (i) => [i.evidence_type, 'reliability ' + i.reliability, 'strength ' + i.strength].filter(Boolean).join(' · '),
-        itemPill: (i) => i.reliability
+        itemSub: (i) => [i.evidence_type, 'grade ' + prettyGrade(i.reliability), 'strength ' + i.strength].filter(Boolean).join(' · '),
+        itemPill: (i) => i.reliability,
+        itemPillTitle: (i) => gradeMeaning(i.reliability)
       },
       {
         key: 'predictions', title: 'Predictions', sub: 'Calibrated forecasts, scored later against what actually happened.',
@@ -534,17 +532,17 @@
         createPath: '/founder/predictions',
         fields: [
           { key: 'prediction', label: 'Prediction', type: 'textarea', required: true },
-          { key: 'probability', label: 'Probability (0-1)', type: 'number', required: true, step: 0.01, min: 0, max: 1 },
+          { key: 'probability', label: 'Probability (0-1)', type: 'number', required: true, step: 0.01, min: 0, max: 1, hint: 'Your best-guess likelihood this comes true, as a decimal (0.7 = 70% likely)' },
           { key: 'time_horizon', label: 'Time horizon', type: 'text' },
           { key: 'due_at', label: 'Due at', type: 'text', placeholder: '2026-08-01' },
           { key: 'evidence', label: 'Evidence (JSON list)', type: 'json', default: '[]' },
           { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
         ],
         itemTitle: (i) => i.prediction,
-        itemSub: (i) => [i.result, i.probability != null ? 'p=' + i.probability : '', i.due_at].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.result), confidencePct(i.probability) ? confidencePct(i.probability) + ' likely' : '', i.due_at].filter(Boolean).join(' · '),
         itemPill: (i) => i.result,
         extraHtml: (sec) => `
-          <div class="form" style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px;">
+          <div class="form" style="margin-top:10px;border-top:1px solid var(--z-line);padding-top:10px;">
             <h3>Score a prediction</h3>
             <div class="row">
               <label>Prediction ID <input id="${sec.key}-sc-id" type="number"></label>
@@ -555,7 +553,7 @@
             <label>Lessons <textarea id="${sec.key}-sc-lessons" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
             <label>Worldview update <textarea id="${sec.key}-sc-worldview" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
             <div class="actions">
-              <button class="secondary tiny" id="${sec.key}-scoreBtn">Score</button>
+              <button class="secondary tiny" id="${sec.key}-scoreBtn" title="Record what actually happened and update this prediction's result">Score</button>
               <span class="notice" id="${sec.key}-sc-notice"></span>
             </div>
           </div>`,
@@ -590,7 +588,7 @@
         filters: [{ id: 'status', placeholder: 'status filter (open, ...)' }],
         readOnly: true,
         itemTitle: (i) => i.message,
-        itemSub: (i) => [i.warning_type, (i.subject_type || 'subject') + ' #' + i.subject_id, i.recommendation].filter(Boolean).join(' · '),
+        itemSub: (i) => [prettyLabel(i.warning_type), prettyLabel(i.subject_type || 'subject') + ' #' + i.subject_id, i.recommendation].filter(Boolean).join(' · '),
         itemPill: (i) => i.severity,
         extraHtml: (sec) => `
           <div class="actions">
@@ -611,21 +609,25 @@
         }
       },
       {
-        key: 'confidence-events', title: 'Confidence Events', sub: 'Every belief-confidence change and why — the audit trail behind every percentage shown elsewhere.',
+        key: 'confidence-events', title: 'Confidence Events', sub: 'A log of every time Zade changed how confident it is about something, and why. This is the trail behind every confidence percentage shown elsewhere.',
         listPath: () => '/founder/confidence-events?' + buildQuery({ limit: 50 }),
         readOnly: true,
-        itemTitle: (i) => (i.subject_type || 'subject') + ' #' + i.subject_id + ': ' + i.previous_confidence + ' → ' + i.new_confidence,
+        itemTitle: (i) => prettyLabel(i.subject_type || 'subject') + ' #' + i.subject_id + ': ' + (confidencePct(i.previous_confidence) || i.previous_confidence) + ' → ' + (confidencePct(i.new_confidence) || i.new_confidence) + ' confident',
         itemSub: (i) => i.reason || ''
       }
     ];
 
+    function fieldHintHtml(f) {
+      return f.hint ? `<span class="hint">${esc(f.hint)}</span>` : '';
+    }
+
     function fieldInputHtml(sec, f) {
       const id = sec.key + '-' + f.key;
       if (f.type === 'textarea') {
-        return `<label>${esc(f.label)}<textarea id="${id}" rows="2" style="font-family:inherit;font-size:13px;" placeholder="${esc(f.placeholder || '')}"></textarea></label>`;
+        return `<label>${esc(f.label)}${fieldHintHtml(f)}<textarea id="${id}" rows="2" style="font-family:inherit;font-size:13px;" placeholder="${esc(f.placeholder || '')}"></textarea></label>`;
       }
       if (f.type === 'json') {
-        return `<label>${esc(f.label)}<textarea id="${id}" rows="2">${esc(f.default != null ? f.default : '{}')}</textarea></label>`;
+        return `<label>${esc(f.label)}${fieldHintHtml(f)}<textarea id="${id}" rows="2">${esc(f.default != null ? f.default : '{}')}</textarea></label>`;
       }
       if (f.type === 'number') {
         const attrs = [
@@ -633,12 +635,12 @@
           f.max != null ? `max="${f.max}"` : '',
           f.step != null ? `step="${f.step}"` : ''
         ].filter(Boolean).join(' ');
-        return `<label>${esc(f.label)}<input id="${id}" type="number" ${attrs} value="${f.default != null ? esc(f.default) : ''}" placeholder="${esc(f.placeholder || '')}"></label>`;
+        return `<label>${esc(f.label)}${fieldHintHtml(f)}<input id="${id}" type="number" ${attrs} value="${f.default != null ? esc(f.default) : ''}" placeholder="${esc(f.placeholder || '')}"></label>`;
       }
       if (f.type === 'checkbox') {
-        return `<label><input id="${id}" type="checkbox" style="width:auto;display:inline-block;margin-right:6px;">${esc(f.label)}</label>`;
+        return `<label><input id="${id}" type="checkbox" style="width:auto;display:inline-block;margin-right:6px;">${esc(f.label)}${fieldHintHtml(f)}</label>`;
       }
-      return `<label>${esc(f.label)}<input id="${id}" type="text" placeholder="${esc(f.placeholder || '')}" value="${f.default != null ? esc(f.default) : ''}"></label>`;
+      return `<label>${esc(f.label)}${fieldHintHtml(f)}<input id="${id}" type="text" placeholder="${esc(f.placeholder || '')}" value="${f.default != null ? esc(f.default) : ''}"></label>`;
     }
 
     function fieldsHtml(sec) {
@@ -660,7 +662,7 @@
             <div class="form" style="margin-top:10px;">
               ${fieldsHtml(sec)}
               <div class="actions">
-                <button data-create="${sec.key}">Create</button>
+                <button data-create="${sec.key}" title="${esc('Add a new ' + sec.title.toLowerCase().replace(/s$/, '') + ' entry')}">Create</button>
                 <span class="notice" id="notice-${sec.key}"></span>
               </div>
             </div>`;
@@ -677,7 +679,7 @@
             <div><h2>${esc(sec.title)} <span class="count" id="${sec.key}-count"></span></h2><div class="sub">${esc(sec.sub)}</div></div>
             <div class="filters">
               ${filters}
-              <button class="secondary tiny" data-load="${sec.key}">Load</button>
+              <button class="secondary tiny" data-load="${sec.key}" title="${esc('Fetch the latest ' + sec.title.toLowerCase())}">Load</button>
             </div>
           </div>
           <div class="list" id="list-${sec.key}"><div class="muted">Not loaded yet.</div></div>
@@ -686,18 +688,68 @@
       `;
     }
 
+    // Keys that read fine as-is (ids, timestamps) versus ones worth prettifying
+    // as a percentage or a plain-language phrase in the "Full record" view.
+    const CONFIDENCE_LIKE_KEYS = /confidence|strength|priority$/i;
+    const ENUM_LIKE_KEYS = /^(status|reliability|current_stage|current_risk|error_type|severity|object_type|subject_type|recommendation|review_type|result|category|relation|warning_type)$/i;
+
+    function renderFieldValue(key, value) {
+      if (value == null || value === '') return '<span class="muted">—</span>';
+      if (key === 'reliability') {
+        const g = prettyGrade(value);
+        return `<span title="${esc(gradeMeaning(g))}">Grade ${esc(g)} — ${esc(gradeMeaning(g))}</span>`;
+      }
+      if (key === 'probability') {
+        const pct = confidencePct(value);
+        return pct != null ? esc(pct) + ' likely' : esc(String(value));
+      }
+      if (CONFIDENCE_LIKE_KEYS.test(key) && typeof value === 'number') {
+        return esc(String(value)) + (key === 'confidence_adjustment' ? '' : '/100');
+      }
+      if (ENUM_LIKE_KEYS.test(key) && typeof value === 'string') {
+        return esc(prettyLabel(value));
+      }
+      if (Array.isArray(value)) {
+        if (!value.length) return '<span class="muted">None.</span>';
+        const items = value.map((v) => typeof v === 'object' && v !== null ? esc(JSON.stringify(v)) : esc(String(v)));
+        return '<ul style="margin:2px 0 0; padding-left:16px;">' + items.map((v) => '<li>' + v + '</li>').join('') + '</ul>';
+      }
+      if (typeof value === 'object') {
+        const entries = Object.entries(value);
+        if (!entries.length) return '<span class="muted">None.</span>';
+        return '<ul style="margin:2px 0 0; padding-left:16px;">' + entries.map(([k, v]) => `<li><strong>${esc(prettyFieldName(k))}:</strong> ${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</li>`).join('') + '</ul>';
+      }
+      if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+      return esc(String(value));
+    }
+
+    // Replaces a raw JSON.stringify dump with a labeled, plain-language summary
+    // of every field on the record — same information, readable by a founder
+    // instead of a developer.
+    function renderFullRecord(item) {
+      const skip = new Set(['id', 'created_at', 'updated_at']);
+      const rows = Object.entries(item || {})
+        .filter(([k]) => !skip.has(k))
+        .map(([k, v]) => `<div style="margin-top:6px;"><strong>${esc(prettyFieldName(k))}</strong><div>${renderFieldValue(k, v)}</div></div>`)
+        .join('');
+      const meta = [item.id != null ? '#' + item.id : '', item.created_at ? 'created ' + item.created_at : '', item.updated_at ? 'updated ' + item.updated_at : '']
+        .filter(Boolean).join(' · ');
+      return `<div style="font-size:12.5px;">${meta ? `<div class="muted">${esc(meta)}</div>` : ''}${rows}</div>`;
+    }
+
     function renderItem(sec, item) {
       const title = sec.itemTitle(item) || '(untitled)';
       const sub = sec.itemSub ? sec.itemSub(item) : '';
       const pillVal = sec.itemPill ? sec.itemPill(item) : null;
+      const pillTitle = sec.itemPillTitle ? sec.itemPillTitle(item) : (sec.key === 'evidence' ? gradeMeaning(pillVal) : '');
       return `
         <article class="item">
           <div class="topline">
             <strong>${esc(truncate(title, 160))}</strong>
-            ${pillVal ? `<span class="pill">${esc(pillVal)}</span>` : ''}
+            ${pillVal ? `<span class="pill"${pillTitle ? ` title="${esc(pillTitle)}"` : ''}>${esc(sec.key === 'evidence' ? 'Grade ' + prettyGrade(pillVal) : prettyLabel(pillVal))}</span>` : ''}
           </div>
           ${sub ? `<div class="muted">${esc(truncate(sub, 200))}</div>` : ''}
-          <details><summary>Full record</summary><pre>${esc(JSON.stringify(item, null, 2))}</pre></details>
+          <details><summary>Full record</summary>${renderFullRecord(item)}</details>
         </article>
       `;
     }
