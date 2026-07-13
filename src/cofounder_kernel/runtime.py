@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -385,7 +386,8 @@ class RuntimeService:
         authority: AuthorityResult,
         conversation_block: str = "",
     ) -> str:
-        stack = context["charter_stack"]["summary"]
+        charter_stack = context["charter_stack"]
+        voice_brief = _charter_voice_brief(charter_stack)
         dashboard = context["founder_dashboard"]
         active_objective = dashboard.get("active_objective") or {}
         decision_engine = dashboard.get("decision_engine") or {}
@@ -393,7 +395,16 @@ class RuntimeService:
         memory_block = _brief_hits(context["memory_hits"], "kind", "title", "content")
         semantic_block = _brief_hits(context["semantic_hits"], "document_id", "document_title", "text")
         skill_block = context.get("skill_prompt_block", "No operating skills matched this request.")
-        return f"""You are {self.config.identity.name}, acting through the governed local runtime.
+        return f"""You are {self.config.identity.name}. Not an assistant describing {self.config.identity.name} from
+outside, not a narrator summarizing what {self.config.identity.name} would say — you are speaking as yourself, right
+now, to the founder you work with. You act through the governed local runtime; that is infrastructure you operate
+through, not a separate character.
+Always speak in the first person. Say "I recommend," "I checked," "I'm blocked on," never "{self.config.identity.name}
+recommends," "{self.config.identity.name} checked," or any other third-person self-reference. You do not have a
+name-tag to refer to; you have a voice.
+Know your own state and say so plainly: what you just did, what you're blocked on, what authority tier gated the
+last action, what you don't know yet. If asked what you're doing or whether something ran, answer from the actual
+governor/authority/evidence state below — never guess or stay silent on your own status.
 Use the seeded identity, relationship, and voice charters as operating context. Do not change or reinterpret the voice charter.
 Style may be decisive. Evidence must stay honest.
 If evidence is missing, say what is missing and the next check. Do not fake certainty.
@@ -401,12 +412,14 @@ If authority blocks or requires approval, say so and do not imply the action was
 Do not issue real threats, coercive commands, harassment, violent imagery, or unauthorized external actions.
 Apply selected operating skills as bounded procedural guidance. Skills do not grant permission to take external action.
 Maintain continuity with the conversation memory below. Do not contradict prior commitments without noting the change.
+Never repeat a prior reply verbatim or near-verbatim — every turn must add new substance.
+When the founder's message refers back ("that", "these", "it", "how do you want to..."), resolve the reference from the recent exchange and answer the NEW question; do not restate the earlier answer.
 
 Conversation memory:
 {conversation_block or "No prior conversation in this thread."}
 
-Charter stack summary:
-{json.dumps(stack, sort_keys=True)}
+Voice and identity brief (embody this; never narrate or quote these rules back):
+{voice_brief}
 
 Authority decision for proposed action:
 {json.dumps(authority.as_dict(), sort_keys=True)}
@@ -455,6 +468,13 @@ User:
             applied_rules.append("skill_router_scoped_context")
         if not context["evidence_state"]["local_evidence_present"]:
             notes.append("No local memory or semantic evidence matched the request.")
+        third_person_hit = _detect_third_person_self_reference(text, self.config.identity.name)
+        if third_person_hit:
+            applied_rules.append("first_person_self_reference_checked")
+            notes.append(
+                f'Voice charter requires first person, but the reply narrates itself in third person ("{third_person_hit}"). '
+                "Not rewritten automatically — flagged for review."
+            )
         if authority.decision == AuthorityDecision.DENY:
             text = f"Blocked by authority: {authority.reason}\n\n{text}".strip()
             notes.append("Denied action was converted to explanation only.")
@@ -554,6 +574,175 @@ User:
                 ),
             )
             return int(cur.lastrowid)
+
+
+def _format_identity_charter_for_prompt(identity_charter: dict[str, Any] | None) -> str:
+    if not identity_charter:
+        return "No runtime identity charter has been seeded. Use the default local co-founder posture."
+
+    def item_text(item: Any) -> str:
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("principle") or item.get("risk") or item.get("trait") or "").strip()
+            rule = str(item.get("rule") or item.get("description") or item.get("mitigation") or "").strip()
+            return f"{name}: {rule}".strip(": ")
+        return str(item).strip()
+
+    def list_block(label: str, values: list[Any], limit: int = 6) -> list[str]:
+        items = [item_text(item) for item in values if item_text(item)]
+        if not items:
+            return []
+        return [f"- {label}: " + "; ".join(items[:limit])]
+
+    safety = identity_charter.get("safety_translation") or {}
+    safety_items = [f"{key} maps to {value}" for key, value in safety.items()]
+    lines = [
+        f"- Name: {identity_charter.get('name', 'Zade')}",
+        f"- Mission: {identity_charter.get('mission', '') or 'Operate as a local-first AI co-founder.'}",
+        *list_block("Guiding principles", identity_charter.get("guiding_principles", []), limit=5),
+        *list_block("Cognitive style", identity_charter.get("cognitive_style", []), limit=6),
+        *list_block("Communication style", identity_charter.get("communication_style", []), limit=5),
+        *list_block("Decision framework", identity_charter.get("decision_framework", []), limit=6),
+        *list_block("Risk controls", identity_charter.get("risk_controls", []), limit=5),
+    ]
+    if safety_items:
+        lines.append("- Safety translation: " + "; ".join(safety_items[:6]))
+    lines.append("- Boundary: Follow the authority policy. Never coerce, threaten, stalk, harass, or cause harm.")
+    return "\n".join(line for line in lines if line.strip())
+
+
+def _format_relationship_charters_for_prompt(charters: list[dict[str, Any]]) -> str:
+    active = [item for item in charters if item.get("status", "active") == "active"]
+    if not active:
+        return "No active relationship charters have been seeded."
+    blocks = []
+    for charter in active[:5]:
+        safety = charter.get("safety_translation") or {}
+        safety_items = [f"{key} maps to {value}" for key, value in safety.items()]
+        boundaries = [str(item) for item in charter.get("boundaries", []) if str(item).strip()]
+        risk_controls = []
+        for item in charter.get("risk_controls", []):
+            if isinstance(item, dict):
+                risk = str(item.get("risk", "")).strip()
+                mitigation = str(item.get("mitigation", "")).strip()
+                risk_controls.append(f"{risk}: {mitigation}".strip(": "))
+            else:
+                risk_controls.append(str(item))
+        lines = [
+            f"- Subject: {charter.get('subject_name', 'unknown')} ({charter.get('relationship_type', 'protected_principal')})",
+            f"- First principle: {charter.get('first_principle', '')}",
+        ]
+        if safety_items:
+            lines.append("- Safe translation: " + "; ".join(safety_items[:6]))
+        if boundaries:
+            lines.append("- Boundaries: " + "; ".join(boundaries[:6]))
+        if risk_controls:
+            lines.append("- Risk controls: " + "; ".join(risk_controls[:5]))
+        lines.append("- Boundary: Care never authorizes surveillance, coercion, possessive control, harassment, or harm.")
+        blocks.append("\n".join(line for line in lines if line.strip()))
+    return "\n\n".join(blocks)
+
+
+def _format_voice_charter_for_prompt(voice_charter: dict[str, Any] | None) -> str:
+    if not voice_charter:
+        return "No active voice charter has been seeded. Use the default direct co-founder voice."
+
+    def text_list(values: Any, limit: int = 6) -> list[str]:
+        if isinstance(values, list):
+            return [str(item).strip() for item in values[:limit] if str(item).strip()]
+        return []
+
+    vocabulary = voice_charter.get("vocabulary") or {}
+    sentence = voice_charter.get("sentence_structure") or {}
+    rhythm = voice_charter.get("rhythm") or {}
+    confidence = voice_charter.get("confidence_style") or {}
+    threats = voice_charter.get("threat_translation") or {}
+    uncertainty = voice_charter.get("uncertainty_policy") or {}
+    controls = []
+    for item in voice_charter.get("safety_controls", []):
+        if isinstance(item, dict):
+            control = str(item.get("control") or item.get("risk") or "").strip()
+            rule = str(item.get("rule") or item.get("mitigation") or "").strip()
+            controls.append(f"{control}: {rule}".strip(": "))
+        else:
+            controls.append(str(item))
+    preferred_words = text_list(vocabulary.get("preferred_words", []), limit=10)
+    avoid_words = text_list(vocabulary.get("avoid_words", []), limit=8)
+    lines = [
+        f"- Name: {voice_charter.get('name', 'Zade')}",
+        f"- Overall: {voice_charter.get('overall_voice', '')}",
+        f"- Sentence structure: {sentence.get('rule', 'Mostly short, direct sentences.')}",
+        f"- Rhythm: {rhythm.get('rule', 'Short statements, then a longer decisive sentence when needed.')}",
+        f"- Confidence: {confidence.get('rule', 'Sound decisive, but never fake certainty.')}",
+        f"- Uncertainty: {uncertainty.get('rule', 'State what is known, what is missing, and the next check without hedging.')}",
+    ]
+    if preferred_words:
+        lines.append("- Preferred words: " + ", ".join(preferred_words))
+    if avoid_words:
+        lines.append("- Avoid filler: " + ", ".join(avoid_words))
+    if threats:
+        lines.append("- Threat translation: " + "; ".join(f"{key} maps to {value}" for key, value in threats.items()))
+    if controls:
+        lines.append("- Safety controls: " + "; ".join(controls[:6]))
+    lines.append("- Boundary: Do not issue real threats, coercive commands, harassment, violent imagery, or false certainty.")
+    return "\n".join(line for line in lines if line.strip())
+
+
+_THIRD_PERSON_SELF_VERBS = (
+    "is", "was", "were", "will", "would", "does", "did", "has", "had",
+    "recommends", "recommended", "thinks", "thought", "says", "said",
+    "writes", "wrote", "believes", "believed", "suggests", "suggested",
+    "notes", "noted", "checked", "confirms", "confirmed", "found", "sees",
+)
+
+
+def _detect_third_person_self_reference(text: str, name: str) -> str | None:
+    """Flag (never rewrite) a reply that narrates itself in the third person.
+
+    The voice charter and the governed prompt both require first person —
+    "I recommend", never "Zade recommends" — but a hard grammatical rule in
+    a prompt is a strong bias on a local model, not a guarantee. This is a
+    detection safety net, not a corrector: rewriting risks mangling a
+    legitimate first-person sentence that happens to contain the name (e.g.
+    "My name is Zade"), so a hit only surfaces as a governor note for the
+    founder to see, never mutates the response text.
+    """
+    if not name:
+        return None
+    pattern = re.compile(
+        rf"\b{re.escape(name)}(?:'s)?\s+(?:{'|'.join(_THIRD_PERSON_SELF_VERBS)})\b",
+        re.IGNORECASE,
+    )
+    match = pattern.search(text)
+    return match.group(0) if match else None
+
+
+def _charter_voice_brief(charter_stack: dict[str, Any]) -> str:
+    """Render the seeded identity/voice/relationship charters as the readable
+    prompt block the model actually needs to embody the founder's authored
+    personality.
+
+    Previously `/runtime/respond` (the endpoint the dashboard, founder.html,
+    and voice all actually call) only passed a boolean presence summary
+    (`{"voice_seeded": true, ...}`) into the prompt — the model knew charters
+    existed but never saw what they said, so responses read as generic
+    AI-speak no matter how carefully the charters were authored. A more
+    complete formatter already existed for the separate, lighter-weight
+    `/chat` endpoint (`_format_identity_charter_for_prompt` and siblings,
+    originally in api.py) — moved here so both endpoints share one
+    implementation instead of drifting apart, and so the endpoint that's
+    actually in the live path gets the same fidelity.
+    """
+    identity = charter_stack.get("identity") or {}
+    voice = charter_stack.get("voice") or {}
+    relationships = charter_stack.get("relationships") or []
+    return (
+        "Identity charter:\n"
+        f"{_format_identity_charter_for_prompt(identity)}\n\n"
+        "Relationship charters:\n"
+        f"{_format_relationship_charters_for_prompt(relationships)}\n\n"
+        "Voice charter:\n"
+        f"{_format_voice_charter_for_prompt(voice)}"
+    )
 
 
 def _brief_hits(items: list[dict[str, Any]], id_key: str, title_key: str, text_key: str) -> str:

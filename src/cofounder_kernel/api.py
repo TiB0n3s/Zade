@@ -121,7 +121,12 @@ from .ops import KernelOpsService
 from .actions import ActionPipelineService
 from .commitments import CommitmentLedger
 from .notify import NotificationBus
-from .runtime import RuntimeService
+from .runtime import (
+    RuntimeService,
+    _format_identity_charter_for_prompt,
+    _format_relationship_charters_for_prompt,
+    _format_voice_charter_for_prompt,
+)
 from .skills import SkillService
 from .surfacing import SurfacingService
 from .voice import VoiceNotConfigured, VoiceService
@@ -1970,117 +1975,6 @@ Semantic local document snippets:
 User:
 {message}
 """
-
-
-def _format_identity_charter_for_prompt(identity_charter: dict[str, Any] | None) -> str:
-    if not identity_charter:
-        return "No runtime identity charter has been seeded. Use the default local co-founder posture."
-
-    def item_text(item: Any) -> str:
-        if isinstance(item, dict):
-            name = str(item.get("name") or item.get("principle") or item.get("risk") or item.get("trait") or "").strip()
-            rule = str(item.get("rule") or item.get("description") or item.get("mitigation") or "").strip()
-            return f"{name}: {rule}".strip(": ")
-        return str(item).strip()
-
-    def list_block(label: str, values: list[Any], limit: int = 6) -> list[str]:
-        items = [item_text(item) for item in values if item_text(item)]
-        if not items:
-            return []
-        return [f"- {label}: " + "; ".join(items[:limit])]
-
-    safety = identity_charter.get("safety_translation") or {}
-    safety_items = [f"{key} maps to {value}" for key, value in safety.items()]
-    lines = [
-        f"- Name: {identity_charter.get('name', 'Zade')}",
-        f"- Mission: {identity_charter.get('mission', '') or 'Operate as a local-first AI co-founder.'}",
-        *list_block("Guiding principles", identity_charter.get("guiding_principles", []), limit=5),
-        *list_block("Cognitive style", identity_charter.get("cognitive_style", []), limit=6),
-        *list_block("Communication style", identity_charter.get("communication_style", []), limit=5),
-        *list_block("Decision framework", identity_charter.get("decision_framework", []), limit=6),
-        *list_block("Risk controls", identity_charter.get("risk_controls", []), limit=5),
-    ]
-    if safety_items:
-        lines.append("- Safety translation: " + "; ".join(safety_items[:6]))
-    lines.append("- Boundary: Follow the authority policy. Never coerce, threaten, stalk, harass, or cause harm.")
-    return "\n".join(line for line in lines if line.strip())
-
-
-def _format_relationship_charters_for_prompt(charters: list[dict[str, Any]]) -> str:
-    active = [item for item in charters if item.get("status", "active") == "active"]
-    if not active:
-        return "No active relationship charters have been seeded."
-    blocks = []
-    for charter in active[:5]:
-        safety = charter.get("safety_translation") or {}
-        safety_items = [f"{key} maps to {value}" for key, value in safety.items()]
-        boundaries = [str(item) for item in charter.get("boundaries", []) if str(item).strip()]
-        risk_controls = []
-        for item in charter.get("risk_controls", []):
-            if isinstance(item, dict):
-                risk = str(item.get("risk", "")).strip()
-                mitigation = str(item.get("mitigation", "")).strip()
-                risk_controls.append(f"{risk}: {mitigation}".strip(": "))
-            else:
-                risk_controls.append(str(item))
-        lines = [
-            f"- Subject: {charter.get('subject_name', 'unknown')} ({charter.get('relationship_type', 'protected_principal')})",
-            f"- First principle: {charter.get('first_principle', '')}",
-        ]
-        if safety_items:
-            lines.append("- Safe translation: " + "; ".join(safety_items[:6]))
-        if boundaries:
-            lines.append("- Boundaries: " + "; ".join(boundaries[:6]))
-        if risk_controls:
-            lines.append("- Risk controls: " + "; ".join(risk_controls[:5]))
-        lines.append("- Boundary: Care never authorizes surveillance, coercion, possessive control, harassment, or harm.")
-        blocks.append("\n".join(line for line in lines if line.strip()))
-    return "\n\n".join(blocks)
-
-
-def _format_voice_charter_for_prompt(voice_charter: dict[str, Any] | None) -> str:
-    if not voice_charter:
-        return "No active voice charter has been seeded. Use the default direct co-founder voice."
-
-    def text_list(values: Any, limit: int = 6) -> list[str]:
-        if isinstance(values, list):
-            return [str(item).strip() for item in values[:limit] if str(item).strip()]
-        return []
-
-    vocabulary = voice_charter.get("vocabulary") or {}
-    sentence = voice_charter.get("sentence_structure") or {}
-    rhythm = voice_charter.get("rhythm") or {}
-    confidence = voice_charter.get("confidence_style") or {}
-    threats = voice_charter.get("threat_translation") or {}
-    uncertainty = voice_charter.get("uncertainty_policy") or {}
-    controls = []
-    for item in voice_charter.get("safety_controls", []):
-        if isinstance(item, dict):
-            control = str(item.get("control") or item.get("risk") or "").strip()
-            rule = str(item.get("rule") or item.get("mitigation") or "").strip()
-            controls.append(f"{control}: {rule}".strip(": "))
-        else:
-            controls.append(str(item))
-    preferred_words = text_list(vocabulary.get("preferred_words", []), limit=10)
-    avoid_words = text_list(vocabulary.get("avoid_words", []), limit=8)
-    lines = [
-        f"- Name: {voice_charter.get('name', 'Zade')}",
-        f"- Overall: {voice_charter.get('overall_voice', '')}",
-        f"- Sentence structure: {sentence.get('rule', 'Mostly short, direct sentences.')}",
-        f"- Rhythm: {rhythm.get('rule', 'Short statements, then a longer decisive sentence when needed.')}",
-        f"- Confidence: {confidence.get('rule', 'Sound decisive, but never fake certainty.')}",
-        f"- Uncertainty: {uncertainty.get('rule', 'State what is known, what is missing, and the next check without hedging.')}",
-    ]
-    if preferred_words:
-        lines.append("- Preferred words: " + ", ".join(preferred_words))
-    if avoid_words:
-        lines.append("- Avoid filler: " + ", ".join(avoid_words))
-    if threats:
-        lines.append("- Threat translation: " + "; ".join(f"{key} maps to {value}" for key, value in threats.items()))
-    if controls:
-        lines.append("- Safety controls: " + "; ".join(controls[:6]))
-    lines.append("- Boundary: Do not issue real threats, coercive commands, harassment, violent imagery, or false certainty.")
-    return "\n".join(line for line in lines if line.strip())
 
 
 def _inventory_payload(

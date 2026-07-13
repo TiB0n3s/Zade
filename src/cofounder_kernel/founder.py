@@ -96,7 +96,7 @@ class FounderService:
     def upsert_identity_charter(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
         with self.db.connect() as conn:
-            existing = conn.execute("SELECT id FROM identity_charter WHERE id = 1").fetchone()
+            existing = conn.execute("SELECT created_at FROM identity_charter WHERE id = 1").fetchone()
             created_at = str(existing["created_at"]) if existing else now
             conn.execute(
                 """
@@ -266,7 +266,7 @@ class FounderService:
     def upsert_voice_charter(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
         with self.db.connect() as conn:
-            existing = conn.execute("SELECT id FROM voice_charter WHERE id = 1").fetchone()
+            existing = conn.execute("SELECT created_at FROM voice_charter WHERE id = 1").fetchone()
             created_at = str(existing["created_at"]) if existing else now
             conn.execute(
                 """

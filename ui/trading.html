@@ -117,11 +117,18 @@
       color: #d8d3cb;
     }
     .error { color: #f0c4c4; white-space: pre-wrap; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 5px; }
+    table.results { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+    table.results th, table.results td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    table.results th { color: var(--muted); font-weight: 600; background: rgba(255,255,255,0.02); position: sticky; top: 0; }
+    details.schema-table { border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px; margin-bottom: 6px; }
+    details.schema-table summary { cursor: pointer; font-size: 12.5px; }
     @media (max-width: 1100px) {
       header { align-items: flex-start; flex-direction: column; }
       .grid, .row, .metrics, .checks { grid-template-columns: 1fr; }
     }
   </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
 <body>
   <header>
@@ -133,6 +140,7 @@
       <a class="button secondary" href="/ui">Back to Zade</a>
       <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
       <a class="button secondary" href="/ui/approvals.html">Approvals</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
       <button id="refreshBtn">Refresh</button>
     </div>
   </header>
@@ -230,6 +238,132 @@
         <pre id="lastAction">No action yet.</pre>
       </div>
     </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Safe Ops Checks</h2>
+        <div class="sub" style="margin-bottom:10px;">Read-only diagnostic commands the bot bridge exposes — no trade authority.</div>
+        <div class="form">
+          <label>Command <select id="opsCommand"></select></label>
+          <label>Date (if required) <input id="opsDate" type="date"></label>
+          <button id="runOpsCheckBtn">Run Check</button>
+          <div class="error" id="opsCheckError"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar">
+          <h2>Check Output</h2>
+        </div>
+        <pre id="opsCheckOutput">No check run yet.</pre>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>SQLite Console</h2>
+        <div class="sub" style="margin-bottom:10px;">Read-only: only SELECT, WITH, EXPLAIN, and read-only PRAGMA are accepted — enforced server-side.</div>
+        <div class="form">
+          <div class="row">
+            <label>Database <input id="sqlDatabase" value="trades.db"></label>
+            <label>Row limit <input id="sqlLimit" type="number" min="1" max="1000" value="100"></label>
+          </div>
+          <div class="actions">
+            <button class="secondary" id="loadSchemaBtn">Load Schema</button>
+          </div>
+          <div id="schemaOut"></div>
+          <label>SQL <textarea id="sqlQuery" rows="4">SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;</textarea></label>
+          <button id="runQueryBtn">Run Query</button>
+          <div class="error" id="sqlError"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar">
+          <h2>Query Result</h2>
+          <span class="muted mono" id="sqlMeta"></span>
+        </div>
+        <div class="table-wrap" id="sqlResult"><div class="muted" style="padding:12px;">No query run yet.</div></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Evidence Snapshot</h2>
+        <div class="sub" style="margin-bottom:10px;">Capture a read-only SQLite snapshot as graded evidence.</div>
+        <div class="form">
+          <div class="row">
+            <label>Date <input id="snapDate" type="date"></label>
+            <label>Limit per table <input id="snapLimit" type="number" min="1" max="200" value="25"></label>
+          </div>
+          <label>Symbols <input id="snapSymbols" placeholder="AAPL, MSFT"></label>
+          <label>Tables <input id="snapTables" value="auto_buy_candidates,trades,rejected_signal_outcomes"></label>
+          <label class="check"><input id="snapStoreEvidence" type="checkbox" checked> Store as evidence</label>
+          <button id="snapshotBtn">Take Snapshot</button>
+          <div class="error" id="snapError"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar"><h2>Snapshot Result</h2></div>
+        <pre id="snapOutput">No snapshot taken yet.</pre>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Advisory Generate</h2>
+        <div class="sub" style="margin-bottom:10px;">Generate advisory recommendations from read-only diagnostics + SQLite evidence.</div>
+        <div class="form">
+          <div class="row">
+            <label>Date <input id="advDate" type="date"></label>
+            <label>Max recommendations <input id="advMax" type="number" min="0" max="50" value="10"></label>
+          </div>
+          <label>Symbols <input id="advSymbols" placeholder="AAPL, MSFT"></label>
+          <label>Snapshot tables <input id="advTables" placeholder="optional"></label>
+          <div class="checks">
+            <label class="check"><input id="advQueue" type="checkbox" checked> Queue for approval</label>
+            <label class="check"><input id="advUseSnapshot" type="checkbox" checked> Use SQLite snapshot</label>
+          </div>
+          <button id="advGenerateBtn">Generate</button>
+          <div class="error" id="advError"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar"><h2>Generated Recommendations</h2></div>
+        <pre id="advOutput">Nothing generated yet.</pre>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Advisory Score</h2>
+        <div class="sub" style="margin-bottom:10px;">Score prior advisory recommendations against realized outcomes.</div>
+        <div class="form">
+          <label>Date <input id="scoreAdvDate" type="date"></label>
+          <label class="check"><input id="scoreAdvStoreEvidence" type="checkbox" checked> Store as evidence</label>
+          <button id="advScoreBtn">Score Outcomes</button>
+          <div class="error" id="advScoreError"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Queue Recommendation Manually</h2>
+        <div class="form">
+          <div class="row">
+            <label>Date <input id="recDate" type="date"></label>
+            <label>Symbol <input id="recSymbol" placeholder="AAPL"></label>
+          </div>
+          <div class="row">
+            <label>Action <input id="recAction" placeholder="buy, sell, hold"></label>
+            <label>Verdict <input id="recVerdict" placeholder="approve, reject, watch"></label>
+          </div>
+          <label>Reason <textarea id="recReason" rows="2"></textarea></label>
+          <div class="row">
+            <label>Conviction (0-1, optional) <input id="recConviction" type="number" min="0" max="1" step="0.01"></label>
+            <label>Priority <input id="recPriority" type="number" min="0" max="100" value="90"></label>
+          </div>
+          <button id="recQueueBtn">Queue Recommendation</button>
+          <div class="error" id="recError"></div>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -254,21 +388,38 @@
     };
     const csv = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
     const today = () => new Date().toISOString().slice(0, 10);
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
 
     let state = { status: {}, replacement: {}, judgments: [] };
 
     function setDates() {
-      for (const id of ['briefDate', 'judgmentDate', 'proposalDate']) byId(id).value = byId(id).value || today();
+      for (const id of ['briefDate', 'judgmentDate', 'proposalDate', 'opsDate', 'snapDate', 'advDate', 'scoreAdvDate', 'recDate']) {
+        byId(id).value = byId(id).value || today();
+      }
     }
 
     async function load() {
       setDates();
-      const [status, replacement] = await Promise.all([
+      const [status, replacement, opsChecks] = await Promise.all([
         api('/trading-bot/status'),
-        api('/trading-bot/deep-thought-replacement')
+        api('/trading-bot/deep-thought-replacement'),
+        api('/trading-bot/safe-ops-checks')
       ]);
       state.status = status;
       state.replacement = replacement;
+      byId('opsCommand').innerHTML = (opsChecks.items || [])
+        .map((c) => `<option value="${esc(c.command)}" data-date-required="${c.date_required ? '1' : '0'}">${esc(c.command)}${c.date_required ? ' (date required)' : ''}</option>`)
+        .join('') || '<option value="">No checks available</option>';
       await loadJudgments();
       renderMetrics();
     }
@@ -397,14 +548,125 @@
       byId('lastAction').textContent = JSON.stringify(result, null, 2);
     }
 
-    byId('runBriefBtn').addEventListener('click', () => runBrief(false).catch((err) => { byId('briefError').textContent = err.message; }));
-    byId('dryBriefBtn').addEventListener('click', () => runBrief(true).catch((err) => { byId('briefError').textContent = err.message; }));
-    byId('loadJudgmentsBtn').addEventListener('click', () => loadJudgments().catch((err) => { byId('judgmentError').textContent = err.message; }));
-    byId('scoreJudgmentsBtn').addEventListener('click', () => scoreJudgments().catch((err) => { byId('judgmentError').textContent = err.message; }));
-    byId('queueProposalBtn').addEventListener('click', () => queueProposal().catch((err) => { byId('proposalError').textContent = err.message; }));
-    byId('refreshBtn').addEventListener('click', () => load().catch((err) => { byId('lastAction').textContent = err.message; }));
+    async function runOpsCheck() {
+      byId('opsCheckError').textContent = '';
+      const select = byId('opsCommand');
+      const command = select.value;
+      if (!command) { byId('opsCheckError').textContent = 'No command selected.'; return; }
+      const dateRequired = select.selectedOptions[0] && select.selectedOptions[0].dataset.dateRequired === '1';
+      const body = { command, limit_output_chars: 12000 };
+      if (dateRequired) body.target_date = byId('opsDate').value;
+      const result = await api('/trading-bot/ops-check', { method: 'POST', body: JSON.stringify(body) });
+      byId('opsCheckOutput').textContent = typeof result.output === 'string' ? result.output : JSON.stringify(result, null, 2);
+    }
+
+    function renderResultsTable(columns, rows) {
+      if (!columns || !columns.length) return '<div class="muted" style="padding:12px;">No rows.</div>';
+      const head = columns.map((c) => `<th>${esc(c)}</th>`).join('');
+      const body = rows.map((row) => '<tr>' + columns.map((c) => `<td>${esc(row[c])}</td>`).join('') + '</tr>').join('');
+      return `<table class="results"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    async function loadSqlSchema() {
+      byId('sqlError').textContent = '';
+      const params = new URLSearchParams({ database: byId('sqlDatabase').value.trim() || 'trades.db', include_counts: 'true' });
+      const result = await api('/trading-bot/sqlite/schema?' + params.toString());
+      byId('schemaOut').innerHTML = (result.tables || []).map((t) => `
+        <details class="schema-table">
+          <summary>${esc(t.table)}${t.row_count != null ? ' · ' + esc(t.row_count) + ' row(s)' : ''}</summary>
+          <div class="mono muted" style="margin-top:6px;">${(t.columns || []).map((c) => esc(c.name) + ':' + esc(c.type)).join(', ')}</div>
+        </details>
+      `).join('') || '<div class="muted">No tables.</div>';
+    }
+
+    async function runSqlQuery() {
+      byId('sqlError').textContent = '';
+      const sql = byId('sqlQuery').value.trim();
+      if (!sql) { byId('sqlError').textContent = 'SQL is required.'; return; }
+      try {
+        const result = await api('/trading-bot/sqlite/query', {
+          method: 'POST',
+          body: JSON.stringify({ sql, database: byId('sqlDatabase').value.trim() || 'trades.db', limit: Number(byId('sqlLimit').value || 100) })
+        });
+        byId('sqlMeta').textContent = `${result.row_count} row(s)${result.truncated ? ' (truncated)' : ''} · audit #${result.audit_id}`;
+        byId('sqlResult').innerHTML = renderResultsTable(result.columns, result.rows);
+      } catch (err) { byId('sqlError').textContent = err.message; }
+    }
+
+    async function takeSnapshot() {
+      byId('snapError').textContent = '';
+      const result = await api('/trading-bot/evidence/snapshot', {
+        method: 'POST',
+        body: JSON.stringify({
+          target_date: byId('snapDate').value,
+          symbols: csv(byId('snapSymbols').value),
+          tables: csv(byId('snapTables').value),
+          limit_per_table: Number(byId('snapLimit').value || 25),
+          store_evidence: byId('snapStoreEvidence').checked
+        })
+      });
+      byId('snapOutput').textContent = JSON.stringify(result, null, 2);
+    }
+
+    async function generateAdvisory() {
+      byId('advError').textContent = '';
+      const result = await api('/trading-bot/advisory/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          target_date: byId('advDate').value,
+          symbols: csv(byId('advSymbols').value),
+          queue: byId('advQueue').checked,
+          max_recommendations: Number(byId('advMax').value || 10),
+          snapshot_tables: csv(byId('advTables').value),
+          use_sqlite_snapshot: byId('advUseSnapshot').checked
+        })
+      });
+      byId('advOutput').textContent = JSON.stringify(result, null, 2);
+    }
+
+    async function scoreAdvisory() {
+      byId('advScoreError').textContent = '';
+      const result = await api('/trading-bot/advisory/score', {
+        method: 'POST',
+        body: JSON.stringify({ target_date: byId('scoreAdvDate').value, store_evidence: byId('scoreAdvStoreEvidence').checked })
+      });
+      byId('lastAction').textContent = JSON.stringify(result, null, 2);
+    }
+
+    async function queueRecommendation() {
+      byId('recError').textContent = '';
+      const symbol = byId('recSymbol').value.trim();
+      const action = byId('recAction').value.trim();
+      const verdict = byId('recVerdict').value.trim();
+      const reason = byId('recReason').value.trim();
+      if (!symbol || !action || !verdict || !reason) { byId('recError').textContent = 'Symbol, action, verdict, and reason are required.'; return; }
+      const body = {
+        market_date: byId('recDate').value,
+        symbol, action, verdict, reason,
+        priority: Number(byId('recPriority').value || 90)
+      };
+      const conviction = byId('recConviction').value.trim();
+      if (conviction) body.conviction = Number(conviction);
+      const result = await api('/trading-bot/recommendations', { method: 'POST', body: JSON.stringify(body) });
+      byId('lastAction').textContent = JSON.stringify(result, null, 2);
+    }
+
+    byId('runBriefBtn').addEventListener('click', () => withBusy(byId('runBriefBtn'), 'Running…', () => runBrief(false).catch((err) => { byId('briefError').textContent = err.message; })));
+    byId('dryBriefBtn').addEventListener('click', () => withBusy(byId('dryBriefBtn'), 'Running…', () => runBrief(true).catch((err) => { byId('briefError').textContent = err.message; })));
+    byId('loadJudgmentsBtn').addEventListener('click', () => withBusy(byId('loadJudgmentsBtn'), 'Loading…', () => loadJudgments().catch((err) => { byId('judgmentError').textContent = err.message; })));
+    byId('scoreJudgmentsBtn').addEventListener('click', () => withBusy(byId('scoreJudgmentsBtn'), 'Scoring…', () => scoreJudgments().catch((err) => { byId('judgmentError').textContent = err.message; })));
+    byId('queueProposalBtn').addEventListener('click', () => withBusy(byId('queueProposalBtn'), 'Queuing…', () => queueProposal().catch((err) => { byId('proposalError').textContent = err.message; })));
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => load().catch((err) => { byId('lastAction').textContent = err.message; })));
+    byId('runOpsCheckBtn').addEventListener('click', () => withBusy(byId('runOpsCheckBtn'), 'Running…', () => runOpsCheck().catch((err) => { byId('opsCheckError').textContent = err.message; })));
+    byId('loadSchemaBtn').addEventListener('click', () => withBusy(byId('loadSchemaBtn'), 'Loading…', () => loadSqlSchema().catch((err) => { byId('sqlError').textContent = err.message; })));
+    byId('runQueryBtn').addEventListener('click', () => withBusy(byId('runQueryBtn'), 'Running…', runSqlQuery));
+    byId('snapshotBtn').addEventListener('click', () => withBusy(byId('snapshotBtn'), 'Snapshotting…', () => takeSnapshot().catch((err) => { byId('snapError').textContent = err.message; })));
+    byId('advGenerateBtn').addEventListener('click', () => withBusy(byId('advGenerateBtn'), 'Generating…', () => generateAdvisory().catch((err) => { byId('advError').textContent = err.message; })));
+    byId('advScoreBtn').addEventListener('click', () => withBusy(byId('advScoreBtn'), 'Scoring…', () => scoreAdvisory().catch((err) => { byId('advScoreError').textContent = err.message; })));
+    byId('recQueueBtn').addEventListener('click', () => withBusy(byId('recQueueBtn'), 'Queuing…', () => queueRecommendation().catch((err) => { byId('recError').textContent = err.message; })));
     setDates();
     load().catch((err) => { byId('lastAction').textContent = err.message; });
   </script>
+  <script src="/ui/zade-ui.js"></script>
 </body>
 </html>

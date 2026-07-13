@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Notifications</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
+      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
+      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    h2 { margin: 0 0 4px; font-size: 15px; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { padding: 24px 28px 36px; display: grid; gap: 16px; max-width: 1160px; margin: 0 auto; }
+    .grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 16px; align-items: start; }
+    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
+      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
+    }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
+      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button.tiny { padding: 5px 10px; font-size: 12px; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .toolbar select, .toolbar label { width: auto; }
+    .toolbar label { display: flex; flex-direction: row; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
+    .list { display: grid; gap: 10px; }
+    .item { border: 1px solid var(--line); border-radius: 5px; padding: 12px; background: rgba(255,255,255,0.02); }
+    .item.unread { border-color: rgba(176,71,63,0.35); }
+    .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .item strong { display: block; }
+    .muted { color: var(--muted); }
+    .pill {
+      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
+      color: var(--muted); font-size: 11px; white-space: nowrap;
+    }
+    .pill.info { color: #cfd6e6; border-color: rgba(120,140,190,0.5); background: rgba(120,140,190,0.12); }
+    .pill.warning { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    .pill.critical { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .pill.delivered { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.suppressed { color: #a0a0a6; }
+    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
+    .notice.err { color: #f0c4c4; }
+    .notice.good { color: #b9d9c6; }
+    .channel-card { border: 1px solid var(--line); border-radius: 5px; padding: 14px; margin-bottom: 12px; background: rgba(255,255,255,0.02); }
+    .channel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .channel-head .name { font-size: 14px; text-transform: capitalize; }
+    .switch { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); cursor: pointer; }
+    .switch input { width: auto; }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .grid, .row, .row3 { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Notifications</h1>
+      <div class="sub">Notification history and delivery channel rules — UI, voice, and SMS.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/charter.html">Charters</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="grid">
+      <div class="panel">
+        <h2>Send a Notification</h2>
+        <div class="sub" style="margin-bottom:10px;">Goes through the real bus — quiet hours, rate limits, and dedupe all apply.</div>
+        <div class="form">
+          <div class="row">
+            <label>Topic <input id="nTopic" placeholder="founder.test"></label>
+            <label>Severity
+              <select id="nSeverity">
+                <option value="info">info</option>
+                <option value="warning">warning</option>
+                <option value="critical">critical</option>
+              </select>
+            </label>
+          </div>
+          <label>Title <input id="nTitle" placeholder="A short headline"></label>
+          <label>Body <textarea id="nBody" rows="2"></textarea></label>
+          <div class="row">
+            <label>Source <input id="nSource" value="founder-ui"></label>
+            <label>Dedupe key <input id="nDedupe" placeholder="optional"></label>
+          </div>
+          <div class="actions">
+            <button id="sendBtn">Send</button>
+            <span class="notice" id="sendNotice"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Channels</h2>
+        <div class="sub" style="margin-bottom:10px;">Enabled state, minimum severity to fire, quiet hours, and rate limit per channel.</div>
+        <div id="channels"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>History</h2>
+      <div class="toolbar">
+        <select id="fStatus">
+          <option value="">All statuses</option>
+          <option value="queued">Queued</option>
+          <option value="delivered">Delivered</option>
+          <option value="suppressed">Suppressed</option>
+        </select>
+        <input id="fTopic" placeholder="Filter by topic" style="max-width:220px;">
+        <label><input id="fUnread" type="checkbox"> Unread only</label>
+        <button class="secondary tiny" id="filterBtn">Apply</button>
+      </div>
+      <div class="list" id="history"></div>
+    </section>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    async function loadHistory() {
+      const params = new URLSearchParams();
+      if (byId('fStatus').value) params.set('status', byId('fStatus').value);
+      if (byId('fTopic').value.trim()) params.set('topic', byId('fTopic').value.trim());
+      if (byId('fUnread').checked) params.set('unread_only', 'true');
+      params.set('limit', '75');
+      const { items } = await api('/notifications?' + params.toString());
+      byId('history').innerHTML = items.length ? items.map(renderNotification).join('') : '<div class="muted">No notifications in this view.</div>';
+      document.querySelectorAll('[data-read]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Marking…', async () => {
+          await api('/notifications/' + encodeURIComponent(btn.dataset.read) + '/read', { method: 'POST', body: '{}' });
+          await loadHistory();
+        }));
+      });
+    }
+
+    function renderNotification(n) {
+      const unread = !n.read_at;
+      return `
+        <article class="item${unread ? ' unread' : ''}">
+          <div class="topline">
+            <div>
+              <strong>${esc(n.title)}</strong>
+              <div class="muted">${esc(n.topic)} &middot; ${esc(n.source)} &middot; ${esc((n.created_at || '').slice(0, 16))}</div>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;flex:none;">
+              <span class="pill ${esc(n.severity)}">${esc(n.severity)}</span>
+              <span class="pill ${esc(n.status)}">${esc(n.status)}</span>
+              ${unread ? `<button class="tiny secondary" data-read="${n.id}">Mark read</button>` : ''}
+            </div>
+          </div>
+          ${n.body ? `<div style="margin-top:8px;">${esc(n.body)}</div>` : ''}
+          ${n.suppressed_reason ? `<div class="muted" style="margin-top:6px;">Suppressed: ${esc(n.suppressed_reason)}</div>` : ''}
+        </article>
+      `;
+    }
+
+    async function loadChannels() {
+      const { items } = await api('/notify/channels');
+      byId('channels').innerHTML = items.map(renderChannel).join('');
+      items.forEach((ch) => {
+        const btn = byId('save-' + ch.channel);
+        btn.addEventListener('click', () => withBusy(btn, 'Saving…', () => saveChannel(ch.channel)));
+      });
+    }
+
+    function renderChannel(ch) {
+      return `
+        <div class="channel-card" id="card-${esc(ch.channel)}">
+          <div class="channel-head">
+            <span class="name">${esc(ch.channel)}</span>
+            <label class="switch"><input type="checkbox" id="en-${esc(ch.channel)}" ${ch.enabled ? 'checked' : ''}> enabled</label>
+          </div>
+          <div class="row3">
+            <label>Min severity
+              <select id="sev-${esc(ch.channel)}">
+                <option value="info" ${ch.min_severity === 'info' ? 'selected' : ''}>info</option>
+                <option value="warning" ${ch.min_severity === 'warning' ? 'selected' : ''}>warning</option>
+                <option value="critical" ${ch.min_severity === 'critical' ? 'selected' : ''}>critical</option>
+              </select>
+            </label>
+            <label>Quiet start <input id="qs-${esc(ch.channel)}" placeholder="22:00" value="${esc(ch.quiet_start)}"></label>
+            <label>Quiet end <input id="qe-${esc(ch.channel)}" placeholder="07:00" value="${esc(ch.quiet_end)}"></label>
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <label>Rate limit / hour <input id="rl-${esc(ch.channel)}" type="number" min="1" max="1000" value="${esc(ch.rate_limit_per_hour)}"></label>
+            <label>Recipients (comma-separated) <input id="rc-${esc(ch.channel)}" value="${esc((ch.recipients || []).join(', '))}"></label>
+          </div>
+          <div class="actions" style="margin-top:10px;">
+            <button class="tiny" id="save-${esc(ch.channel)}">Save</button>
+            <span class="notice" id="notice-${esc(ch.channel)}"></span>
+          </div>
+        </div>
+      `;
+    }
+
+    async function saveChannel(channel) {
+      const notice = byId('notice-' + channel);
+      notice.textContent = ''; notice.className = 'notice';
+      const body = {
+        enabled: byId('en-' + channel).checked,
+        min_severity: byId('sev-' + channel).value,
+        quiet_start: byId('qs-' + channel).value.trim(),
+        quiet_end: byId('qe-' + channel).value.trim(),
+        rate_limit_per_hour: Number(byId('rl-' + channel).value || 30),
+        recipients: byId('rc-' + channel).value.split(',').map((s) => s.trim()).filter(Boolean)
+      };
+      try {
+        await api('/notify/channels/' + encodeURIComponent(channel), { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function sendNotification() {
+      const notice = byId('sendNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const body = {
+        topic: byId('nTopic').value.trim(),
+        title: byId('nTitle').value.trim(),
+        body: byId('nBody').value,
+        severity: byId('nSeverity').value,
+        source: byId('nSource').value.trim() || 'founder-ui',
+        dedupe_key: byId('nDedupe').value.trim()
+      };
+      if (!body.topic || !body.title) { notice.textContent = 'Topic and title are required.'; notice.className = 'notice err'; return; }
+      try {
+        const result = await api('/notify', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Sent — status: ' + (result.item ? result.item.status : 'ok');
+        notice.className = 'notice good';
+        byId('nTitle').value = ''; byId('nBody').value = ''; byId('nDedupe').value = '';
+        await loadHistory();
+      } catch (err) { notice.textContent = 'Send failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => Promise.all([loadHistory(), loadChannels()]).catch((err) => { byId('sendNotice').textContent = err.message; })));
+    byId('sendBtn').addEventListener('click', () => withBusy(byId('sendBtn'), 'Sending…', sendNotification));
+    byId('filterBtn').addEventListener('click', () => withBusy(byId('filterBtn'), 'Applying…', () => loadHistory().catch((err) => { byId('sendNotice').textContent = err.message; })));
+    Promise.all([loadHistory(), loadChannels()]).catch((err) => { byId('sendNotice').textContent = 'Load failed: ' + err.message; });
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

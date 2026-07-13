@@ -118,6 +118,7 @@
       header { flex-direction: column; align-items: flex-start; }
     }
   </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
 <body>
   <header>
@@ -128,11 +129,54 @@
     <div class="actions">
       <a class="button secondary" href="/ui">Back to Zade</a>
       <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/charter.html">Charters</a>
+      <a class="button secondary" href="/ui/notifications.html">Notifications</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
       <button id="refreshBtn">Refresh</button>
     </div>
   </header>
 
   <main>
+    <section class="panel" style="grid-column: 1 / -1;">
+      <div class="actions" style="justify-content:space-between;flex-wrap:wrap;">
+        <h2 style="margin:0;">Work Queue Admin</h2>
+        <div class="actions">
+          <label class="mono" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);"><input type="checkbox" id="scanAutonomous" checked style="width:auto;"> run autonomous</label>
+          <input id="scanMaxRun" type="number" min="0" max="25" value="5" style="width:70px;" title="max autonomous items to run">
+          <button class="secondary" id="scanBtn">Scan Work Sources</button>
+          <input id="runDueMax" type="number" min="1" max="25" value="5" style="width:70px;" title="max due items to run">
+          <button class="secondary" id="runDueBtn">Run Due Items</button>
+        </div>
+      </div>
+      <div class="error" id="adminNotice" style="margin-top:8px;"></div>
+      <pre id="adminOut" class="mono" style="margin-top:8px;max-height:220px;overflow:auto;background:rgba(255,255,255,0.02);border:1px solid var(--line);border-radius:5px;padding:10px;white-space:pre-wrap;display:none;"></pre>
+
+      <details style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px;">
+        <summary style="cursor:pointer;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:0.06em;">+ Create Work Item Manually</summary>
+        <div class="edit-grid" style="margin-top:10px;">
+          <label>Title <input id="newTitle" placeholder="Import the latest connector items"></label>
+          <label>Kind <input id="newKind" value="manual"></label>
+          <label>Action <input id="newAction" placeholder="e.g. local.file.write, memory.write"></label>
+          <label>Target <input id="newTarget" placeholder="optional"></label>
+          <label>Permission tier <input id="newTier" value="L0_READ"></label>
+          <label>Priority <input id="newPriority" type="number" min="0" max="100" value="50"></label>
+          <label>Source <input id="newSource" value="founder-ui"></label>
+          <label>Due at <input id="newDueAt" placeholder="optional"></label>
+        </div>
+        <label style="margin-top:8px;">Detail <textarea id="newDetail" rows="2"></textarea></label>
+        <div class="actions" style="margin-top:8px;">
+          <button id="createWorkItemBtn">Create Work Item</button>
+          <span class="notice" id="createNotice"></span>
+        </div>
+      </details>
+
+      <details style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px;">
+        <summary style="cursor:pointer;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:0.06em;">+ Registered Action Handlers</summary>
+        <div class="sub" style="margin:8px 0;">Actions the local runtime can actually dispatch once approved. An action outside this list can be queued and evaluated by authority, but has nothing to execute it.</div>
+        <div class="list" id="handlersList" style="margin-top:8px;"></div>
+      </details>
+    </section>
+
     <section>
       <div class="toolbar">
         <div class="actions">
@@ -177,6 +221,17 @@
       if (!response.ok) throw new Error(await response.text());
       return response.json();
     };
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
 
     let state = { items: [], summary: {}, training: [] };
 
@@ -309,9 +364,11 @@
       card(id).querySelector('[data-error]').textContent = message || '';
     }
 
+    const ACTION_LABELS = { approve: 'Approving…', deny: 'Denying…', defer: 'Deferring…', edit: 'Saving…' };
+
     function wireActions() {
       document.querySelectorAll('[data-action]').forEach((button) => {
-        button.addEventListener('click', async () => {
+        button.addEventListener('click', () => withBusy(button, ACTION_LABELS[button.dataset.action] || 'Working…', async () => {
           const id = button.dataset.id;
           const action = button.dataset.action;
           setError(id, '');
@@ -324,7 +381,7 @@
           } catch (err) {
             setError(id, err.message);
           }
-        });
+        }));
       });
     }
 
@@ -373,9 +430,106 @@
       });
     }
 
-    byId('refreshBtn').addEventListener('click', () => load().catch((err) => { byId('approvalList').innerHTML = '<div class="error">' + esc(err.message) + '</div>'; }));
-    byId('statusFilter').addEventListener('change', () => load().catch((err) => { byId('approvalList').innerHTML = '<div class="error">' + esc(err.message) + '</div>'; }));
-    load().catch((err) => { byId('approvalList').innerHTML = '<div class="error">' + esc(err.message) + '</div>'; });
+    // The kernel restarts under the supervisor (and during config changes),
+    // leaving a few seconds where fetches fail at the network level with a
+    // bare "Failed to fetch". Retry quietly through that window instead of
+    // sticking on an unexplained error until a manual Refresh.
+    const RETRY_DELAYS_MS = [2000, 4000, 8000];
+    async function loadWithRetry() {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await load();
+          return;
+        } catch (err) {
+          const transient = err instanceof TypeError; // network failure, not an HTTP error body
+          if (transient && attempt < RETRY_DELAYS_MS.length) {
+            byId('approvalList').innerHTML =
+              '<div class="empty">Kernel not reachable — retrying (' + (attempt + 1) + '/' + RETRY_DELAYS_MS.length + ')…</div>';
+            await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+            continue;
+          }
+          byId('approvalList').innerHTML = '<div class="error">' +
+            esc(transient ? 'Kernel not reachable. Start it with scripts\\start.ps1, then press Refresh.' : err.message) +
+            '</div>';
+          return;
+        }
+      }
+    }
+
+    async function loadHandlers() {
+      const { items } = await api('/action-handlers');
+      byId('handlersList').innerHTML = items.length
+        ? items.map((h) => `<div class="card" style="padding:10px;"><div class="mono" style="font-size:12.5px;">${esc(h.action)}</div><div class="muted" style="margin-top:4px;">${esc(h.description)}</div></div>`).join('')
+        : '<div class="empty">No handlers registered.</div>';
+    }
+
+    function showAdminOut(result) {
+      const pre = byId('adminOut');
+      pre.style.display = 'block';
+      pre.textContent = JSON.stringify(result, null, 2);
+    }
+
+    async function runScan() {
+      byId('adminNotice').textContent = '';
+      try {
+        const result = await api('/work/scan', {
+          method: 'POST',
+          body: JSON.stringify({ run_autonomous: byId('scanAutonomous').checked, max_run: Number(byId('scanMaxRun').value || 5) })
+        });
+        showAdminOut(result);
+        byId('adminNotice').textContent = `Queued ${result.created_count} new, ${result.existing_count} already existed, ran ${result.run.length}.`;
+        await loadWithRetry();
+      } catch (err) { byId('adminNotice').textContent = 'Scan failed: ' + err.message; }
+    }
+
+    async function runDue() {
+      byId('adminNotice').textContent = '';
+      try {
+        const result = await api('/work/run-due', {
+          method: 'POST',
+          body: JSON.stringify({ max_items: Number(byId('runDueMax').value || 5) })
+        });
+        showAdminOut(result);
+        byId('adminNotice').textContent = `Ran ${result.results.length} item(s).`;
+        await loadWithRetry();
+      } catch (err) { byId('adminNotice').textContent = 'Run failed: ' + err.message; }
+    }
+
+    async function createWorkItem() {
+      const notice = byId('createNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const title = byId('newTitle').value.trim();
+      const action = byId('newAction').value.trim();
+      if (!title || !action) { notice.textContent = 'Title and action are required.'; notice.className = 'notice err'; return; }
+      const body = {
+        kind: byId('newKind').value.trim() || 'manual',
+        title,
+        detail: byId('newDetail').value,
+        action,
+        target: byId('newTarget').value.trim(),
+        permission_tier: byId('newTier').value.trim() || 'L0_READ',
+        priority: Number(byId('newPriority').value || 50),
+        source: byId('newSource').value.trim() || 'founder-ui',
+        due_at: byId('newDueAt').value.trim() || null
+      };
+      try {
+        const result = await api('/work/items', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = `${result.created ? 'Created' : 'Already existed'} — item #${result.item_id} (${result.status}).`;
+        notice.className = 'notice good';
+        byId('newTitle').value = ''; byId('newDetail').value = '';
+        await loadWithRetry();
+      } catch (err) { notice.textContent = 'Create failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    byId('scanBtn').addEventListener('click', () => withBusy(byId('scanBtn'), 'Scanning…', runScan));
+    byId('runDueBtn').addEventListener('click', () => withBusy(byId('runDueBtn'), 'Running…', runDue));
+    byId('createWorkItemBtn').addEventListener('click', () => withBusy(byId('createWorkItemBtn'), 'Creating…', createWorkItem));
+
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', loadWithRetry));
+    byId('statusFilter').addEventListener('change', loadWithRetry);
+    loadWithRetry();
+    loadHandlers().catch((err) => { byId('handlersList').innerHTML = `<div class="error">${esc(err.message)}</div>`; });
   </script>
+  <script src="/ui/zade-ui.js"></script>
 </body>
 </html>

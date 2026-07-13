@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Action Pipeline</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
+      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
+      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    h2 { margin: 0 0 4px; font-size: 15px; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { padding: 24px 28px 40px; display: grid; gap: 16px; max-width: 1160px; margin: 0 auto; }
+    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
+      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
+    }
+    textarea { resize: vertical; }
+    textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
+      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button.ok { border-color: rgba(90,138,114,0.7); background: rgba(90,138,114,0.16); }
+    button.warn { border-color: rgba(198,155,95,0.7); background: rgba(198,155,95,0.15); }
+    button.bad { border-color: rgba(168,74,74,0.7); background: rgba(168,74,74,0.15); }
+    button.tiny { padding: 5px 10px; font-size: 12px; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .filters select { width: auto; max-width: 160px; }
+    .muted { color: var(--muted); }
+    .plans { display: grid; gap: 14px; }
+    .plan { border: 1px solid var(--line); border-radius: 6px; padding: 14px; background: rgba(255,255,255,0.02); display: grid; gap: 10px; }
+    .plan.blocked, .plan.failed { border-color: rgba(168,74,74,0.5); }
+    .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    .topline strong { font-size: 14.5px; }
+    .pillrow { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
+    .pill {
+      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
+      color: var(--muted); font-size: 10.5px; white-space: nowrap;
+    }
+    .pill.active, .pill.pending, .pill.approval_required, .pill.queued { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    .pill.done, .pill.approved { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.failed, .pill.blocked { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .pill.skipped, .pill.abandoned { color: #a0a0a6; }
+    .pill.running { color: #cfd6e6; border-color: rgba(120,140,190,0.5); background: rgba(120,140,190,0.12); }
+    .steps { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+    .step { border: 1px solid var(--line); border-radius: 5px; padding: 10px; background: rgba(255,255,255,0.015); display: grid; gap: 6px; }
+    .step-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .step-top strong { font-size: 13px; }
+    .mini-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: end; }
+    .mini-row input { font-size: 12.5px; padding: 7px 8px; }
+    .notice { min-height: 16px; color: var(--muted); font-size: 12px; }
+    .notice.err { color: #f0c4c4; }
+    .notice.good { color: #b9d9c6; }
+    pre {
+      margin: 0; white-space: pre-wrap; max-height: 200px; overflow: auto;
+      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 10px; color: #d8d3cb;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+    }
+    details.create-form { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 12px; }
+    details.create-form > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .row, .row3, .mini-row { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Action Pipeline</h1>
+      <div class="sub">Recommendations become plans, plans become steps. Every step carries its own authority check.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/ledger.html">Ledger</a>
+      <a class="button secondary" href="/ui/commitments.html">Commitments</a>
+      <a class="button secondary" href="/ui/approvals.html">Approvals</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>Action Plans <span class="muted" id="planCount"></span></h2><div class="sub">Manual steps are founder work the pipeline tracks honestly; work-queue steps route through Approvals.</div></div>
+        <div class="filters">
+          <select id="fStatus">
+            <option value="">All statuses</option>
+            <option value="active" selected>Active</option>
+            <option value="blocked">Blocked</option>
+            <option value="done">Done</option>
+            <option value="failed">Failed</option>
+            <option value="abandoned">Abandoned</option>
+          </select>
+          <button class="secondary tiny" id="loadBtn">Load</button>
+        </div>
+      </div>
+      <div class="plans" id="plans"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>New Action Plan</h2><div class="sub">A plan needs at least one step. Give steps as a JSON list — each needs at least a title.</div></div>
+      </div>
+      <div class="form">
+        <div class="row3">
+          <label>Title <input id="pTitle" placeholder="Ship the weekly cadence review"></label>
+          <label>Owner <input id="pOwner" value="founder"></label>
+          <label>Priority (0-100) <input id="pPriority" type="number" min="0" max="100" value="50"></label>
+        </div>
+        <label>Objective <textarea id="pObjective" rows="2"></textarea></label>
+        <div class="row">
+          <label>Source type <input id="pSourceType" value="manual"></label>
+          <label>Source ID <input id="pSourceId" type="number" placeholder="optional"></label>
+        </div>
+        <label>Steps (JSON list — title, detail, action, target, permission_tier, execution)
+          <textarea id="pSteps" rows="6" class="mono">[
+  {
+    "title": "",
+    "detail": "",
+    "action": "founder.task",
+    "target": "",
+    "permission_tier": "L1_MEMORY_WRITE",
+    "execution": "manual"
+  }
+]</textarea>
+        </label>
+        <div class="actions">
+          <button id="createBtn">Create Plan</button>
+          <span class="notice" id="createNotice"></span>
+        </div>
+      </div>
+
+      <details class="create-form">
+        <summary>+ Create plan from a decision recommendation</summary>
+        <div class="form" style="margin-top:10px;">
+          <div class="row">
+            <label>Recommendation ID <input id="rId" type="number"></label>
+            <label>Steps override (JSON list, optional — blank uses the recommendation's next_action)</label>
+          </div>
+          <textarea id="rSteps" rows="4" class="mono">[]</textarea>
+          <div class="actions">
+            <button id="fromRecBtn">Create From Recommendation</button>
+            <span class="notice" id="fromRecNotice"></span>
+          </div>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try { return await fn(); }
+      finally { btn.disabled = false; btn.textContent = original; }
+    }
+
+    const NON_TERMINAL_STEP = new Set(['pending', 'approved', 'approval_required', 'blocked', 'queued', 'running']);
+    const TERMINAL_PLAN = new Set(['done', 'failed', 'abandoned']);
+
+    function stepActionsHtml(plan, step) {
+      if (!NON_TERMINAL_STEP.has(step.status)) return '';
+      const parts = [];
+      if (step.execution === 'work_queue') {
+        parts.push(`<div class="muted">Routed through the work queue — approve or dispatch from <a class="button secondary tiny" href="/ui/approvals.html" style="margin-left:4px;">Approvals</a>.</div>`);
+      } else {
+        if (step.status === 'approval_required') {
+          parts.push(`<div class="actions"><button class="ok tiny" data-approve="${step.id}" data-plan="${plan.id}">Approve</button></div>`);
+        }
+        if (['pending', 'approved', 'running'].includes(step.status)) {
+          parts.push(`
+            <div class="mini-row">
+              <label>Result <input id="result-${step.id}" placeholder="what happened"></label>
+              <label>Note <input id="cnote-${step.id}" placeholder="optional"></label>
+              <button class="ok tiny" data-complete="${step.id}" data-plan="${plan.id}">Complete</button>
+            </div>
+            <div class="mini-row">
+              <label>Error <input id="error-${step.id}" placeholder="what went wrong"></label>
+              <label></label>
+              <button class="bad tiny" data-fail="${step.id}" data-plan="${plan.id}">Fail</button>
+            </div>
+            <div class="mini-row">
+              <label>Skip note <input id="skipnote-${step.id}" placeholder="optional"></label>
+              <label></label>
+              <button class="secondary tiny" data-skip="${step.id}" data-plan="${plan.id}">Skip</button>
+            </div>`);
+        }
+      }
+      parts.push(`
+        <div class="mini-row">
+          <label>Attach evidence ID <input id="evidence-${step.id}" type="number"></label>
+          <label></label>
+          <button class="secondary tiny" data-evidence="${step.id}" data-plan="${plan.id}">Attach</button>
+        </div>`);
+      return parts.join('');
+    }
+
+    function renderStep(plan, step) {
+      return `
+        <div class="step" data-step="${step.id}">
+          <div class="step-top">
+            <strong>${esc(step.step_index + 1)}. ${esc(step.title)}</strong>
+            <span class="pill ${esc(step.status)}">${esc(step.status)}</span>
+          </div>
+          <div class="muted">${esc(step.action)} · ${esc(step.execution)}${step.target ? ' · ' + esc(step.target) : ''} · tier ${esc(step.permission_tier)}</div>
+          ${step.detail ? `<div class="muted">${esc(step.detail)}</div>` : ''}
+          ${step.authority_reason ? `<div class="muted">authority: ${esc(step.authority_decision)} — ${esc(step.authority_reason)}</div>` : ''}
+          ${step.result ? `<div>result: ${esc(step.result)}</div>` : ''}
+          ${step.error ? `<div class="notice err">error: ${esc(step.error)}</div>` : ''}
+          ${(step.evidence_ids || []).length ? `<div class="muted mono">evidence: ${esc(step.evidence_ids.join(', '))}</div>` : ''}
+          <div class="notice" id="stepnotice-${step.id}"></div>
+          ${stepActionsHtml(plan, step)}
+        </div>
+      `;
+    }
+
+    function renderPlan(plan) {
+      const steps = plan.steps || [];
+      return `
+        <article class="plan ${esc(plan.status)}" data-plan="${plan.id}">
+          <div class="topline">
+            <div>
+              <strong>${esc(plan.title)}</strong>
+              ${plan.objective ? `<div class="muted" style="margin-top:4px;">${esc(plan.objective)}</div>` : ''}
+            </div>
+            <div class="pillrow">
+              <span class="pill ${esc(plan.status)}">${esc(plan.status)}</span>
+              <span class="pill">${esc(plan.owner)}</span>
+              <span class="pill">priority ${esc(plan.priority)}</span>
+            </div>
+          </div>
+          <div class="muted mono" style="font-size:12px;">${esc(plan.source_type)}${plan.source_id ? ' #' + esc(plan.source_id) : ''} · #${esc(plan.id)}</div>
+          <div class="notice" id="plannotice-${plan.id}"></div>
+          ${!TERMINAL_PLAN.has(plan.status) ? `<div class="actions"><button data-advance="${plan.id}">Advance</button></div>` : ''}
+          <div class="steps">${steps.map((s) => renderStep(plan, s)).join('')}</div>
+        </article>
+      `;
+    }
+
+    async function loadPlans() {
+      const status = byId('fStatus').value;
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      params.set('limit', '50');
+      const data = await api('/action-plans?' + params.toString());
+      const summaries = data.items || [];
+      byId('planCount').textContent = '(' + summaries.length + ')';
+      if (!summaries.length) { byId('plans').innerHTML = '<div class="muted">Nothing in this view.</div>'; return; }
+      const details = await Promise.all(summaries.map((p) => api('/action-plans/' + p.id).then((d) => d.item).catch(() => p)));
+      byId('plans').innerHTML = details.map(renderPlan).join('');
+      wirePlanActions();
+    }
+
+    function wirePlanActions() {
+      document.querySelectorAll('[data-advance]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Advancing…', () => advancePlan(btn.dataset.advance)));
+      });
+      document.querySelectorAll('[data-approve]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Approving…', () => stepAction(btn.dataset.plan, btn.dataset.approve, 'approve', {})));
+      });
+      document.querySelectorAll('[data-complete]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Completing…', () => stepAction(btn.dataset.plan, btn.dataset.complete, 'complete', {
+          result: byId('result-' + btn.dataset.complete).value,
+          note: byId('cnote-' + btn.dataset.complete).value,
+          create_evidence: true
+        })));
+      });
+      document.querySelectorAll('[data-fail]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Failing…', () => {
+          const error = byId('error-' + btn.dataset.fail).value.trim();
+          if (!error) { byId('stepnotice-' + btn.dataset.fail).textContent = 'Error detail is required.'; byId('stepnotice-' + btn.dataset.fail).className = 'notice err'; return Promise.resolve(); }
+          return stepAction(btn.dataset.plan, btn.dataset.fail, 'fail', { error, create_evidence: true });
+        }));
+      });
+      document.querySelectorAll('[data-skip]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Skipping…', () => stepAction(btn.dataset.plan, btn.dataset.skip, 'skip', { note: byId('skipnote-' + btn.dataset.skip).value })));
+      });
+      document.querySelectorAll('[data-evidence]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Attaching…', () => {
+          const raw = byId('evidence-' + btn.dataset.evidence).value.trim();
+          if (!raw) { byId('stepnotice-' + btn.dataset.evidence).textContent = 'Evidence ID is required.'; byId('stepnotice-' + btn.dataset.evidence).className = 'notice err'; return Promise.resolve(); }
+          return stepAction(btn.dataset.plan, btn.dataset.evidence, 'evidence', { evidence_id: Number(raw) });
+        }));
+      });
+    }
+
+    async function advancePlan(planId) {
+      const notice = byId('plannotice-' + planId);
+      notice.textContent = ''; notice.className = 'notice';
+      try {
+        const result = await api(`/action-plans/${encodeURIComponent(planId)}/advance`, { method: 'POST' });
+        notice.textContent = result.note || (result.advanced ? 'Advanced.' : 'No change.');
+        notice.className = 'notice good';
+        await loadPlans();
+      } catch (err) { notice.textContent = 'Advance failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function stepAction(planId, stepId, kind, body) {
+      const notice = byId('stepnotice-' + stepId);
+      notice.textContent = ''; notice.className = 'notice';
+      const routes = {
+        approve: `/action-plans/${planId}/steps/${stepId}/approve`,
+        complete: `/action-plans/${planId}/steps/${stepId}/complete`,
+        fail: `/action-plans/${planId}/steps/${stepId}/fail`,
+        skip: `/action-plans/${planId}/steps/${stepId}/skip`,
+        evidence: `/action-plans/${planId}/steps/${stepId}/evidence`
+      };
+      try {
+        await api(routes[kind], { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Done.'; notice.className = 'notice good';
+        await loadPlans();
+      } catch (err) { notice.textContent = 'Failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function createPlan() {
+      const notice = byId('createNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const title = byId('pTitle').value.trim();
+      if (!title) { notice.textContent = 'Title is required.'; notice.className = 'notice err'; return; }
+      let steps;
+      try { steps = JSON.parse(byId('pSteps').value || '[]'); }
+      catch (e) { notice.textContent = 'Steps: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+      if (!Array.isArray(steps) || !steps.length) { notice.textContent = 'At least one step is required.'; notice.className = 'notice err'; return; }
+      const body = {
+        title,
+        objective: byId('pObjective').value,
+        owner: byId('pOwner').value.trim() || 'founder',
+        priority: Number(byId('pPriority').value || 50),
+        source_type: byId('pSourceType').value.trim() || 'manual',
+        steps
+      };
+      const sourceId = byId('pSourceId').value.trim();
+      if (sourceId) body.source_id = Number(sourceId);
+      try {
+        await api('/action-plans', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Created.'; notice.className = 'notice good';
+        byId('pTitle').value = ''; byId('pObjective').value = '';
+        await loadPlans();
+      } catch (err) { notice.textContent = 'Create failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function createFromRecommendation() {
+      const notice = byId('fromRecNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const id = byId('rId').value.trim();
+      if (!id) { notice.textContent = 'Recommendation ID is required.'; notice.className = 'notice err'; return; }
+      let steps;
+      try { steps = JSON.parse(byId('rSteps').value || '[]'); }
+      catch (e) { notice.textContent = 'Steps override: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+      try {
+        await api(`/action-plans/from-recommendation/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify({ steps }) });
+        notice.textContent = 'Created.'; notice.className = 'notice good';
+        await loadPlans();
+      } catch (err) { notice.textContent = 'Create failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => loadPlans().catch((err) => { byId('plans').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('loadBtn').addEventListener('click', () => withBusy(byId('loadBtn'), 'Loading…', () => loadPlans().catch((err) => { byId('plans').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('createBtn').addEventListener('click', () => withBusy(byId('createBtn'), 'Creating…', createPlan));
+    byId('fromRecBtn').addEventListener('click', () => withBusy(byId('fromRecBtn'), 'Creating…', createFromRecommendation));
+    loadPlans().catch((err) => { console.error('Initial action-plan load failed', err); });
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

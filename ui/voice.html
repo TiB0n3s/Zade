@@ -92,6 +92,7 @@
     #captionWrap { border-color: rgba(176,71,63,0.28); background: rgba(176,71,63,0.06); }
     @media (max-width: 620px) { .speak-row { grid-template-columns: 1fr; } }
   </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
 <body>
   <header>
@@ -101,6 +102,10 @@
     </div>
     <div>
       <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/charter.html">Charters</a>
+      <a class="button secondary" href="/ui/notifications.html">Notifications</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
     </div>
   </header>
 
@@ -117,7 +122,7 @@
       <div class="mic-row">
         <button class="mic-btn" id="micBtn" title="Hold a conversation">&#127908;</button>
         <div>
-          <div id="micState" class="mic-hint">Click to record. Click again to send.</div>
+          <div id="micState" class="mic-hint">Click to speak — stops and sends automatically when you stop talking.</div>
           <div class="options">
             <label><input type="checkbox" id="playAudio" checked> Play reply audio</label>
             <label><input type="checkbox" id="remember" checked> Remember this thread</label>
@@ -244,6 +249,55 @@
     }
 
     // ---- Microphone capture ----
+    // Voice-activity detection: click once to start, and recording auto-stops
+    // and sends itself once you stop talking -- no second click needed. A
+    // manual click while recording still stops it immediately as a fallback.
+    const VAD_SILENCE_MS = 1100;
+    const VAD_MIN_RECORD_MS = 400;
+    const VAD_MAX_RECORD_MS = 30000;
+    const VAD_RMS_THRESHOLD = 0.02;
+
+    function watchForSilence(stream) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return; // no VAD support: manual click-to-stop still works
+      const ctx = new AudioCtx();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      const startedAt = Date.now();
+      let speechDetected = false;
+      let silenceStart = null;
+
+      function tick() {
+        if (!state.recording) { ctx.close(); return; }
+        analyser.getByteTimeDomainData(data);
+        let sumSquares = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sumSquares += v * v;
+        }
+        const rms = Math.sqrt(sumSquares / data.length);
+        const now = Date.now();
+        if (rms > VAD_RMS_THRESHOLD) {
+          speechDetected = true;
+          silenceStart = null;
+        } else if (speechDetected && silenceStart === null) {
+          silenceStart = now;
+        }
+        const elapsed = now - startedAt;
+        const silentFor = silenceStart ? now - silenceStart : 0;
+        if (elapsed > VAD_MAX_RECORD_MS || (speechDetected && silentFor > VAD_SILENCE_MS && elapsed > VAD_MIN_RECORD_MS)) {
+          ctx.close();
+          stopRecording();
+          return;
+        }
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    }
+
     async function toggleRecording() {
       if (state.recording) { stopRecording(); return; }
       if (!navigator.mediaDevices || !window.MediaRecorder) {
@@ -260,8 +314,9 @@
         state.recorder = rec;
         state.recording = true;
         byId('micBtn').classList.add('recording');
-        byId('micState').textContent = 'Recording&hellip; click again to send.';
+        byId('micState').textContent = 'Listening… click to stop.';
         notice('');
+        watchForSilence(stream);
       } catch (err) {
         notice('Microphone access denied or unavailable: ' + err.message, true);
       }
@@ -271,7 +326,7 @@
       if (state.recorder && state.recording) {
         state.recording = false;
         byId('micBtn').classList.remove('recording');
-        byId('micState').textContent = 'Transcribing and thinking&hellip;';
+        byId('micState').textContent = 'Transcribing and thinking…';
         state.recorder.stop();
       }
     }
@@ -320,7 +375,7 @@
     function resetMic() {
       state.recording = false;
       byId('micBtn').classList.remove('recording');
-      byId('micState').textContent = 'Click to record. Click again to send.';
+      byId('micState').textContent = 'Click to speak — stops and sends automatically when you stop talking.';
     }
 
     // ---- Type to speak ----
@@ -348,5 +403,6 @@
 
     loadStatus();
   </script>
+  <script src="/ui/zade-ui.js"></script>
 </body>
 </html>

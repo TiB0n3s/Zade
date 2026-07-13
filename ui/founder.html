@@ -78,6 +78,7 @@
       font: inherit;
     }
     button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button:disabled { opacity: 0.5; cursor: wait; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .objective-title { font-size: 18px; font-weight: 650; margin-bottom: 6px; }
     .pill {
@@ -115,6 +116,7 @@
       .grid, .row, .metric-row { grid-template-columns: 1fr; }
     }
   </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
 <body>
   <header>
@@ -128,6 +130,13 @@
       <a class="button secondary" href="/ui/trading.html">Trading</a>
       <a class="button secondary" href="/ui/approvals.html">Approvals</a>
       <a class="button secondary" href="/ui/skills.html">Skills</a>
+      <a class="button secondary" href="/ui/ledger.html">Ledger</a>
+      <a class="button secondary" href="/ui/commitments.html">Commitments</a>
+      <a class="button secondary" href="/ui/actions.html">Actions</a>
+      <a class="button secondary" href="/ui/surfacing.html">Attention</a>
+      <a class="button secondary" href="/ui/charter.html">Charters</a>
+      <a class="button secondary" href="/ui/notifications.html">Notifications</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
       <button id="refreshBtn">Refresh</button>
     </div>
   </header>
@@ -207,6 +216,20 @@
     };
     const byId = (id) => document.getElementById(id);
     const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    // A click with no visible response reads as "did that even register?" — every
+    // button that fires a request runs through this so there's always a working
+    // state, and the original label always comes back (success or failure).
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
     let state = { dashboard: {}, metrics: {}, active: {}, objectives: [], recommendations: [] };
 
     async function load() {
@@ -226,7 +249,7 @@
       renderActive();
       byId('objectives').innerHTML = state.objectives.map(renderObjective).join('') || '<div class="muted">No objectives yet.</div>';
       byId('recommendations').innerHTML = state.recommendations.map(renderRecommendation).join('') || '<div class="muted">No recommendations yet.</div>';
-      document.querySelectorAll('[data-activate]').forEach((el) => el.addEventListener('click', () => activateObjective(el.dataset.activate)));
+      document.querySelectorAll('[data-activate]').forEach((el) => el.addEventListener('click', () => withBusy(el, 'Activating…', () => activateObjective(el.dataset.activate))));
     }
 
     function renderMetrics() {
@@ -333,11 +356,12 @@
       await load();
     }
 
-    byId('refreshBtn').addEventListener('click', load);
-    byId('createObjectiveBtn').addEventListener('click', createObjective);
-    byId('recommendBtn').addEventListener('click', () => recommend(true));
-    byId('recommendNoTaskBtn').addEventListener('click', () => recommend(false));
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', load));
+    byId('createObjectiveBtn').addEventListener('click', () => withBusy(byId('createObjectiveBtn'), 'Creating…', createObjective));
+    byId('recommendBtn').addEventListener('click', () => withBusy(byId('recommendBtn'), 'Recommending…', () => recommend(true)));
+    byId('recommendNoTaskBtn').addEventListener('click', () => withBusy(byId('recommendNoTaskBtn'), 'Recommending…', () => recommend(false)));
     load().catch((err) => { byId('activeObjective').textContent = 'Load failed: ' + err.message; });
   </script>
+  <script src="/ui/zade-ui.js"></script>
 </body>
 </html>

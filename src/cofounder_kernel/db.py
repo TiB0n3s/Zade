@@ -490,11 +490,14 @@ class KernelDatabase:
     ) -> tuple[ApprovalRequest, bool]:
         with self.connect() as conn:
             if source_id is not None:
+                # Match the unresolved set used by get_pending_approval_for_source:
+                # a deferred request is still open, so never create a duplicate
+                # beside it.
                 existing = conn.execute(
                     """
                     SELECT *
                     FROM approval_requests
-                    WHERE source_type = ? AND source_id = ? AND status = 'pending'
+                    WHERE source_type = ? AND source_id = ? AND status IN ('pending', 'deferred')
                     ORDER BY id DESC
                     LIMIT 1
                     """,
@@ -548,12 +551,19 @@ class KernelDatabase:
             return _approval_request_from_row(row) if row else None
 
     def get_pending_approval_for_source(self, *, source_type: str, source_id: int) -> ApprovalRequest | None:
+        """Latest still-unresolved approval request for a source.
+
+        A deferred request is unresolved too — it is parked, not decided —
+        and approve/deny explicitly accept deferred requests. Excluding it
+        here made deferred work items undecidable through the work-item
+        routes (only the approvals console could reach them by request id).
+        """
         with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT *
                 FROM approval_requests
-                WHERE source_type = ? AND source_id = ? AND status = 'pending'
+                WHERE source_type = ? AND source_id = ? AND status IN ('pending', 'deferred')
                 ORDER BY id DESC
                 LIMIT 1
                 """,

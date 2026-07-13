@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Evals Harness</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
+      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
+      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    h2 { margin: 0 0 4px; font-size: 15px; }
+    h3 { margin: 0 0 6px; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { padding: 24px 28px 40px; display: grid; gap: 16px; max-width: 1160px; margin: 0 auto; }
+    .metric-row { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 12px; }
+    .metric { padding: 13px; background: rgba(255,255,255,0.025); }
+    .metric strong { display: block; font-size: 19px; line-height: 1; margin-bottom: 5px; }
+    .metric span { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; }
+    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
+      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
+    }
+    textarea { resize: vertical; }
+    textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
+      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button.tiny { padding: 5px 10px; font-size: 12px; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .filters select, .filters input { width: auto; max-width: 160px; }
+    .muted { color: var(--muted); }
+    .list { display: grid; gap: 10px; }
+    .item { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; background: rgba(255,255,255,0.02); display: grid; gap: 8px; }
+    .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    .topline strong { font-size: 13.5px; }
+    .pillrow { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
+    .pill {
+      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
+      color: var(--muted); font-size: 10.5px; white-space: nowrap;
+    }
+    .pill.pass, .pill.enabled { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.fail, .pill.error, .pill.disabled { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .checks { display: flex; flex-wrap: wrap; gap: 6px; }
+    .check-pill { font-size: 10px; border-radius: 3px; padding: 2px 7px; border: 1px solid var(--line); }
+    .check-pill.ok { color: #b9d9c6; border-color: rgba(90,138,114,0.5); }
+    .check-pill.bad { color: #e6b3b3; border-color: rgba(168,74,74,0.5); }
+    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
+    .notice.err { color: #f0c4c4; }
+    .notice.good { color: #b9d9c6; }
+    pre {
+      margin: 0; white-space: pre-wrap; max-height: 220px; overflow: auto;
+      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 10px; color: #d8d3cb;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+    }
+    details.create-form { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 12px; }
+    details.create-form > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .row, .row3, .metric-row { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Evals Harness</h1>
+      <div class="sub">Regression checks for the local models the runtime actually calls — greedy decoding, reproducible.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>Run Evals</h2><div class="sub">Runs every enabled case through its real executor (generate/respond/critic). Can take a while — each case is a real model call.</div></div>
+      </div>
+      <div class="form">
+        <div class="row3">
+          <label>Label <input id="runLabel" value="manual"></label>
+          <label>Categories (comma-separated, optional) <input id="runCategories" placeholder="instruction_probe, governed_contract"></label>
+          <label>Max cases <input id="runMaxCases" type="number" min="1" max="200" value="50"></label>
+        </div>
+        <label>Case names (comma-separated, optional — overrides categories) <input id="runCaseNames" placeholder="probe-exact-ack, probe-json-object"></label>
+        <div class="actions">
+          <button id="runBtn">Run Evals</button>
+          <span class="notice" id="runNotice"></span>
+        </div>
+      </div>
+      <section class="metric-row" id="runMetrics" style="margin-top:14px;"></section>
+      <div id="runComparison" class="muted" style="margin-bottom:10px;"></div>
+      <div class="list" id="runResults"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>Eval Cases <span class="muted" id="caseCount"></span></h2><div class="sub">Default cases are seeded automatically; add your own to cover what matters to you.</div></div>
+        <div class="filters">
+          <input id="fCategory" placeholder="category filter">
+          <select id="fEnabled">
+            <option value="">All</option>
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+          <button class="secondary tiny" id="loadCasesBtn">Load</button>
+        </div>
+      </div>
+      <div class="list" id="cases"></div>
+
+      <details class="create-form">
+        <summary>+ New / Update Eval Case</summary>
+        <div class="form" style="margin-top:10px;">
+          <div class="row3">
+            <label>Name (unique — reuse to update) <input id="cName" placeholder="probe-my-check"></label>
+            <label>Category <input id="cCategory" value="custom"></label>
+            <label>Executor
+              <select id="cExecutor"><option value="generate">generate</option><option value="respond">respond</option><option value="critic">critic</option></select>
+            </label>
+          </div>
+          <div class="row">
+            <label>Task type
+              <select id="cTaskType"><option value="general">general</option><option value="reasoning">reasoning</option><option value="coding">coding</option><option value="embedding">embedding</option></select>
+            </label>
+            <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="cEnabled" checked style="width:auto;"> Enabled</label>
+          </div>
+          <label>Description <input id="cDescription" placeholder="what this case verifies"></label>
+          <label>Prompt <textarea id="cPrompt" rows="2"></textarea></label>
+          <label>Draft (critic executor only — the text being critiqued) <textarea id="cDraft" rows="2"></textarea></label>
+          <label>Checks (JSON list) — type: contains, contains_any, not_contains, regex, json_parseable, json_keys, min_chars, max_chars
+            <textarea id="cChecks" rows="3" class="mono">[{"type": "contains", "value": "ACK"}]</textarea>
+          </label>
+          <div class="row">
+            <label>Respond options (JSON, respond executor only) <textarea id="cRespondOptions" rows="2" class="mono">{}</textarea></label>
+            <label>Setup memories (JSON list, seeded before the case runs) <textarea id="cSetupMemories" rows="2" class="mono">[]</textarea></label>
+          </div>
+          <div class="actions">
+            <button id="createCaseBtn">Save Case</button>
+            <span class="notice" id="createCaseNotice"></span>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>Run History</h2><div class="sub">Past runs, most recent first.</div></div>
+        <button class="secondary tiny" id="loadRunsBtn">Load</button>
+      </div>
+      <div class="list" id="runs"></div>
+    </section>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const truncate = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+    const csv = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try { return await fn(); }
+      finally { btn.disabled = false; btn.textContent = original; }
+    }
+
+    function metric(value, label) {
+      return '<div class="metric"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+
+    function renderChecks(checks) {
+      if (!checks || !checks.length) return '';
+      return '<div class="checks">' + checks.map((c) => `<span class="check-pill ${c.passed ? 'ok' : 'bad'}">${esc(c.type)}${c.passed ? '' : ' ✗'}</span>`).join('') + '</div>';
+    }
+
+    function renderResult(r) {
+      return `
+        <article class="item">
+          <div class="topline">
+            <div>
+              <strong>${esc(r.case_name)}</strong>
+              <div class="muted">${esc(r.category)} · ${esc(r.executor)}${r.model ? ' · ' + esc(r.model) : ''} · ${esc(r.latency_ms)}ms</div>
+            </div>
+            <span class="pill ${esc(r.status)}">${esc(r.status)} · ${esc(r.score)}</span>
+          </div>
+          ${renderChecks(r.checks)}
+          ${r.error ? `<div class="notice err">${esc(r.error)}</div>` : `<div class="muted">${esc(truncate(r.response_excerpt, 240))}</div>`}
+        </article>
+      `;
+    }
+
+    async function runEvals() {
+      const notice = byId('runNotice');
+      notice.textContent = 'Running… this calls the real local model per case, so it can take a while.';
+      notice.className = 'notice';
+      const body = {
+        label: byId('runLabel').value.trim() || 'manual',
+        categories: csv(byId('runCategories').value),
+        case_names: csv(byId('runCaseNames').value),
+        max_cases: Number(byId('runMaxCases').value || 50)
+      };
+      try {
+        const result = await api('/evals/run', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = `Run #${result.run_id} complete.`; notice.className = 'notice good';
+        byId('runMetrics').innerHTML = [
+          metric(result.total, 'Total'),
+          metric(result.passed, 'Passed'),
+          metric(result.failed, 'Failed'),
+          metric(result.errors, 'Errors'),
+          metric(Math.round(result.pass_rate * 100) + '%', 'Pass rate')
+        ].join('');
+        const cmp = result.comparison || {};
+        byId('runComparison').textContent = cmp.first_run
+          ? 'First run — no prior baseline to compare against.'
+          : `vs run #${cmp.previous_run_id}: pass rate ${cmp.pass_rate_delta >= 0 ? '+' : ''}${Math.round(cmp.pass_rate_delta * 100)}pp` +
+            (cmp.newly_failing.length ? ` · newly failing: ${cmp.newly_failing.join(', ')}` : '') +
+            (cmp.newly_passing.length ? ` · newly passing: ${cmp.newly_passing.join(', ')}` : '');
+        byId('runResults').innerHTML = (result.results || []).map(renderResult).join('');
+        await loadRuns();
+      } catch (err) { notice.textContent = 'Run failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadCases() {
+      const params = new URLSearchParams();
+      if (byId('fCategory').value.trim()) params.set('category', byId('fCategory').value.trim());
+      if (byId('fEnabled').value) params.set('enabled', byId('fEnabled').value);
+      const { items } = await api('/evals/cases?' + params.toString());
+      byId('caseCount').textContent = '(' + items.length + ')';
+      byId('cases').innerHTML = items.length ? items.map(renderCase).join('') : '<div class="muted">No cases in this view.</div>';
+    }
+
+    function renderCase(c) {
+      return `
+        <article class="item">
+          <div class="topline">
+            <div>
+              <strong>${esc(c.name)}</strong>
+              <div class="muted">${esc(c.description || '')}</div>
+            </div>
+            <div class="pillrow">
+              <span class="pill ${c.enabled ? 'enabled' : 'disabled'}">${c.enabled ? 'enabled' : 'disabled'}</span>
+              <span class="pill">${esc(c.category)}</span>
+              <span class="pill">${esc(c.executor)}/${esc(c.task_type)}</span>
+            </div>
+          </div>
+          <div class="muted">${esc(truncate(c.prompt, 200))}</div>
+          <details><summary style="cursor:pointer;color:var(--muted);font-size:11.5px;">Full record</summary><pre>${esc(JSON.stringify(c, null, 2))}</pre></details>
+        </article>
+      `;
+    }
+
+    async function saveCase() {
+      const notice = byId('createCaseNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const name = byId('cName').value.trim();
+      const prompt = byId('cPrompt').value.trim();
+      if (!name || !prompt) { notice.textContent = 'Name and prompt are required.'; notice.className = 'notice err'; return; }
+      let checks, respondOptions, setupMemories;
+      try { checks = JSON.parse(byId('cChecks').value || '[]'); }
+      catch (e) { notice.textContent = 'Checks: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+      try { respondOptions = JSON.parse(byId('cRespondOptions').value || '{}'); }
+      catch (e) { notice.textContent = 'Respond options: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+      try { setupMemories = JSON.parse(byId('cSetupMemories').value || '[]'); }
+      catch (e) { notice.textContent = 'Setup memories: invalid JSON — ' + e.message; notice.className = 'notice err'; return; }
+      const body = {
+        name,
+        category: byId('cCategory').value.trim() || 'custom',
+        executor: byId('cExecutor').value,
+        task_type: byId('cTaskType').value,
+        description: byId('cDescription').value,
+        prompt,
+        draft: byId('cDraft').value,
+        checks,
+        respond_options: respondOptions,
+        setup_memories: setupMemories,
+        enabled: byId('cEnabled').checked
+      };
+      try {
+        await api('/evals/cases', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        await loadCases();
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadRuns() {
+      const { items } = await api('/evals/runs?limit=25');
+      byId('runs').innerHTML = items.length ? items.map(renderRun).join('') : '<div class="muted">No runs yet.</div>';
+    }
+
+    function renderRun(r) {
+      return `
+        <article class="item">
+          <div class="topline">
+            <div>
+              <strong>#${esc(r.id)} · ${esc(r.label)}</strong>
+              <div class="muted">${esc(r.created_at)} · ${esc(r.duration_ms)}ms</div>
+            </div>
+            <span class="pill ${r.pass_rate >= 1 ? 'pass' : 'fail'}">${Math.round(r.pass_rate * 100)}% · ${esc(r.passed)}/${esc(r.passed + r.failed + r.errors)}</span>
+          </div>
+        </article>
+      `;
+    }
+
+    async function loadAll() {
+      await Promise.all([loadCases(), loadRuns()]);
+    }
+
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => loadAll().catch((err) => { console.error(err); })));
+    byId('runBtn').addEventListener('click', () => withBusy(byId('runBtn'), 'Running…', runEvals));
+    byId('loadCasesBtn').addEventListener('click', () => withBusy(byId('loadCasesBtn'), 'Loading…', () => loadCases().catch((err) => { byId('cases').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('createCaseBtn').addEventListener('click', () => withBusy(byId('createCaseBtn'), 'Saving…', saveCase));
+    byId('loadRunsBtn').addEventListener('click', () => withBusy(byId('loadRunsBtn'), 'Loading…', () => loadRuns().catch((err) => { byId('runs').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    loadAll().catch((err) => { console.error('Initial evals load failed', err); });
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

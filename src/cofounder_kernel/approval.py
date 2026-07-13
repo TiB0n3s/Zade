@@ -86,7 +86,7 @@ class ApprovalService:
         dispatch: bool = False,
         typed_confirmation: str = "",
     ) -> dict[str, Any]:
-        request = self._load_pending_request(request_id)
+        request = self._load_open_request(request_id)
         if request.permission_tier in NON_APPROVABLE_TIERS or request.authority_decision == "deny":
             raise ValueError("Denied or irreversible boundaries cannot be approved through this endpoint.")
         if dispatch:
@@ -146,7 +146,7 @@ class ApprovalService:
         }
 
     def deny_request(self, request_id: int, *, resolved_by: str = "founder", note: str = "") -> dict[str, Any]:
-        request = self._load_pending_request(request_id)
+        request = self._load_open_request(request_id)
         resolved = self.db.resolve_approval_request(
             request_id,
             status="denied",
@@ -192,7 +192,7 @@ class ApprovalService:
         note: str = "",
         defer_until: str | None = None,
     ) -> dict[str, Any]:
-        request = self._load_pending_request(request_id)
+        request = self._load_open_request(request_id)
         metadata = {"defer_until": defer_until} if defer_until else {}
         deferred = self.db.update_approval_request(
             request_id,
@@ -449,11 +449,18 @@ class ApprovalService:
             "audit_id": audit_id,
         }
 
-    def _load_pending_request(self, request_id: int) -> ApprovalRequest:
+    def _load_open_request(self, request_id: int) -> ApprovalRequest:
+        """Load a request the founder can still act on: pending or deferred.
+
+        Deferred is parked, not decided — it must remain approvable, deniable,
+        and re-deferrable. Requiring exactly 'pending' here made every deferred
+        request permanently unresolvable (approve/deny 400'd both from the
+        approvals console and the work-queue routes; only edit accepted it).
+        """
         request = self.db.get_approval_request(request_id)
         if not request:
             raise ValueError(f"Approval request not found: {request_id}")
-        if request.status != "pending":
+        if request.status not in {"pending", "deferred"}:
             raise ValueError(f"Approval request is already {request.status}.")
         return request
 
@@ -464,8 +471,12 @@ class ApprovalService:
         item = self.db.get_work_item(item_id)
         if not item:
             raise ValueError(f"Work item not found: {item_id}")
-        if item.status != "approval_required":
-            raise ValueError(f"Work item is {item.status}, not approval_required.")
+        # Backfill a request for any item whose founder decision is still open:
+        # approval_required (explicit), deferred (parked, undecided), or pending
+        # (queued; approving early records the call, denying kills queued work).
+        # Resolved states (done/denied/approved/failed) stay unreachable here.
+        if item.status not in {"approval_required", "deferred", "pending"}:
+            raise ValueError(f"Work item is {item.status}; only open items (approval_required/deferred/pending) can be resolved.")
         request, _created = self.db.ensure_approval_request(
             source_type="work_item",
             source_id=item.id,

@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Operating Ledger</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
+      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
+      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    h2 { margin: 0 0 4px; font-size: 15px; }
+    h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    .count { color: var(--muted); font-size: 11.5px; font-weight: 400; }
+    main { padding: 20px 28px 40px; display: grid; gap: 14px; max-width: 1200px; margin: 0 auto; }
+    .jumpnav { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px; background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; position: sticky; top: 78px; z-index: 9; }
+    .jumpnav a { color: var(--muted); font-size: 11.5px; text-decoration: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 9px; }
+    .jumpnav a:hover { color: var(--text); border-color: rgba(176,71,63,0.5); }
+    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; scroll-margin-top: 130px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+    .panel-head .sub { margin-top: 3px; max-width: 62ch; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
+      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
+    }
+    textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; resize: vertical; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
+      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button.tiny { padding: 5px 10px; font-size: 12px; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .filters input { width: auto; max-width: 150px; }
+    .muted { color: var(--muted); }
+    .list { display: grid; gap: 8px; margin-bottom: 4px; }
+    .item { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; background: rgba(255,255,255,0.02); }
+    .item .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .item strong { display: block; font-size: 13px; }
+    .pill {
+      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
+      color: var(--muted); font-size: 10.5px; white-space: nowrap; flex: none;
+    }
+    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
+    .notice.err { color: #f0c4c4; }
+    .notice.good { color: #b9d9c6; }
+    pre {
+      margin: 8px 0 0; white-space: pre-wrap; max-height: 260px; overflow: auto;
+      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 10px; color: #d8d3cb;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+    }
+    details > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
+    details.create-form { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+    details.create-form > summary { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .mm-card { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; background: rgba(255,255,255,0.02); margin-bottom: 8px; }
+    .mm-card strong { display: block; margin-bottom: 3px; }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .row { grid-template-columns: 1fr; }
+      .jumpnav { position: static; }
+    }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Operating Ledger</h1>
+      <div class="sub">Goals, tasks, thesis, strategy, evidence, predictions — the founder operating layer, read and write.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/charter.html">Charters</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
+      <button id="loadAllBtn">Load All</button>
+    </div>
+  </header>
+
+  <main>
+    <nav class="jumpnav" id="jumpnav"></nav>
+
+    <section class="panel" id="sec-thesis">
+      <div class="panel-head">
+        <div><h2>Company Thesis</h2><div class="sub">Vision, mission, customer, moats, and the assumptions the whole company rests on. Single record, upserted.</div></div>
+      </div>
+      <div class="form">
+        <label>Vision <textarea id="th-vision" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+        <label>Mission <textarea id="th-mission" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+        <div class="row">
+          <label>Why now <textarea id="th-why_now" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+          <label>Customer <textarea id="th-customer" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+        </div>
+        <label>Status <input id="th-status" placeholder="draft"></label>
+        <label>Everything else (JSON) — unfair_advantages, core_assumptions, strategic_moats, success_metrics, failure_modes, unknown_unknowns, evidence
+          <textarea id="th-rest" rows="8"></textarea>
+        </label>
+        <div class="actions">
+          <button id="th-saveBtn">Save Thesis</button>
+          <span class="notice" id="th-notice"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="sec-mental-models">
+      <div class="panel-head">
+        <div><h2>Mental Models</h2><div class="sub">Reference lenses for hard calls. Read-only.</div></div>
+        <button class="secondary tiny" id="mm-loadBtn">Load</button>
+      </div>
+      <div id="mm-list"><div class="muted">Not loaded yet.</div></div>
+    </section>
+
+    <div id="sections"></div>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const truncate = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try { return await fn(); }
+      finally { btn.disabled = false; btn.textContent = original; }
+    }
+    function buildQuery(params) {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(params || {})) {
+        if (v !== undefined && v !== null && String(v).trim() !== '') p.set(k, v);
+      }
+      return p.toString();
+    }
+
+    // ---- Data-driven CRUD sections ----
+    // Each domain object below gets: a list (with optional filters), a
+    // collapsible create form, and a generic item card with a full-JSON
+    // detail toggle. 16 near-identical founder-ledger objects made a
+    // hand-written form per object unmanageable; this config drives one
+    // shared renderer instead.
+    const SECTIONS = [
+      {
+        key: 'goals', title: 'Goals', sub: 'What we are trying to make true, and how we will know.',
+        listPath: (f) => '/founder/goals?' + buildQuery({ status: f.status, limit: 50 }),
+        filters: [{ id: 'status', placeholder: 'status filter' }],
+        createPath: '/founder/goals',
+        fields: [
+          { key: 'name', label: 'Name', type: 'text', required: true },
+          { key: 'why_it_matters', label: 'Why it matters', type: 'textarea' },
+          { key: 'metric', label: 'Metric', type: 'text' },
+          { key: 'target', label: 'Target', type: 'text' },
+          { key: 'deadline', label: 'Deadline', type: 'text', placeholder: '2026-08-01' },
+          { key: 'owner', label: 'Owner', type: 'text' },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'status', label: 'Status', type: 'text', default: 'active' },
+          { key: 'evidence_ids', label: 'Evidence IDs (JSON list)', type: 'json', default: '[]' },
+          { key: 'blockers', label: 'Blockers (JSON list)', type: 'json', default: '[]' },
+          { key: 'related_assumption_ids', label: 'Related assumption IDs (JSON list)', type: 'json', default: '[]' },
+          { key: 'related_decision_ids', label: 'Related decision IDs (JSON list)', type: 'json', default: '[]' },
+          { key: 'related_bet_ids', label: 'Related bet IDs (JSON list)', type: 'json', default: '[]' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.name,
+        itemSub: (i) => [i.status, i.owner, i.metric, i.deadline].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'initiatives', title: 'Initiatives', sub: 'Larger efforts that stage from proposed to shipped, staffed with tasks.',
+        listPath: (f) => '/founder/initiatives?' + buildQuery({ status: f.status, limit: 50 }),
+        filters: [{ id: 'status', placeholder: 'status filter' }],
+        createPath: '/founder/initiatives',
+        fields: [
+          { key: 'objective', label: 'Objective', type: 'text', required: true },
+          { key: 'why_it_matters', label: 'Why it matters', type: 'textarea' },
+          { key: 'expected_business_impact', label: 'Expected business impact', type: 'textarea' },
+          { key: 'priority', label: 'Priority (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'owner', label: 'Owner', type: 'text' },
+          { key: 'due_date', label: 'Due date', type: 'text', placeholder: '2026-08-01' },
+          { key: 'current_stage', label: 'Current stage', type: 'text', default: 'proposed' },
+          { key: 'dependencies', label: 'Dependencies (JSON list)', type: 'json', default: '[]' },
+          { key: 'blockers', label: 'Blockers (JSON list)', type: 'json', default: '[]' },
+          { key: 'success_criteria', label: 'Success criteria (JSON list)', type: 'json', default: '[]' },
+          { key: 'evidence', label: 'Evidence (JSON list)', type: 'json', default: '[]' },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'current_risk', label: 'Current risk', type: 'text', default: 'medium' },
+          { key: 'next_review', label: 'Next review', type: 'text', placeholder: '2026-08-01' },
+          { key: 'status', label: 'Status', type: 'text', default: 'active' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.objective,
+        itemSub: (i) => [i.current_stage, i.status, i.owner, i.due_date].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'tasks', title: 'Tasks', sub: 'Work items tied to goals and initiatives.',
+        listPath: (f) => '/founder/tasks?' + buildQuery({ status: f.status, limit: 50 }),
+        filters: [{ id: 'status', placeholder: 'status filter' }],
+        createPath: '/founder/tasks',
+        fields: [
+          { key: 'title', label: 'Title', type: 'text', required: true },
+          { key: 'initiative_id', label: 'Initiative ID', type: 'number' },
+          { key: 'goal_id', label: 'Goal ID', type: 'number' },
+          { key: 'owner', label: 'Owner', type: 'text' },
+          { key: 'due_date', label: 'Due date', type: 'text', placeholder: '2026-08-01' },
+          { key: 'status', label: 'Status', type: 'text', default: 'open' },
+          { key: 'strategic_value', label: 'Strategic value', type: 'textarea' },
+          { key: 'evidence_needed', label: 'Evidence needed', type: 'textarea' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.title,
+        itemSub: (i) => [i.status, i.owner, i.due_date].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'kill-criteria', title: 'Kill Criteria', sub: 'The line that ends a bet, task, or goal before sunk cost decides for us.',
+        listPath: () => '/founder/kill-criteria?' + buildQuery({ limit: 50 }),
+        createPath: '/founder/kill-criteria',
+        fields: [
+          { key: 'subject_type', label: 'Subject type', type: 'text', required: true, placeholder: 'goal, task, active_bet' },
+          { key: 'subject_id', label: 'Subject ID', type: 'number', required: true },
+          { key: 'metric', label: 'Metric', type: 'text' },
+          { key: 'threshold', label: 'Threshold', type: 'text' },
+          { key: 'by_date', label: 'By date', type: 'text', placeholder: '2026-08-01' },
+          { key: 'effort_limit', label: 'Effort limit', type: 'text' },
+          { key: 'exception', label: 'Exception', type: 'text' },
+          { key: 'status', label: 'Status', type: 'text', default: 'active' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => (i.subject_type || 'subject') + ' #' + i.subject_id,
+        itemSub: (i) => [i.metric, i.threshold, i.by_date].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'overrides', title: 'Founder Overrides', sub: "When the founder's call differs from Zade's recommendation, and why.",
+        listPath: () => '/founder/overrides?' + buildQuery({ limit: 50 }),
+        createPath: '/founder/overrides',
+        fields: [
+          { key: 'zade_recommendation', label: "Zade's recommendation", type: 'textarea', required: true },
+          { key: 'founder_decision', label: "Founder's decision", type: 'textarea', required: true },
+          { key: 'reason', label: 'Reason', type: 'textarea' },
+          { key: 'risk_accepted', label: 'Risk accepted', type: 'text' },
+          { key: 'review_date', label: 'Review date', type: 'text', placeholder: '2026-08-01' },
+          { key: 'subject_type', label: 'Subject type', type: 'text' },
+          { key: 'subject_id', label: 'Subject ID', type: 'number' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.founder_decision,
+        itemSub: (i) => [i.subject_type, i.subject_id, i.review_date].filter(Boolean).join(' · ')
+      },
+      {
+        key: 'thesis-conflicts', title: 'Thesis Conflicts', sub: 'Evidence that contradicts a standing assumption in the company thesis.',
+        listPath: (f) => '/founder/thesis-conflicts?' + buildQuery({ status: f.status, limit: 50 }),
+        filters: [{ id: 'status', placeholder: 'status filter' }],
+        createPath: '/founder/thesis-conflicts',
+        fields: [
+          { key: 'evidence_id', label: 'Evidence ID (auto-fills the rest if set)', type: 'number' },
+          { key: 'original_assumption', label: 'Original assumption', type: 'textarea' },
+          { key: 'new_evidence', label: 'New evidence', type: 'textarea' },
+          { key: 'severity', label: 'Severity', type: 'text' },
+          { key: 'affected_assumption', label: 'Affected assumption', type: 'textarea' },
+          { key: 'implication', label: 'Implication', type: 'textarea' },
+          { key: 'recommended_response', label: 'Recommended response', type: 'textarea' },
+          { key: 'status', label: 'Status', type: 'text', default: 'open' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.affected_assumption || i.original_assumption || 'conflict #' + i.id,
+        itemSub: (i) => [i.severity, i.status].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'missed-calls', title: 'Missed Calls', sub: 'Predictions that went wrong, dissected.',
+        listPath: () => '/founder/missed-calls?' + buildQuery({ limit: 50 }),
+        createPath: '/founder/missed-calls',
+        fields: [
+          { key: 'prediction_id', label: 'Prediction ID (auto-fills prediction if set)', type: 'number' },
+          { key: 'prediction', label: 'Prediction', type: 'textarea' },
+          { key: 'expected', label: 'Expected', type: 'textarea' },
+          { key: 'actual', label: 'Actual', type: 'textarea' },
+          { key: 'error_type', label: 'Error type', type: 'text' },
+          { key: 'lesson', label: 'Lesson', type: 'textarea' },
+          { key: 'what_changes_now', label: 'What changes now', type: 'textarea' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.prediction || i.error_type || 'missed call #' + i.id,
+        itemSub: (i) => [i.error_type].filter(Boolean).join(' · ')
+      },
+      {
+        key: 'cadence-reviews', title: 'Cadence Reviews', sub: 'Daily/weekly/monthly self-review of drift and highest-leverage action.',
+        listPath: (f) => '/founder/cadence-reviews?' + buildQuery({ review_type: f.review_type, limit: 50 }),
+        filters: [{ id: 'review_type', placeholder: 'review type filter' }],
+        createPath: '/founder/cadence-reviews',
+        fields: [
+          { key: 'review_type', label: 'Review type', type: 'text', required: true, default: 'daily' },
+          { key: 'period', label: 'Period', type: 'text', placeholder: 'YYYY-MM-DD, defaults to today' },
+          { key: 'findings', label: 'Findings (JSON)', type: 'json', default: '{}' },
+          { key: 'changes', label: 'Changes (JSON)', type: 'json', default: '{}' },
+          { key: 'actions', label: 'Actions (JSON list)', type: 'json', default: '[]' },
+          { key: 'drift_detected', label: 'Drift detected', type: 'checkbox' },
+          { key: 'highest_leverage_action', label: 'Highest-leverage action', type: 'textarea' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => (i.review_type || 'review') + (i.period ? ' · ' + i.period : ''),
+        itemSub: (i) => i.highest_leverage_action || '',
+        itemPill: (i) => i.drift_detected ? 'drift' : null,
+        extraHtml: (sec) => `
+          <div class="actions" style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px;">
+            <input id="${sec.key}-gen-type" placeholder="review type" value="daily" style="max-width:130px;">
+            <input id="${sec.key}-gen-period" placeholder="period (optional)" style="max-width:150px;">
+            <button class="secondary tiny" id="${sec.key}-genBtn">Generate</button>
+            <span class="notice" id="${sec.key}-gen-notice"></span>
+          </div>`,
+        afterRender: (sec) => {
+          const btn = byId(sec.key + '-genBtn');
+          btn.addEventListener('click', () => withBusy(btn, 'Generating…', async () => {
+            const notice = byId(sec.key + '-gen-notice');
+            notice.textContent = ''; notice.className = 'notice';
+            try {
+              const type = byId(sec.key + '-gen-type').value.trim() || 'daily';
+              const period = byId(sec.key + '-gen-period').value.trim();
+              await api('/founder/cadence-reviews/generate/' + encodeURIComponent(type) + (period ? '?period=' + encodeURIComponent(period) : ''), { method: 'POST' });
+              notice.textContent = 'Generated.'; notice.className = 'notice good';
+              await loadSection(sec);
+            } catch (err) { notice.textContent = 'Generate failed: ' + err.message; notice.className = 'notice err'; }
+          }));
+        }
+      },
+      {
+        key: 'strategy', title: 'Strategy Ledger', sub: 'Named decisions: what we chose, why, and what we expect.',
+        listPath: (f) => '/founder/strategy?' + buildQuery({ status: f.status, limit: 50 }),
+        filters: [{ id: 'status', placeholder: 'status filter' }],
+        createPath: '/founder/strategy',
+        fields: [
+          { key: 'title', label: 'Title', type: 'text', required: true },
+          { key: 'category', label: 'Category', type: 'text', default: 'Product' },
+          { key: 'decision', label: 'Decision', type: 'textarea', required: true },
+          { key: 'reason', label: 'Reason', type: 'textarea' },
+          { key: 'expected_outcome', label: 'Expected outcome', type: 'textarea' },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'time_horizon', label: 'Time horizon', type: 'text' },
+          { key: 'dependencies', label: 'Dependencies (JSON list)', type: 'json', default: '[]' },
+          { key: 'status', label: 'Status', type: 'text', default: 'active' },
+          { key: 'evidence', label: 'Evidence (JSON list)', type: 'json', default: '[]' },
+          { key: 'linked_metrics', label: 'Linked metrics (JSON list)', type: 'json', default: '[]' },
+          { key: 'owner', label: 'Owner', type: 'text' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.title,
+        itemSub: (i) => [i.category, i.status, i.owner].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'strategy-objects', title: 'Strategy Objects & Bets', sub: 'Active bets and other tracked strategic objects, with reversal triggers.',
+        listPath: (f) => '/founder/strategy-objects?' + buildQuery({ object_type: f.object_type, limit: 50 }),
+        filters: [{ id: 'object_type', placeholder: 'object type filter' }],
+        createPath: '/founder/strategy-objects',
+        fields: [
+          { key: 'object_type', label: 'Object type', type: 'text', required: true, default: 'active_bet' },
+          { key: 'title', label: 'Title', type: 'text', required: true },
+          { key: 'owner', label: 'Owner', type: 'text' },
+          { key: 'deadline', label: 'Deadline', type: 'text', placeholder: '2026-08-01' },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'status', label: 'Status', type: 'text', default: 'active' },
+          { key: 'reversal_trigger', label: 'Reversal trigger', type: 'textarea' },
+          { key: 'details', label: 'Details (JSON)', type: 'json', default: '{}' },
+          { key: 'evidence_ids', label: 'Evidence IDs (JSON list)', type: 'json', default: '[]' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.title,
+        itemSub: (i) => [i.object_type, i.status, 'confidence ' + i.confidence].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'links', title: 'Links', sub: 'Explicit relationships between any two ledger objects.',
+        listPath: () => '/founder/links?' + buildQuery({ limit: 50 }),
+        createPath: '/founder/links',
+        fields: [
+          { key: 'from_type', label: 'From type', type: 'text', required: true },
+          { key: 'from_id', label: 'From ID', type: 'number', required: true },
+          { key: 'relation', label: 'Relation', type: 'text', default: 'related_to' },
+          { key: 'to_type', label: 'To type', type: 'text', required: true },
+          { key: 'to_id', label: 'To ID', type: 'number', required: true },
+          { key: 'strength', label: 'Strength (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => `${i.from_type}#${i.from_id} —${i.relation}→ ${i.to_type}#${i.to_id}`,
+        itemSub: (i) => 'strength ' + i.strength
+      },
+      {
+        key: 'reflections', title: 'Reflections', sub: 'What happened, what we expected, and what changes now.',
+        listPath: () => '/founder/reflections?' + buildQuery({ limit: 50 }),
+        createPath: '/founder/reflections',
+        fields: [
+          { key: 'event', label: 'Event', type: 'textarea', required: true },
+          { key: 'expected', label: 'Expected', type: 'textarea' },
+          { key: 'changed', label: 'What changed', type: 'textarea' },
+          { key: 'belief_update', label: 'Belief update', type: 'textarea' },
+          { key: 'strategy_update', label: 'Strategy update', type: 'textarea' },
+          { key: 'prediction_update', label: 'Prediction update', type: 'textarea' },
+          { key: 'priority_update', label: 'Priority update', type: 'textarea' },
+          { key: 'never_again', label: 'Never again', type: 'textarea' },
+          { key: 'more_often', label: 'More often', type: 'textarea' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.event,
+        itemSub: (i) => i.changed || ''
+      },
+      {
+        key: 'contrarian-reviews', title: 'Contrarian Reviews', sub: 'Red team, skeptic, and eight other roles pressure-test a call before it ships.',
+        listPath: () => '/founder/contrarian-reviews?' + buildQuery({ limit: 50 }),
+        createPath: '/founder/contrarian-reviews',
+        fields: [
+          { key: 'subject_type', label: 'Subject type', type: 'text', default: 'general', placeholder: 'assumption, goal, bet, active_bet, strategy_object' },
+          { key: 'subject_id', label: 'Subject ID', type: 'number' },
+          { key: 'title', label: 'Title', type: 'text', required: true },
+          { key: 'context', label: 'Context', type: 'textarea' },
+          { key: 'roles', label: 'Roles (JSON dict, overrides the 9 defaults)', type: 'json', default: '{}' },
+          { key: 'top_risks', label: 'Top risks (JSON list)', type: 'json', default: '[]' },
+          { key: 'blind_spots', label: 'Blind spots (JSON list)', type: 'json', default: '[]' },
+          { key: 'confidence_adjustment', label: 'Confidence adjustment (-100 to 100)', type: 'number', default: 0, min: -100, max: 100 },
+          { key: 'recommendation', label: 'Recommendation', type: 'text', default: 'proceed_with_changes' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.title,
+        itemSub: (i) => [i.subject_type, i.recommendation, i.confidence_adjustment != null ? 'adj ' + i.confidence_adjustment : ''].filter(Boolean).join(' · '),
+        itemPill: (i) => i.recommendation
+      },
+      {
+        key: 'decisions', title: 'Decision Memos', sub: 'Problem, options considered, recommendation, and who disagrees.',
+        listPath: (f) => '/founder/decisions?' + buildQuery({ status: f.status, limit: 50 }),
+        filters: [{ id: 'status', placeholder: 'status filter' }],
+        createPath: '/founder/decisions',
+        fields: [
+          { key: 'problem', label: 'Problem', type: 'textarea', required: true },
+          { key: 'context', label: 'Context', type: 'textarea' },
+          { key: 'options', label: 'Options considered (JSON list)', type: 'json', default: '[]' },
+          { key: 'recommendation', label: 'Recommendation', type: 'textarea' },
+          { key: 'why', label: 'Why', type: 'textarea' },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'expected_outcome', label: 'Expected outcome', type: 'textarea' },
+          { key: 'expected_failure_modes', label: 'Expected failure modes (JSON list)', type: 'json', default: '[]' },
+          { key: 'who_disagrees', label: 'Who disagrees', type: 'text' },
+          { key: 'counterarguments', label: 'Counterarguments (JSON list)', type: 'json', default: '[]' },
+          { key: 'decision_date', label: 'Decision date', type: 'text', placeholder: '2026-08-01' },
+          { key: 'revisit_date', label: 'Revisit date', type: 'text', placeholder: '2026-09-01' },
+          { key: 'status', label: 'Status', type: 'text', default: 'open' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.problem,
+        itemSub: (i) => [i.status, 'confidence ' + i.confidence, i.decision_date].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'assumptions', title: 'Assumptions', sub: 'What we believe but have not proven, and what would prove us wrong.',
+        listPath: (f) => '/founder/assumptions?' + buildQuery({ status: f.status, limit: 50 }),
+        filters: [{ id: 'status', placeholder: 'status filter' }],
+        createPath: '/founder/assumptions',
+        fields: [
+          { key: 'statement', label: 'Statement', type: 'textarea', required: true },
+          { key: 'category', label: 'Category', type: 'text', default: 'product' },
+          { key: 'confidence', label: 'Confidence (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'status', label: 'Status', type: 'text', default: 'active' },
+          { key: 'review_date', label: 'Review date', type: 'text', placeholder: '2026-08-01' },
+          { key: 'invalidation_signal', label: 'Invalidation signal', type: 'textarea' },
+          { key: 'evidence_ids', label: 'Evidence IDs (JSON list)', type: 'json', default: '[]' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.statement,
+        itemSub: (i) => [i.category, i.status, 'confidence ' + i.confidence].filter(Boolean).join(' · '),
+        itemPill: (i) => i.status
+      },
+      {
+        key: 'evidence', title: 'Evidence', sub: 'Sourced facts that support or contradict a claim, with a reliability grade.',
+        listPath: () => '/founder/evidence?' + buildQuery({ limit: 50 }),
+        createPath: '/founder/evidence',
+        fields: [
+          { key: 'evidence_type', label: 'Evidence type', type: 'text', default: 'founder observation' },
+          { key: 'source', label: 'Source', type: 'text', required: true },
+          { key: 'evidence_date', label: 'Evidence date', type: 'text', placeholder: '2026-08-01' },
+          { key: 'reliability', label: 'Reliability (A-D)', type: 'text', default: 'D' },
+          { key: 'claim_supported', label: 'Claim supported', type: 'textarea' },
+          { key: 'claim_contradicted', label: 'Claim contradicted', type: 'textarea' },
+          { key: 'strength', label: 'Strength (0-100)', type: 'number', default: 50, min: 0, max: 100 },
+          { key: 'linked_assumption_id', label: 'Linked assumption ID', type: 'number' },
+          { key: 'linked_decision_id', label: 'Linked decision ID', type: 'number' },
+          { key: 'notes', label: 'Notes', type: 'textarea' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.source,
+        itemSub: (i) => [i.evidence_type, 'reliability ' + i.reliability, 'strength ' + i.strength].filter(Boolean).join(' · '),
+        itemPill: (i) => i.reliability
+      },
+      {
+        key: 'predictions', title: 'Predictions', sub: 'Calibrated forecasts, scored later against what actually happened.',
+        listPath: (f) => '/founder/predictions?' + buildQuery({ result: f.result, limit: 50 }),
+        filters: [{ id: 'result', placeholder: 'result filter (open, ...)' }],
+        createPath: '/founder/predictions',
+        fields: [
+          { key: 'prediction', label: 'Prediction', type: 'textarea', required: true },
+          { key: 'probability', label: 'Probability (0-1)', type: 'number', required: true, step: 0.01, min: 0, max: 1 },
+          { key: 'time_horizon', label: 'Time horizon', type: 'text' },
+          { key: 'due_at', label: 'Due at', type: 'text', placeholder: '2026-08-01' },
+          { key: 'evidence', label: 'Evidence (JSON list)', type: 'json', default: '[]' },
+          { key: 'metadata', label: 'Metadata (JSON)', type: 'json', default: '{}' }
+        ],
+        itemTitle: (i) => i.prediction,
+        itemSub: (i) => [i.result, i.probability != null ? 'p=' + i.probability : '', i.due_at].filter(Boolean).join(' · '),
+        itemPill: (i) => i.result,
+        extraHtml: (sec) => `
+          <div class="form" style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px;">
+            <h3>Score a prediction</h3>
+            <div class="row">
+              <label>Prediction ID <input id="${sec.key}-sc-id" type="number"></label>
+              <label>Outcome <input id="${sec.key}-sc-outcome" placeholder="what actually happened"></label>
+            </div>
+            <label>Result <input id="${sec.key}-sc-result" placeholder="defaults to outcome if left blank"></label>
+            <label>Missed factors <textarea id="${sec.key}-sc-missed" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+            <label>Lessons <textarea id="${sec.key}-sc-lessons" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+            <label>Worldview update <textarea id="${sec.key}-sc-worldview" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+            <div class="actions">
+              <button class="secondary tiny" id="${sec.key}-scoreBtn">Score</button>
+              <span class="notice" id="${sec.key}-sc-notice"></span>
+            </div>
+          </div>`,
+        afterRender: (sec) => {
+          const btn = byId(sec.key + '-scoreBtn');
+          btn.addEventListener('click', () => withBusy(btn, 'Scoring…', async () => {
+            const notice = byId(sec.key + '-sc-notice');
+            notice.textContent = ''; notice.className = 'notice';
+            const predictionId = byId(sec.key + '-sc-id').value.trim();
+            const outcome = byId(sec.key + '-sc-outcome').value.trim();
+            if (!predictionId || !outcome) { notice.textContent = 'Prediction ID and outcome are required.'; notice.className = 'notice err'; return; }
+            const body = {
+              prediction_id: Number(predictionId),
+              outcome,
+              missed_factors: byId(sec.key + '-sc-missed').value,
+              lessons: byId(sec.key + '-sc-lessons').value,
+              worldview_update: byId(sec.key + '-sc-worldview').value
+            };
+            const result = byId(sec.key + '-sc-result').value.trim();
+            if (result) body.result = result;
+            try {
+              await api('/founder/predictions/score', { method: 'POST', body: JSON.stringify(body) });
+              notice.textContent = 'Scored.'; notice.className = 'notice good';
+              await loadSection(sec);
+            } catch (err) { notice.textContent = 'Score failed: ' + err.message; notice.className = 'notice err'; }
+          }));
+        }
+      },
+      {
+        key: 'integrity-warnings', title: 'Integrity Warnings', sub: 'Automated consistency checks across goals, initiatives, and tasks — missing owners, orphaned links, dead metrics.',
+        listPath: (f) => '/founder/integrity-warnings?' + buildQuery({ status: f.status, limit: 50 }),
+        filters: [{ id: 'status', placeholder: 'status filter (open, ...)' }],
+        readOnly: true,
+        itemTitle: (i) => i.message,
+        itemSub: (i) => [i.warning_type, (i.subject_type || 'subject') + ' #' + i.subject_id, i.recommendation].filter(Boolean).join(' · '),
+        itemPill: (i) => i.severity,
+        extraHtml: (sec) => `
+          <div class="actions">
+            <button class="secondary tiny" id="${sec.key}-checkBtn">Run Integrity Check</button>
+            <span class="notice" id="${sec.key}-check-notice"></span>
+          </div>`,
+        afterRender: (sec) => {
+          const btn = byId(sec.key + '-checkBtn');
+          btn.addEventListener('click', () => withBusy(btn, 'Checking…', async () => {
+            const notice = byId(sec.key + '-check-notice');
+            notice.textContent = ''; notice.className = 'notice';
+            try {
+              const result = await api('/founder/integrity-check', { method: 'POST' });
+              notice.textContent = `Found ${result.count} warning(s).`; notice.className = 'notice good';
+              await loadSection(sec);
+            } catch (err) { notice.textContent = 'Check failed: ' + err.message; notice.className = 'notice err'; }
+          }));
+        }
+      },
+      {
+        key: 'confidence-events', title: 'Confidence Events', sub: 'Every belief-confidence change and why — the audit trail behind every percentage shown elsewhere.',
+        listPath: () => '/founder/confidence-events?' + buildQuery({ limit: 50 }),
+        readOnly: true,
+        itemTitle: (i) => (i.subject_type || 'subject') + ' #' + i.subject_id + ': ' + i.previous_confidence + ' → ' + i.new_confidence,
+        itemSub: (i) => i.reason || ''
+      }
+    ];
+
+    function fieldInputHtml(sec, f) {
+      const id = sec.key + '-' + f.key;
+      if (f.type === 'textarea') {
+        return `<label>${esc(f.label)}<textarea id="${id}" rows="2" style="font-family:inherit;font-size:13px;" placeholder="${esc(f.placeholder || '')}"></textarea></label>`;
+      }
+      if (f.type === 'json') {
+        return `<label>${esc(f.label)}<textarea id="${id}" rows="2">${esc(f.default != null ? f.default : '{}')}</textarea></label>`;
+      }
+      if (f.type === 'number') {
+        const attrs = [
+          f.min != null ? `min="${f.min}"` : '',
+          f.max != null ? `max="${f.max}"` : '',
+          f.step != null ? `step="${f.step}"` : ''
+        ].filter(Boolean).join(' ');
+        return `<label>${esc(f.label)}<input id="${id}" type="number" ${attrs} value="${f.default != null ? esc(f.default) : ''}" placeholder="${esc(f.placeholder || '')}"></label>`;
+      }
+      if (f.type === 'checkbox') {
+        return `<label><input id="${id}" type="checkbox" style="width:auto;display:inline-block;margin-right:6px;">${esc(f.label)}</label>`;
+      }
+      return `<label>${esc(f.label)}<input id="${id}" type="text" placeholder="${esc(f.placeholder || '')}" value="${f.default != null ? esc(f.default) : ''}"></label>`;
+    }
+
+    function fieldsHtml(sec) {
+      const parts = [];
+      let rowBuffer = [];
+      const flush = () => { if (rowBuffer.length) { parts.push(`<div class="row">${rowBuffer.join('')}</div>`); rowBuffer = []; } };
+      for (const f of sec.fields) {
+        const short = f.type === 'text' || f.type === 'number' || f.type === 'checkbox';
+        if (short) { rowBuffer.push(fieldInputHtml(sec, f)); if (rowBuffer.length === 2) flush(); }
+        else { flush(); parts.push(fieldInputHtml(sec, f)); }
+      }
+      flush();
+      return parts.join('');
+    }
+
+    function renderSectionShell(sec) {
+      const filters = (sec.filters || []).map((f) => `<input id="${sec.key}-f-${f.id}" placeholder="${esc(f.placeholder)}">`).join('');
+      const formBody = sec.readOnly ? '' : `
+            <div class="form" style="margin-top:10px;">
+              ${fieldsHtml(sec)}
+              <div class="actions">
+                <button data-create="${sec.key}">Create</button>
+                <span class="notice" id="notice-${sec.key}"></span>
+              </div>
+            </div>`;
+      const extra = sec.extraHtml ? sec.extraHtml(sec) : '';
+      const detailsBlock = (formBody || extra) ? `
+          <details class="create-form" ${sec.readOnly ? 'open' : ''}>
+            <summary>${sec.readOnly ? 'Actions' : '+ New ' + esc(sec.title)}</summary>
+            ${formBody}
+            ${extra}
+          </details>` : '';
+      return `
+        <section class="panel" id="sec-${sec.key}">
+          <div class="panel-head">
+            <div><h2>${esc(sec.title)} <span class="count" id="${sec.key}-count"></span></h2><div class="sub">${esc(sec.sub)}</div></div>
+            <div class="filters">
+              ${filters}
+              <button class="secondary tiny" data-load="${sec.key}">Load</button>
+            </div>
+          </div>
+          <div class="list" id="list-${sec.key}"><div class="muted">Not loaded yet.</div></div>
+          ${detailsBlock}
+        </section>
+      `;
+    }
+
+    function renderItem(sec, item) {
+      const title = sec.itemTitle(item) || '(untitled)';
+      const sub = sec.itemSub ? sec.itemSub(item) : '';
+      const pillVal = sec.itemPill ? sec.itemPill(item) : null;
+      return `
+        <article class="item">
+          <div class="topline">
+            <strong>${esc(truncate(title, 160))}</strong>
+            ${pillVal ? `<span class="pill">${esc(pillVal)}</span>` : ''}
+          </div>
+          ${sub ? `<div class="muted">${esc(truncate(sub, 200))}</div>` : ''}
+          <details><summary>Full record</summary><pre>${esc(JSON.stringify(item, null, 2))}</pre></details>
+        </article>
+      `;
+    }
+
+    function collectFields(sec) {
+      const body = {};
+      const errors = [];
+      for (const f of sec.fields) {
+        const el = byId(sec.key + '-' + f.key);
+        if (f.type === 'json') {
+          const raw = el.value.trim() || (f.default != null ? f.default : '{}');
+          try { body[f.key] = JSON.parse(raw); } catch (e) { errors.push(f.label + ': invalid JSON'); }
+        } else if (f.type === 'number') {
+          const raw = el.value.trim();
+          if (raw !== '') body[f.key] = Number(raw);
+          else if (f.required) errors.push(f.label + ' is required');
+        } else if (f.type === 'checkbox') {
+          body[f.key] = el.checked;
+        } else {
+          const raw = el.value;
+          if (raw.trim() !== '') body[f.key] = raw;
+          else if (f.required) errors.push(f.label + ' is required');
+        }
+      }
+      return { body, errors };
+    }
+
+    async function loadSection(sec) {
+      const filterValues = {};
+      (sec.filters || []).forEach((f) => { filterValues[f.id] = byId(sec.key + '-f-' + f.id).value.trim(); });
+      const data = await api(sec.listPath(filterValues));
+      const items = data.items || [];
+      byId('list-' + sec.key).innerHTML = items.length ? items.map((item) => renderItem(sec, item)).join('') : '<div class="muted">Nothing yet.</div>';
+      byId(sec.key + '-count').textContent = items.length ? '(' + items.length + ')' : '';
+    }
+
+    async function createItem(sec) {
+      const notice = byId('notice-' + sec.key);
+      notice.textContent = ''; notice.className = 'notice';
+      const { body, errors } = collectFields(sec);
+      if (errors.length) { notice.textContent = errors.join('; '); notice.className = 'notice err'; return; }
+      try {
+        const result = await api(sec.createPath, { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Created' + (result.id ? ' #' + result.id : '') + '.';
+        notice.className = 'notice good';
+        await loadSection(sec);
+      } catch (err) { notice.textContent = 'Create failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    function buildSections() {
+      byId('sections').innerHTML = SECTIONS.map(renderSectionShell).join('');
+      byId('jumpnav').innerHTML = ['thesis', 'mental-models', ...SECTIONS.map((s) => s.key)]
+        .map((key, idx) => `<a href="#sec-${key}">${esc(idx === 0 ? 'Thesis' : idx === 1 ? 'Mental Models' : SECTIONS[idx - 2].title)}</a>`).join('');
+      SECTIONS.forEach((sec) => {
+        byId('list-' + sec.key).dataset.ready = '1';
+        document.querySelector(`[data-load="${sec.key}"]`).addEventListener('click', (e) => withBusy(e.target, 'Loading…', () => loadSection(sec).catch((err) => { byId('list-' + sec.key).innerHTML = `<div class="notice err">Load failed: ${esc(err.message)}</div>`; })));
+        const createBtn = document.querySelector(`[data-create="${sec.key}"]`);
+        if (createBtn) createBtn.addEventListener('click', (e) => withBusy(e.target, 'Creating…', () => createItem(sec)));
+        if (sec.afterRender) sec.afterRender(sec);
+      });
+    }
+
+    function splitThesis(record) {
+      const headline = {};
+      const rest = {};
+      const headlineKeys = ['vision', 'mission', 'why_now', 'customer', 'status'];
+      for (const [k, v] of Object.entries(record || {})) {
+        if (['id', 'created_at', 'updated_at'].includes(k)) continue;
+        if (headlineKeys.includes(k)) headline[k] = v; else rest[k] = v;
+      }
+      return { headline, rest };
+    }
+
+    async function loadThesis() {
+      const { thesis } = await api('/founder/thesis');
+      const { headline, rest } = splitThesis(thesis);
+      byId('th-vision').value = headline.vision || '';
+      byId('th-mission').value = headline.mission || '';
+      byId('th-why_now').value = headline.why_now || '';
+      byId('th-customer').value = headline.customer || '';
+      byId('th-status').value = headline.status || 'draft';
+      byId('th-rest').value = JSON.stringify(rest, null, 2);
+    }
+
+    async function saveThesis() {
+      const notice = byId('th-notice');
+      notice.textContent = ''; notice.className = 'notice';
+      let rest;
+      try { rest = JSON.parse(byId('th-rest').value || '{}'); }
+      catch (e) { notice.textContent = 'Invalid JSON in "everything else": ' + e.message; notice.className = 'notice err'; return; }
+      const body = {
+        vision: byId('th-vision').value,
+        mission: byId('th-mission').value,
+        why_now: byId('th-why_now').value,
+        customer: byId('th-customer').value,
+        status: byId('th-status').value.trim() || 'draft',
+        ...rest
+      };
+      try {
+        await api('/founder/thesis', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        await loadThesis();
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadMentalModels() {
+      const { models } = await api('/founder/mental-models');
+      byId('mm-list').innerHTML = (models || []).length
+        ? models.map((m) => `<div class="mm-card"><strong>${esc(m.name)}</strong><div class="muted">${esc(m.use_when)}</div><div style="margin-top:6px;">${esc(m.prompt)}</div></div>`).join('')
+        : '<div class="muted">No mental models registered.</div>';
+    }
+
+    async function loadAll() {
+      await Promise.all([loadThesis(), loadMentalModels(), ...SECTIONS.map((sec) => loadSection(sec))]);
+    }
+
+    buildSections();
+    byId('th-saveBtn').addEventListener('click', () => withBusy(byId('th-saveBtn'), 'Saving…', saveThesis));
+    byId('mm-loadBtn').addEventListener('click', () => withBusy(byId('mm-loadBtn'), 'Loading…', () => loadMentalModels().catch((err) => { byId('mm-list').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('loadAllBtn').addEventListener('click', () => withBusy(byId('loadAllBtn'), 'Loading all…', () => loadAll().catch((err) => { console.error(err); })));
+    loadAll().catch((err) => { console.error('Initial ledger load failed', err); });
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

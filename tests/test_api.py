@@ -176,6 +176,11 @@ def test_identity_charter_routes_and_prompt_block(tmp_path: Path, monkeypatch) -
         },
     }
     posted = client.post("/identity/charter", json=payload)
+    # Re-saving an already-seeded charter is the normal edit path (the charter
+    # editor loads current values and posts them back) and used to 500: the
+    # existing-row lookup selected only `id`, then read `existing["created_at"]`
+    # off that row — sqlite3.Row raises IndexError for an unselected column.
+    resaved = client.post("/identity/charter", json=payload | {"mission": "Updated mission."})
     loaded = client.get("/identity/charter")
     inventory = client.get("/self-inventory")
     prompt = _build_prompt(
@@ -187,8 +192,9 @@ def test_identity_charter_routes_and_prompt_block(tmp_path: Path, monkeypatch) -
     )
 
     assert posted.status_code == 200
+    assert resaved.status_code == 200
     assert loaded.status_code == 200
-    assert loaded.json()["charter"]["mission"].startswith("Relentlessly")
+    assert loaded.json()["charter"]["mission"] == "Updated mission."
     assert inventory.json()["identity_layer"]["charter_seeded"] is True
     assert "Active runtime identity charter" in prompt
     assert "Strategic patience" in prompt
@@ -267,6 +273,8 @@ def test_voice_charter_routes_and_prompt_block(tmp_path: Path, monkeypatch) -> N
         "safety_controls": [{"control": "commands", "rule": "No coercive commands."}],
     }
     posted = client.post("/identity/voice", json=payload)
+    # Same re-save regression as the identity charter above — see that comment.
+    resaved = client.post("/identity/voice", json=payload | {"overall_voice": "Terse, calm, decisive. Updated."})
     loaded = client.get("/identity/voice")
     inventory = client.get("/self-inventory")
     prompt = _build_prompt(
@@ -278,12 +286,108 @@ def test_voice_charter_routes_and_prompt_block(tmp_path: Path, monkeypatch) -> N
     )
 
     assert posted.status_code == 200
+    assert resaved.status_code == 200
     assert loaded.status_code == 200
-    assert loaded.json()["charter"]["overall_voice"] == "Terse, calm, decisive."
+    assert loaded.json()["charter"]["overall_voice"] == "Terse, calm, decisive. Updated."
     assert inventory.json()["identity_layer"]["voice_charter_seeded"] is True
     assert "Active voice charter" in prompt
     assert "Preferred words: take, watch, protect, choose" in prompt
     assert "Do not issue real threats" in prompt
+
+
+def test_runtime_respond_prompt_carries_full_charter_content_not_just_booleans(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """/runtime/respond is the endpoint the dashboard, founder.html, and voice
+    all actually call — not the lighter /chat endpoint the charter-formatting
+    tests above exercise. It used to fold the charter stack into the prompt as
+    a bare presence summary (`{"voice_seeded": true, ...}`): the model knew
+    charters existed but never saw the mission, vocabulary, or tone rules
+    they define, so the authored personality never reached responses. This
+    locks in the fix — the actual governed prompt must carry the charter
+    content itself."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    client.post("/identity/charter", json={
+        "name": "Zade", "source": "test",
+        "mission": "Relentlessly advance the founder mission without wasting motion.",
+    })
+    client.post("/identity/voice", json={
+        "name": "Zade", "source": "test",
+        "overall_voice": "Terse, calm, decisive.",
+        "vocabulary": {"preferred_words": ["take", "watch", "protect", "choose"]},
+    })
+    client.post("/identity/relationships", json={
+        "subject_name": "Ellie", "relationship_type": "protected_principal", "source": "test",
+        "first_principle": "Ellie's safety and autonomy both matter.",
+    })
+
+    runtime = client.app.state.runtime
+    context = runtime.context(message="How should we speak?", use_semantic_memory=False)
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    prompt = runtime._build_governed_prompt(
+        message="How should we speak?", context=context, authority=authority, conversation_block=""
+    )
+
+    # The rich charter content is present in the actual prompt sent to the model...
+    assert "Relentlessly advance the founder mission" in prompt
+    assert "Terse, calm, decisive." in prompt
+    assert "take, watch, protect, choose" in prompt
+    assert "Ellie's safety and autonomy both matter." in prompt
+    # ...and the old bare boolean-only leak is gone.
+    assert '"voice_seeded": true' not in prompt.lower().replace(" ", "")
+    # The prompt itself instructs first-person self-reference, never third.
+    assert "Always speak in the first person" in prompt
+    assert "third-person self-reference" in prompt
+
+
+def test_runtime_respond_flags_third_person_self_reference_without_rewriting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A hard rule in the prompt is a strong bias on a small local model, not a
+    guarantee. This locks in the detection safety net: a reply that narrates
+    itself in third person ("Zade recommends...") gets a governor note so the
+    slip is visible, but the response text is never silently rewritten — that
+    risks mangling a legitimate first-person sentence that happens to contain
+    the name (e.g. "My name is Zade")."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    def third_person_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response="Zade recommends holding the current price.", model=model or "qwen3:14b", raw={})
+
+    def first_person_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response="My name is Zade. I recommend holding the current price.", model=model or "qwen3:14b", raw={})
+
+    monkeypatch.setattr(OllamaClient, "generate", third_person_generate)
+    flagged = client.post("/runtime/respond", json={"message": "What should we do?", "contrarian": False})
+
+    monkeypatch.setattr(OllamaClient, "generate", first_person_generate)
+    clean = client.post("/runtime/respond", json={"message": "What should we do?", "contrarian": False})
+
+    assert flagged.status_code == 200
+    assert flagged.json()["response"] == "Zade recommends holding the current price."  # never rewritten
+    assert "first_person_self_reference_checked" in flagged.json()["governor"]["applied_rules"]
+    assert any("third person" in n for n in flagged.json()["governor"]["notes"])
+
+    assert clean.status_code == 200
+    assert "first_person_self_reference_checked" not in clean.json()["governor"]["applied_rules"]
+    assert not any("third person" in n for n in clean.json()["governor"]["notes"])
 
 
 def test_runtime_layer_context_response_and_events(tmp_path: Path, monkeypatch) -> None:
@@ -1126,6 +1230,56 @@ def test_action_approval_console_edit_defer_and_learning_events(tmp_path: Path, 
     assert "POST /approval-requests/{request_id}/edit" in inventory.json()["work_queue"]["routes"]
     assert ui.status_code == 200
     assert "Zade Action Approval Console" in ui.text
+
+
+def test_deferred_work_item_can_be_resolved_from_the_work_queue(tmp_path: Path, monkeypatch) -> None:
+    """A deferred item is parked, not decided — the founder must still be able
+    to approve or deny it straight from the work queue. Previously
+    /work/items/{id}/deny 400'd on deferred items ("Work item is deferred,
+    not approval_required."): the request lookup only matched status='pending'
+    and the backfill only accepted approval_required, so deferred items were
+    only resolvable by request id through the approvals console."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    def enqueue(title: str) -> int:
+        item = client.post("/work/items", json={
+            "kind": "external", "title": title, "action": "browser.open",
+            "target": "https://example.com", "permission_tier": "L3_EXTERNAL_ACTION",
+        })
+        return item.json()["item_id"]
+
+    # Defer via the console, then DENY via the work-queue route.
+    deny_id = enqueue("Defer then deny from queue")
+    request_id = client.get("/approval-requests").json()["items"][0]["id"]
+    parked = client.post(f"/approval-requests/{request_id}/defer", json={"resolved_by": "founder", "note": "later"})
+    assert parked.json()["work_item"]["status"] == "deferred"
+    denied = client.post(f"/work/items/{deny_id}/deny", json={"resolved_by": "founder", "note": "stale"})
+    assert denied.status_code == 200
+    assert denied.json()["work_item"]["status"] == "denied"
+    # No duplicate approval request was created for the item.
+    all_requests = [r for r in client.get("/approval-requests", params={"limit": 50}).json()["items"]
+                    if r.get("source_id") == deny_id]
+    assert len(all_requests) == 1
+
+    # Defer via the console, then APPROVE via the work-queue route.
+    approve_id = enqueue("Defer then approve from queue")
+    request_id_2 = next(r["id"] for r in client.get("/approval-requests", params={"limit": 50}).json()["items"]
+                        if r.get("source_id") == approve_id)
+    client.post(f"/approval-requests/{request_id_2}/defer", json={"resolved_by": "founder", "note": "later"})
+    approved = client.post(f"/work/items/{approve_id}/approve", json={"resolved_by": "founder", "note": "go"})
+    assert approved.status_code == 200
+    assert approved.json()["request"]["status"] == "approved"
+
+    # Already-resolved items still refuse cleanly.
+    again = client.post(f"/work/items/{deny_id}/deny", json={"resolved_by": "founder", "note": "again"})
+    assert again.status_code == 400
+    assert "open items" in again.json()["detail"]
 
 
 def test_ops_health_check_and_backup_routes(tmp_path: Path, monkeypatch) -> None:

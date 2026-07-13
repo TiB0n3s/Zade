@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Memory &amp; Teaching</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
+      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
+      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    h2 { margin: 0 0 4px; font-size: 15px; }
+    h3 { margin: 0 0 6px; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { padding: 24px 28px 40px; display: grid; gap: 16px; max-width: 1160px; margin: 0 auto; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
+      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
+    }
+    textarea { resize: vertical; }
+    textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
+      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button.tiny { padding: 5px 10px; font-size: 12px; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .filters select, .filters input { width: auto; max-width: 160px; }
+    .muted { color: var(--muted); }
+    .list { display: grid; gap: 10px; }
+    .item { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; background: rgba(255,255,255,0.02); display: grid; gap: 6px; }
+    .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    .topline strong { font-size: 13.5px; }
+    .pillrow { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
+    .pill {
+      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
+      color: var(--muted); font-size: 10.5px; white-space: nowrap;
+    }
+    .pill.candidate, .pill.ok { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    .pill.imported { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.error { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
+    .notice.err { color: #f0c4c4; }
+    .notice.good { color: #b9d9c6; }
+    pre {
+      margin: 0; white-space: pre-wrap; max-height: 220px; overflow: auto;
+      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 10px; color: #d8d3cb;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+    }
+    details.create-form { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 12px; }
+    details.create-form > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+    hr.split { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .grid, .row, .row3 { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Memory &amp; Teaching</h1>
+      <div class="sub">What Zade knows, how it got here, and the Deep Thought bridge that teaches from your existing notes.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/ledger.html#sec-evidence">Evidence</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="grid">
+      <div class="panel">
+        <h2>Write a Memory</h2>
+        <div class="sub" style="margin-bottom:10px;">A raw note or fact, stored directly — not graded evidence.</div>
+        <div class="form">
+          <div class="row">
+            <label>Kind <input id="mKind" value="note"></label>
+            <label>Source <input id="mSource" value="local"></label>
+          </div>
+          <label>Title <input id="mTitle" placeholder="Short headline"></label>
+          <label>Content <textarea id="mContent" rows="3"></textarea></label>
+          <div class="actions">
+            <button id="writeMemoryBtn">Write Memory</button>
+            <span class="notice" id="writeMemoryNotice"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Search Memory</h2>
+        <div class="sub" style="margin-bottom:10px;">Keyword (FTS) and semantic (hybrid vector+keyword) search.</div>
+        <div class="form">
+          <div class="row">
+            <label>Query <input id="sQuery" placeholder="pricing, retention, onboarding..."></label>
+            <label>Mode
+              <select id="sMode"><option value="hybrid">hybrid</option><option value="vector">vector</option><option value="keyword">keyword</option><option value="fts-only">fts (memory only)</option></select>
+            </label>
+          </div>
+          <div class="actions">
+            <button id="searchBtn">Search</button>
+            <span class="notice" id="searchNotice"></span>
+          </div>
+        </div>
+        <div class="list" id="searchResults" style="margin-top:12px;"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>Manual Ingestion</h2><div class="sub">Pull text, a local file, or a local folder into the document/chunk store for semantic search.</div></div>
+      </div>
+      <div class="grid">
+        <div class="form">
+          <h3>Text</h3>
+          <label>Title <input id="itTitle" placeholder="Interview notes — founder #4"></label>
+          <label>Text <textarea id="itText" rows="4"></textarea></label>
+          <label>Source <input id="itSource" value="api:text"></label>
+          <div class="actions"><button id="ingestTextBtn">Ingest Text</button></div>
+        </div>
+        <div class="form">
+          <h3>File</h3>
+          <label>Path (must be under an allowed local root) <input id="ifPath" placeholder="C:/LocalAICofounder/data/notes.md"></label>
+          <div class="actions"><button id="ingestFileBtn">Ingest File</button></div>
+          <h3 style="margin-top:12px;">Folder</h3>
+          <label>Path <input id="idPath" placeholder="C:/LocalAICofounder/data/notes"></label>
+          <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="idRecursive" checked style="width:auto;"> Recursive</label>
+          <div class="actions"><button id="ingestFolderBtn">Ingest Folder</button></div>
+        </div>
+      </div>
+      <div class="notice" id="ingestNotice" style="margin-top:10px;"></div>
+      <hr class="split">
+      <div class="panel-head">
+        <div><h3 style="margin:0;">Recent Ingestion Jobs</h3></div>
+        <button class="secondary tiny" id="loadJobsBtn">Load</button>
+      </div>
+      <div class="list" id="jobs"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>Deep Thought Teaching Bridge</h2><div class="sub">Scan your existing Deep Thought / local notes for source material, stage it as candidates, then import the useful pieces as graded evidence.</div></div>
+      </div>
+      <div class="form">
+        <div class="row3">
+          <label>Paths (comma-separated, blank = default source roots) <input id="scanPaths" placeholder="optional"></label>
+          <label>Limit <input id="scanLimit" type="number" min="1" max="200" value="25"></label>
+          <label>Max file bytes <input id="scanMaxBytes" type="number" min="1000" max="5000000" value="500000"></label>
+        </div>
+        <div class="actions">
+          <button id="scanBtn">Scan for Sources</button>
+          <span class="notice" id="scanNotice"></span>
+        </div>
+      </div>
+
+      <hr class="split">
+      <div class="panel-head">
+        <div><h3 style="margin:0;">Candidates <span class="muted" id="candCount"></span></h3></div>
+        <div class="filters">
+          <select id="fCandStatus">
+            <option value="candidate" selected>Candidate</option>
+            <option value="">All</option>
+            <option value="imported">Imported</option>
+          </select>
+          <button class="secondary tiny" id="loadCandBtn">Load</button>
+        </div>
+      </div>
+      <div class="form" style="border:1px solid var(--line);border-radius:5px;padding:12px;margin-bottom:10px;">
+        <div class="row">
+          <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="impDocuments" checked style="width:auto;"> Ingest as document</label>
+          <label class="check-row" style="flex-direction:row;align-items:center;gap:6px;display:flex;"><input type="checkbox" id="impEvidence" checked style="width:auto;"> Create graded evidence</label>
+        </div>
+        <div class="actions">
+          <button id="importSelectedBtn">Import Selected</button>
+          <button class="secondary" id="autoLinkBtn">Auto-Link Imported</button>
+          <span class="notice" id="importNotice"></span>
+        </div>
+      </div>
+      <div class="list" id="candidates"></div>
+
+      <details class="create-form">
+        <summary>+ Manually link imported evidence to a ledger object</summary>
+        <div class="form" style="margin-top:10px;">
+          <div class="row3">
+            <label>Evidence ID <input id="linkEvidenceId" type="number"></label>
+            <label>To type <input id="linkToType" placeholder="assumption, goal, decision_memo..."></label>
+            <label>To ID <input id="linkToId" type="number"></label>
+          </div>
+          <div class="row">
+            <label>Relation <input id="linkRelation" value="supports"></label>
+            <label>Strength (0-100) <input id="linkStrength" type="number" min="0" max="100" value="60"></label>
+          </div>
+          <div class="actions">
+            <button id="linkBtn">Link</button>
+            <span class="notice" id="linkNotice"></span>
+          </div>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const truncate = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+    const csv = (value) => String(value || '').split(',').map((v) => v.trim()).filter(Boolean);
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try { return await fn(); }
+      finally { btn.disabled = false; btn.textContent = original; }
+    }
+
+    async function writeMemory() {
+      const notice = byId('writeMemoryNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const title = byId('mTitle').value.trim();
+      const content = byId('mContent').value.trim();
+      if (!title || !content) { notice.textContent = 'Title and content are required.'; notice.className = 'notice err'; return; }
+      try {
+        const result = await api('/memory', {
+          method: 'POST',
+          body: JSON.stringify({ kind: byId('mKind').value.trim() || 'note', title, content, source: byId('mSource').value.trim() || 'local' })
+        });
+        notice.textContent = 'Saved — memory #' + result.memory_id + '.'; notice.className = 'notice good';
+        byId('mTitle').value = ''; byId('mContent').value = '';
+      } catch (err) { notice.textContent = 'Failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    function renderMatch(m) {
+      const headline = m.title || m.document_title || m.chunk_title || '(untitled)';
+      const sub = [m.kind, m.source, m.source_uri, m.retrieval && m.retrieval.mode].filter(Boolean).join(' · ');
+      return `
+        <article class="item">
+          <div class="topline">
+            <strong>${esc(headline)}</strong>
+            <span class="pill">${esc(m.kind || m.media_type || '')}</span>
+          </div>
+          ${sub ? `<div class="muted mono" style="font-size:11px;">${esc(sub)}</div>` : ''}
+          <div class="muted">${esc(truncate(m.content || m.text || m.excerpt || '', 260))}</div>
+          <details><summary style="cursor:pointer;color:var(--muted);font-size:11.5px;">Full record</summary><pre>${esc(JSON.stringify(m, null, 2))}</pre></details>
+        </article>
+      `;
+    }
+
+    async function searchMemory() {
+      const notice = byId('searchNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const query = byId('sQuery').value.trim();
+      if (!query) { notice.textContent = 'Query is required.'; notice.className = 'notice err'; return; }
+      const mode = byId('sMode').value;
+      try {
+        let matches;
+        if (mode === 'fts-only') {
+          const result = await api('/memory/search', { method: 'POST', body: JSON.stringify({ query, limit: 12 }) });
+          matches = result.matches;
+        } else {
+          const result = await api('/memory/semantic-search', { method: 'POST', body: JSON.stringify({ query, limit: 12, mode }) });
+          matches = result.matches;
+        }
+        notice.textContent = matches.length + ' match(es).'; notice.className = 'notice good';
+        byId('searchResults').innerHTML = matches.length ? matches.map(renderMatch).join('') : '<div class="muted">No matches.</div>';
+      } catch (err) { notice.textContent = 'Search failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function ingestText() {
+      const notice = byId('ingestNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const title = byId('itTitle').value.trim();
+      const text = byId('itText').value.trim();
+      if (!title || !text) { notice.textContent = 'Title and text are required.'; notice.className = 'notice err'; return; }
+      try {
+        const result = await api('/ingest/text', { method: 'POST', body: JSON.stringify({ title, text, source: byId('itSource').value.trim() || 'api:text' }) });
+        notice.textContent = `Ingested — job #${result.job_id}, document #${result.document_id}, ${result.chunks_count} chunk(s).`;
+        notice.className = 'notice good';
+        byId('itTitle').value = ''; byId('itText').value = '';
+        await loadJobs();
+      } catch (err) { notice.textContent = 'Ingest failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function ingestFile() {
+      const notice = byId('ingestNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const path = byId('ifPath').value.trim();
+      if (!path) { notice.textContent = 'Path is required.'; notice.className = 'notice err'; return; }
+      try {
+        const result = await api('/ingest/file', { method: 'POST', body: JSON.stringify({ path }) });
+        notice.textContent = `Ingested — job #${result.job_id}, document #${result.document_id}, ${result.chunks_count} chunk(s).`;
+        notice.className = 'notice good';
+        await loadJobs();
+      } catch (err) { notice.textContent = 'Ingest failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function ingestFolder() {
+      const notice = byId('ingestNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const path = byId('idPath').value.trim();
+      if (!path) { notice.textContent = 'Path is required.'; notice.className = 'notice err'; return; }
+      try {
+        const result = await api('/ingest/folder', { method: 'POST', body: JSON.stringify({ path, recursive: byId('idRecursive').checked }) });
+        notice.textContent = `Ingested folder — ${result.documents_count || 0} document(s), ${result.chunks_count || 0} chunk(s).`;
+        notice.className = 'notice good';
+        await loadJobs();
+      } catch (err) { notice.textContent = 'Ingest failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadJobs() {
+      const { jobs } = await api('/ingest/jobs?limit=25');
+      byId('jobs').innerHTML = jobs.length ? jobs.map((j) => `
+        <article class="item">
+          <div class="topline">
+            <strong>${esc(j.job_type)} · ${esc(j.source)}</strong>
+            <span class="pill ${esc(j.status)}">${esc(j.status)}</span>
+          </div>
+          <div class="muted mono" style="font-size:11.5px;">${esc(j.created_at)}${j.documents_count != null ? ' · ' + esc(j.documents_count) + ' doc(s)' : ''}${j.chunks_count != null ? ' · ' + esc(j.chunks_count) + ' chunk(s)' : ''}</div>
+        </article>
+      `).join('') : '<div class="muted">No ingestion jobs yet.</div>';
+    }
+
+    async function runScan() {
+      const notice = byId('scanNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const body = {
+        paths: csv(byId('scanPaths').value),
+        limit: Number(byId('scanLimit').value || 25),
+        max_file_bytes: Number(byId('scanMaxBytes').value || 500000)
+      };
+      try {
+        const result = await api('/teach/deepthought/scan', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = `Scanned ${result.scanned_files} file(s), ${result.count} candidate(s) staged.`;
+        notice.className = 'notice good';
+        await loadCandidates();
+      } catch (err) { notice.textContent = 'Scan failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadCandidates() {
+      const params = new URLSearchParams();
+      if (byId('fCandStatus').value) params.set('status', byId('fCandStatus').value);
+      params.set('limit', '100');
+      const { candidates } = await api('/teach/deepthought/candidates?' + params.toString());
+      byId('candCount').textContent = '(' + candidates.length + ')';
+      byId('candidates').innerHTML = candidates.length ? candidates.map(renderCandidate).join('') : '<div class="muted">Nothing in this view.</div>';
+    }
+
+    function renderCandidate(c) {
+      const selectable = c.status === 'candidate';
+      return `
+        <article class="item">
+          <div class="topline">
+            <div style="display:flex;gap:10px;align-items:flex-start;">
+              ${selectable ? `<input type="checkbox" data-select="${c.id}" style="margin-top:3px;">` : '<span style="width:13px;"></span>'}
+              <div>
+                <strong>${esc(c.title)}</strong>
+                <div class="muted">${esc(c.source_system || '')} · ${esc(truncate(c.source_uri || '', 80))}</div>
+              </div>
+            </div>
+            <div class="pillrow">
+              <span class="pill ${esc(c.status)}">${esc(c.status)}</span>
+              <span class="pill">${esc(c.reliability || '')}</span>
+            </div>
+          </div>
+          <div class="muted">${esc(truncate(c.excerpt || '', 220))}</div>
+        </article>
+      `;
+    }
+
+    async function importSelected() {
+      const notice = byId('importNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const ids = Array.from(document.querySelectorAll('#candidates [data-select]:checked')).map((el) => Number(el.dataset.select));
+      if (!ids.length) { notice.textContent = 'Select at least one candidate.'; notice.className = 'notice err'; return; }
+      try {
+        const result = await api('/teach/deepthought/import', {
+          method: 'POST',
+          body: JSON.stringify({
+            candidate_ids: ids,
+            ingest_documents: byId('impDocuments').checked,
+            create_evidence: byId('impEvidence').checked
+          })
+        });
+        notice.textContent = `Imported ${result.count}.`; notice.className = 'notice good';
+        await loadCandidates();
+      } catch (err) { notice.textContent = 'Import failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function autoLink() {
+      const notice = byId('importNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      try {
+        const result = await api('/teach/deepthought/auto-link?limit=50', { method: 'POST' });
+        notice.textContent = 'Auto-link: ' + JSON.stringify(result).slice(0, 200);
+        notice.className = 'notice good';
+      } catch (err) { notice.textContent = 'Auto-link failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function linkEvidence() {
+      const notice = byId('linkNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const evidenceId = byId('linkEvidenceId').value.trim();
+      const toType = byId('linkToType').value.trim();
+      const toId = byId('linkToId').value.trim();
+      if (!evidenceId || !toType || !toId) { notice.textContent = 'Evidence ID, to type, and to ID are required.'; notice.className = 'notice err'; return; }
+      try {
+        await api('/teach/deepthought/link', {
+          method: 'POST',
+          body: JSON.stringify({
+            evidence_id: Number(evidenceId),
+            to_type: toType,
+            to_id: Number(toId),
+            relation: byId('linkRelation').value.trim() || 'supports',
+            strength: Number(byId('linkStrength').value || 60)
+          })
+        });
+        notice.textContent = 'Linked.'; notice.className = 'notice good';
+      } catch (err) { notice.textContent = 'Link failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadAll() {
+      await Promise.all([loadJobs(), loadCandidates()]);
+    }
+
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => loadAll().catch((err) => { console.error(err); })));
+    byId('writeMemoryBtn').addEventListener('click', () => withBusy(byId('writeMemoryBtn'), 'Saving…', writeMemory));
+    byId('searchBtn').addEventListener('click', () => withBusy(byId('searchBtn'), 'Searching…', searchMemory));
+    byId('ingestTextBtn').addEventListener('click', () => withBusy(byId('ingestTextBtn'), 'Ingesting…', ingestText));
+    byId('ingestFileBtn').addEventListener('click', () => withBusy(byId('ingestFileBtn'), 'Ingesting…', ingestFile));
+    byId('ingestFolderBtn').addEventListener('click', () => withBusy(byId('ingestFolderBtn'), 'Ingesting…', ingestFolder));
+    byId('loadJobsBtn').addEventListener('click', () => withBusy(byId('loadJobsBtn'), 'Loading…', () => loadJobs().catch((err) => { byId('jobs').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('scanBtn').addEventListener('click', () => withBusy(byId('scanBtn'), 'Scanning…', runScan));
+    byId('loadCandBtn').addEventListener('click', () => withBusy(byId('loadCandBtn'), 'Loading…', () => loadCandidates().catch((err) => { byId('candidates').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('importSelectedBtn').addEventListener('click', () => withBusy(byId('importSelectedBtn'), 'Importing…', importSelected));
+    byId('autoLinkBtn').addEventListener('click', () => withBusy(byId('autoLinkBtn'), 'Linking…', autoLink));
+    byId('linkBtn').addEventListener('click', () => withBusy(byId('linkBtn'), 'Linking…', linkEvidence));
+    loadAll().catch((err) => { console.error('Initial memory page load failed', err); });
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

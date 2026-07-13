@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Charter Editor</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506;
+      --panel: #0c0c0e;
+      --line: rgba(255,255,255,0.08);
+      --text: #eeeae5;
+      --muted: #8a8a91;
+      --accent: #b0473f;
+      --accent-2: #d07d74;
+      --ok: #5a8a72;
+      --warn: #c69b5f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    h2 { margin: 0 0 4px; font-size: 15px; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { padding: 24px 28px 36px; display: grid; gap: 16px; max-width: 1160px; margin: 0 auto; }
+    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+    .panel-head .sub { margin-top: 3px; max-width: 60ch; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
+      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
+    }
+    textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; resize: vertical; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
+      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .muted { color: var(--muted); }
+    .pill {
+      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px;
+      color: var(--muted); font-size: 11px; margin: 0 6px 6px 0;
+    }
+    .pill.ok { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.warn { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
+    .notice.err { color: #f0c4c4; }
+    .notice.good { color: #b9d9c6; }
+    pre {
+      margin: 0; white-space: pre-wrap; max-height: 340px; overflow: auto;
+      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 12px; color: #d8d3cb;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+    }
+    .rel-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .rel-chip {
+      cursor: pointer; border: 1px solid var(--line); border-radius: 999px; padding: 6px 13px;
+      font-size: 12.5px; color: var(--muted); background: rgba(255,255,255,0.02);
+    }
+    .rel-chip.active { color: var(--text); border-color: rgba(176,71,63,0.5); background: rgba(176,71,63,0.12); }
+    details { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Charter Editor</h1>
+      <div class="sub">Identity, voice, and relationship charters — the authored personality that governs every reply.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
+      <a class="button secondary" href="/ui/notifications.html">Notifications</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>What's actually reaching the model</h2>
+          <div class="sub">Live from <code>GET /runtime/charter-stack</code> — this is what <code>/runtime/respond</code> folds into every governed prompt, right now.</div>
+        </div>
+        <div id="stackPills"></div>
+      </div>
+      <details>
+        <summary>Show assembled charter stack (JSON)</summary>
+        <pre id="stackOut" style="margin-top:10px;">Loading&hellip;</pre>
+      </details>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Identity Charter</h2>
+          <div class="sub">Mission, guiding principles, cognitive and communication style, risk controls. Governs how Zade thinks and prioritizes.</div>
+        </div>
+      </div>
+      <div class="form">
+        <div class="row">
+          <label>Name <input id="idName" placeholder="Zade"></label>
+          <label>Source <input id="idSource" placeholder="founder:web-editor"></label>
+        </div>
+        <label>Mission <textarea id="idMission" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+        <label>Everything else (JSON) — guiding_principles, cognitive_style, communication_style, leadership_philosophy, emotional_framework, strengths, risk_controls, decision_framework, personal_standards, safety_translation, status, metadata
+          <textarea id="idRest" rows="14"></textarea>
+        </label>
+        <div class="actions">
+          <button id="idSaveBtn">Save Identity Charter</button>
+          <span class="notice" id="idNotice"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Voice Charter</h2>
+          <div class="sub">Tone, sentence rhythm, vocabulary, confidence and uncertainty phrasing. Governs how Zade sounds.</div>
+        </div>
+      </div>
+      <div class="form">
+        <div class="row">
+          <label>Name <input id="voName" placeholder="Zade"></label>
+          <label>Source <input id="voSource" placeholder="founder:web-editor"></label>
+        </div>
+        <label>Overall voice <textarea id="voOverall" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+        <label>Everything else (JSON) — sentence_structure, vocabulary, rhythm, confidence_style, humor, nicknames, emotional_expression, threat_translation, question_style, philosophy, internal_monologue, dominant_traits, linguistic_fingerprint, uncertainty_policy, safety_controls, status, metadata
+          <textarea id="voRest" rows="14"></textarea>
+        </label>
+        <div class="actions">
+          <button id="voSaveBtn">Save Voice Charter</button>
+          <span class="notice" id="voNotice"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Relationship Charters</h2>
+          <div class="sub">How Zade relates to named people. One charter per subject + relationship type.</div>
+        </div>
+      </div>
+      <div class="rel-list" id="relList"></div>
+      <div class="form">
+        <div class="row">
+          <label>Subject name <input id="relSubject" placeholder="Ellie"></label>
+          <label>Relationship type <input id="relType" placeholder="protected_principal"></label>
+        </div>
+        <label>Source <input id="relSource" placeholder="founder:web-editor"></label>
+        <label>First principle <textarea id="relFirst" rows="2" style="font-family:inherit;font-size:13px;"></textarea></label>
+        <label>Everything else (JSON) — devotion, attention_policy, protection_policy, loyalty_policy, vulnerability, trust, internal_conflict, expression_of_care, risk_controls, safety_translation, boundaries, status, metadata
+          <textarea id="relRest" rows="14"></textarea>
+        </label>
+        <div class="actions">
+          <button id="relSaveBtn">Save Relationship Charter</button>
+          <button class="secondary" id="relNewBtn">New Relationship Charter</button>
+          <span class="notice" id="relNotice"></span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try {
+        return await fn();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    // Split a charter record into its "headline" fields (shown as plain inputs)
+    // and everything else (shown as one editable JSON blob) — these charters
+    // nest 8-15 nested lists/objects each; a fully structured form per field
+    // would dwarf the page. This keeps the frequently-tuned fields quick to
+    // edit while still exposing full power-editing for the rest.
+    function splitRecord(record, headlineKeys) {
+      const headline = {};
+      const rest = {};
+      for (const [k, v] of Object.entries(record || {})) {
+        if (['id', 'created_at', 'updated_at'].includes(k)) continue;
+        if (headlineKeys.includes(k)) headline[k] = v;
+        else rest[k] = v;
+      }
+      return { headline, rest };
+    }
+
+    let relationships = [];
+    let activeRel = null;
+
+    async function loadStack() {
+      const stack = await api('/runtime/charter-stack');
+      byId('stackOut').textContent = JSON.stringify(stack, null, 2);
+      const s = stack.summary || {};
+      byId('stackPills').innerHTML = [
+        `<span class="pill ${s.identity_seeded ? 'ok' : 'warn'}">identity ${s.identity_seeded ? 'seeded' : 'empty'}</span>`,
+        `<span class="pill ${s.voice_seeded ? 'ok' : 'warn'}">voice ${s.voice_seeded ? 'seeded' : 'empty'}</span>`,
+        `<span class="pill ${s.relationship_charters_active ? 'ok' : 'warn'}">${s.relationship_charters_active || 0} relationship charter(s)</span>`
+      ].join('');
+    }
+
+    async function loadIdentity() {
+      const { charter } = await api('/identity/charter');
+      const { headline, rest } = splitRecord(charter, ['name', 'source', 'mission']);
+      byId('idName').value = headline.name || 'Zade';
+      byId('idSource').value = headline.source || '';
+      byId('idMission').value = headline.mission || '';
+      byId('idRest').value = JSON.stringify(rest, null, 2);
+    }
+
+    async function saveIdentity() {
+      const notice = byId('idNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      let rest;
+      try { rest = JSON.parse(byId('idRest').value || '{}'); }
+      catch (e) { notice.textContent = 'Invalid JSON in "everything else": ' + e.message; notice.className = 'notice err'; return; }
+      const body = { name: byId('idName').value.trim() || 'Zade', source: byId('idSource').value.trim() || 'founder:web-editor', mission: byId('idMission').value, ...rest };
+      try {
+        await api('/identity/charter', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        await Promise.all([loadIdentity(), loadStack()]);
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadVoice() {
+      const { charter } = await api('/identity/voice');
+      const { headline, rest } = splitRecord(charter, ['name', 'source', 'overall_voice']);
+      byId('voName').value = headline.name || 'Zade';
+      byId('voSource').value = headline.source || '';
+      byId('voOverall').value = headline.overall_voice || '';
+      byId('voRest').value = JSON.stringify(rest, null, 2);
+    }
+
+    async function saveVoice() {
+      const notice = byId('voNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      let rest;
+      try { rest = JSON.parse(byId('voRest').value || '{}'); }
+      catch (e) { notice.textContent = 'Invalid JSON in "everything else": ' + e.message; notice.className = 'notice err'; return; }
+      const body = { name: byId('voName').value.trim() || 'Zade', source: byId('voSource').value.trim() || 'founder:web-editor', overall_voice: byId('voOverall').value, ...rest };
+      try {
+        await api('/identity/voice', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        await Promise.all([loadVoice(), loadStack()]);
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadRelationships() {
+      const { charters } = await api('/identity/relationships?limit=50');
+      relationships = charters || [];
+      byId('relList').innerHTML = relationships.length
+        ? relationships.map((r) => `<div class="rel-chip${activeRel && activeRel.subject_name === r.subject_name && activeRel.relationship_type === r.relationship_type ? ' active' : ''}" data-subject="${esc(r.subject_name)}" data-type="${esc(r.relationship_type)}">${esc(r.subject_name)} &middot; ${esc(r.relationship_type)}</div>`).join('')
+        : '<div class="muted">No relationship charters yet.</div>';
+      document.querySelectorAll('.rel-chip').forEach((chip) => {
+        chip.addEventListener('click', () => selectRelationship(chip.dataset.subject, chip.dataset.type));
+      });
+      if (!activeRel && relationships.length) selectRelationship(relationships[0].subject_name, relationships[0].relationship_type);
+    }
+
+    async function selectRelationship(subjectName, relationshipType) {
+      activeRel = { subject_name: subjectName, relationship_type: relationshipType };
+      const { charter } = await api('/identity/relationships/' + encodeURIComponent(subjectName) + '?relationship_type=' + encodeURIComponent(relationshipType));
+      fillRelForm(charter);
+      loadRelationships();
+    }
+
+    function fillRelForm(charter) {
+      const { headline, rest } = splitRecord(charter, ['subject_name', 'relationship_type', 'source', 'first_principle']);
+      byId('relSubject').value = headline.subject_name || '';
+      byId('relType').value = headline.relationship_type || 'protected_principal';
+      byId('relSource').value = headline.source || '';
+      byId('relFirst').value = headline.first_principle || '';
+      byId('relRest').value = JSON.stringify(rest, null, 2);
+    }
+
+    function newRelationship() {
+      activeRel = null;
+      byId('relSubject').value = '';
+      byId('relType').value = 'protected_principal';
+      byId('relSource').value = '';
+      byId('relFirst').value = '';
+      byId('relRest').value = '{}';
+      loadRelationships();
+      byId('relSubject').focus();
+    }
+
+    async function saveRelationship() {
+      const notice = byId('relNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const subjectName = byId('relSubject').value.trim();
+      if (!subjectName) { notice.textContent = 'Subject name is required.'; notice.className = 'notice err'; return; }
+      let rest;
+      try { rest = JSON.parse(byId('relRest').value || '{}'); }
+      catch (e) { notice.textContent = 'Invalid JSON in "everything else": ' + e.message; notice.className = 'notice err'; return; }
+      const body = {
+        subject_name: subjectName,
+        relationship_type: byId('relType').value.trim() || 'protected_principal',
+        source: byId('relSource').value.trim() || 'founder:web-editor',
+        first_principle: byId('relFirst').value,
+        ...rest
+      };
+      try {
+        await api('/identity/relationships', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Saved.'; notice.className = 'notice good';
+        activeRel = { subject_name: body.subject_name, relationship_type: body.relationship_type };
+        await Promise.all([loadRelationships(), loadStack()]);
+      } catch (err) { notice.textContent = 'Save failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadAll() {
+      await Promise.all([loadStack(), loadIdentity(), loadVoice(), loadRelationships()]);
+    }
+
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => loadAll().catch((err) => { byId('idNotice').textContent = err.message; })));
+    byId('idSaveBtn').addEventListener('click', () => withBusy(byId('idSaveBtn'), 'Saving…', saveIdentity));
+    byId('voSaveBtn').addEventListener('click', () => withBusy(byId('voSaveBtn'), 'Saving…', saveVoice));
+    byId('relSaveBtn').addEventListener('click', () => withBusy(byId('relSaveBtn'), 'Saving…', saveRelationship));
+    byId('relNewBtn').addEventListener('click', () => newRelationship());
+    loadAll().catch((err) => { byId('idNotice').textContent = 'Load failed: ' + err.message; });
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

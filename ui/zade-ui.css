@@ -1,0 +1,277 @@
+:root {
+  color-scheme: dark;
+  --z-bg: #070707;
+  --z-bg-2: #0b0a0a;
+  --z-panel: rgba(14, 14, 16, 0.94);
+  --z-panel-2: rgba(20, 20, 22, 0.86);
+  --z-line: rgba(238, 234, 229, 0.105);
+  --z-line-strong: rgba(238, 234, 229, 0.18);
+  --z-text: #f0ede8;
+  --z-muted: #9b9892;
+  --z-faint: #68666b;
+  --z-accent: #b34f46;
+  --z-accent-2: #d18a80;
+  --z-ok: #6e9b80;
+  --z-warn: #c6a05e;
+  --z-bad: #b65a57;
+  --z-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+  --z-radius: 6px;
+  --z-radius-sm: 4px;
+  --z-sans: "Segoe UI Variable", "Aptos", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --z-mono: "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, ui-monospace, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+  background: var(--z-bg);
+}
+
+body.zade-enhanced-ui {
+  min-height: 100dvh;
+  background:
+    linear-gradient(120deg, rgba(179, 79, 70, 0.08), transparent 30%),
+    radial-gradient(1200px 720px at 14% -12%, rgba(255, 255, 255, 0.06), transparent 50%),
+    linear-gradient(180deg, var(--z-bg-2), var(--z-bg) 42%, #050505);
+  color: var(--z-text);
+  font-family: var(--z-sans);
+  font-variant-numeric: tabular-nums;
+  text-rendering: geometricPrecision;
+}
+
+body.zade-enhanced-ui::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.28;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.014) 1px, transparent 1px);
+  background-size: 28px 28px, 28px 28px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.7), transparent 72%);
+}
+
+.zade-skip {
+  position: fixed;
+  left: 16px;
+  top: 12px;
+  z-index: 1000;
+  transform: translateY(-160%);
+  border: 1px solid var(--z-line-strong);
+  border-radius: var(--z-radius-sm);
+  background: #121214;
+  color: var(--z-text);
+  padding: 8px 11px;
+  text-decoration: none;
+}
+
+.zade-skip:focus {
+  transform: translateY(0);
+}
+
+body.zade-enhanced-ui header {
+  border-bottom-color: var(--z-line);
+  background: rgba(7, 7, 8, 0.88);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+body.zade-enhanced-ui h1,
+body.zade-enhanced-ui h2,
+body.zade-enhanced-ui h3 {
+  text-wrap: balance;
+}
+
+body.zade-enhanced-ui h1 {
+  color: var(--z-text);
+}
+
+body.zade-enhanced-ui h2 {
+  color: #e8e2da;
+}
+
+body.zade-enhanced-ui main {
+  width: min(100%, 1240px);
+  margin-inline: auto;
+}
+
+.zade-workspace-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 28px;
+  border-bottom: 1px solid var(--z-line);
+  background: rgba(9, 9, 10, 0.78);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.zade-workspace-nav a {
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: var(--z-radius-sm);
+  color: var(--z-muted);
+  padding: 6px 9px;
+  text-decoration: none;
+  font-size: 12px;
+  line-height: 1.1;
+  transition: color 180ms ease, border-color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+
+.zade-workspace-nav a:hover {
+  color: var(--z-text);
+  border-color: var(--z-line);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.zade-workspace-nav a[aria-current="page"] {
+  color: #f2ebe5;
+  border-color: rgba(179, 79, 70, 0.44);
+  background: rgba(179, 79, 70, 0.12);
+}
+
+.zade-header-link-hidden {
+  display: none !important;
+}
+
+body.zade-enhanced-ui .panel,
+body.zade-enhanced-ui .toolbar,
+body.zade-enhanced-ui .card,
+body.zade-enhanced-ui .item,
+body.zade-enhanced-ui .skill,
+body.zade-enhanced-ui .route-box,
+body.zade-enhanced-ui main > section:not(.grid):not(.metric-row):not(.metrics):not(.summary) {
+  border-color: var(--z-line);
+  background-color: var(--z-panel);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.025) inset;
+}
+
+body.zade-enhanced-ui .metric-row,
+body.zade-enhanced-ui .metrics,
+body.zade-enhanced-ui .summary {
+  border-color: var(--z-line);
+  background: var(--z-line);
+}
+
+body.zade-enhanced-ui .metric,
+body.zade-enhanced-ui .status-cell {
+  background: rgba(255, 255, 255, 0.027);
+}
+
+body.zade-enhanced-ui .metric strong,
+body.zade-enhanced-ui .status-cell strong {
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+body.zade-enhanced-ui .sub,
+body.zade-enhanced-ui .muted,
+body.zade-enhanced-ui label {
+  color: var(--z-muted);
+}
+
+body.zade-enhanced-ui button,
+body.zade-enhanced-ui a.button,
+body.zade-enhanced-ui input,
+body.zade-enhanced-ui textarea,
+body.zade-enhanced-ui select {
+  border-radius: var(--z-radius-sm);
+  border-color: var(--z-line);
+  font-family: var(--z-sans);
+}
+
+body.zade-enhanced-ui input,
+body.zade-enhanced-ui textarea,
+body.zade-enhanced-ui select {
+  background: rgba(6, 6, 7, 0.92);
+  color: var(--z-text);
+}
+
+body.zade-enhanced-ui textarea,
+body.zade-enhanced-ui pre,
+body.zade-enhanced-ui .mono {
+  font-family: var(--z-mono);
+}
+
+body.zade-enhanced-ui button,
+body.zade-enhanced-ui a.button {
+  min-height: 34px;
+  transition: transform 160ms ease, border-color 180ms ease, background 180ms ease, color 180ms ease, opacity 180ms ease;
+}
+
+body.zade-enhanced-ui button:hover:not(:disabled),
+body.zade-enhanced-ui a.button:hover {
+  border-color: rgba(209, 138, 128, 0.62);
+  background: rgba(179, 79, 70, 0.18);
+}
+
+body.zade-enhanced-ui button:active:not(:disabled),
+body.zade-enhanced-ui a.button:active {
+  transform: translateY(1px);
+}
+
+body.zade-enhanced-ui button.secondary:hover:not(:disabled),
+body.zade-enhanced-ui a.button.secondary:hover {
+  border-color: var(--z-line-strong);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+body.zade-enhanced-ui button:disabled,
+body.zade-enhanced-ui [aria-busy="true"] {
+  cursor: progress;
+}
+
+body.zade-enhanced-ui :focus-visible {
+  outline: 2px solid rgba(209, 138, 128, 0.85);
+  outline-offset: 2px;
+}
+
+body.zade-enhanced-ui .pill {
+  border-radius: var(--z-radius-sm);
+  letter-spacing: 0.01em;
+}
+
+body.zade-enhanced-ui .error,
+body.zade-enhanced-ui .notice.err {
+  color: #f4c6c1;
+}
+
+body.zade-enhanced-ui pre {
+  background: rgba(4, 4, 5, 0.88);
+  border-color: var(--z-line);
+  color: #ddd7cf;
+}
+
+body.zade-enhanced-ui .empty {
+  border-color: var(--z-line);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+@media (max-width: 760px) {
+  body.zade-enhanced-ui header {
+    padding: 18px 18px;
+  }
+
+  .zade-workspace-nav {
+    padding-inline: 18px;
+  }
+
+  body.zade-enhanced-ui main {
+    padding-inline: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  body.zade-enhanced-ui *,
+  body.zade-enhanced-ui *::before,
+  body.zade-enhanced-ui *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

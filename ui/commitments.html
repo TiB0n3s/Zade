@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade Commitments Ledger</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050506; --panel: #0c0c0e; --line: rgba(255,255,255,0.08);
+      --text: #eeeae5; --muted: #8a8a91; --accent: #b0473f; --accent-2: #d07d74;
+      --ok: #5a8a72; --warn: #c69b5f; --bad: #a84a4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      background: radial-gradient(ellipse 120% 90% at 28% -10%, #151012 0%, #09090a 45%, var(--bg) 100%);
+      color: var(--text); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      padding: 22px 28px; border-bottom: 1px solid var(--line);
+      background: rgba(5,5,6,0.78); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0; font: 600 20px/1.1 Georgia, serif; letter-spacing: 0.02em; }
+    h2 { margin: 0 0 4px; font-size: 15px; }
+    h3 { margin: 0 0 6px; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    main { padding: 24px 28px 40px; display: grid; gap: 16px; max-width: 1160px; margin: 0 auto; }
+    .metric-row { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; }
+    .metric { padding: 13px; background: rgba(255,255,255,0.025); }
+    .metric strong { display: block; font-size: 19px; line-height: 1; margin-bottom: 5px; }
+    .metric span { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; }
+    .panel { background: rgba(12,12,14,0.92); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+    input, textarea, select {
+      width: 100%; background: #09090b; color: var(--text); border: 1px solid var(--line);
+      border-radius: 4px; padding: 9px 10px; outline: none; font: inherit;
+    }
+    textarea { resize: vertical; }
+    input:focus, textarea:focus, select:focus { border-color: rgba(208,125,116,0.65); }
+    .form { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    button, a.button {
+      border: 1px solid rgba(176,71,63,0.5); color: var(--text); background: rgba(176,71,63,0.12);
+      border-radius: 4px; padding: 9px 12px; cursor: pointer; text-decoration: none; font: inherit;
+    }
+    button.secondary, a.button.secondary { border-color: var(--line); background: rgba(255,255,255,0.03); }
+    button.ok { border-color: rgba(90,138,114,0.7); background: rgba(90,138,114,0.16); }
+    button.warn { border-color: rgba(198,155,95,0.7); background: rgba(198,155,95,0.15); }
+    button.bad { border-color: rgba(168,74,74,0.7); background: rgba(168,74,74,0.15); }
+    button.tiny { padding: 5px 10px; font-size: 12px; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .filters select, .filters input { width: auto; max-width: 150px; }
+    .muted { color: var(--muted); }
+    .list { display: grid; gap: 10px; }
+    .item { border: 1px solid var(--line); border-radius: 6px; padding: 14px; background: rgba(255,255,255,0.02); display: grid; gap: 10px; }
+    .item.overdue { border-color: rgba(168,74,74,0.5); }
+    .topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    .topline strong { font-size: 14px; }
+    .pillrow { display: flex; gap: 6px; flex-wrap: wrap; flex: none; }
+    .pill {
+      display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
+      color: var(--muted); font-size: 10.5px; white-space: nowrap;
+    }
+    .pill.open { color: #f1d9b2; border-color: rgba(198,155,95,0.55); background: rgba(198,155,95,0.12); }
+    .pill.done { color: #d8f1e4; border-color: rgba(90,138,114,0.55); background: rgba(90,138,114,0.14); }
+    .pill.missed { color: #f0c4c4; border-color: rgba(168,74,74,0.55); background: rgba(168,74,74,0.14); }
+    .pill.dropped { color: #a0a0a6; }
+    .close-row { display: grid; grid-template-columns: 1fr 140px auto auto auto; gap: 8px; align-items: end; }
+    .renegotiate-row { display: grid; grid-template-columns: 160px 1fr auto; gap: 8px; align-items: end; }
+    .notice { min-height: 18px; color: var(--muted); font-size: 12.5px; }
+    .notice.err { color: #f0c4c4; }
+    .notice.good { color: #b9d9c6; }
+    pre {
+      margin: 0; white-space: pre-wrap; max-height: 220px; overflow: auto;
+      background: #070708; border: 1px solid var(--line); border-radius: 5px; padding: 10px; color: #d8d3cb;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+    }
+    details.create-form { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 12px; }
+    details.create-form > summary, details > summary.small { cursor: pointer; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+    @media (max-width: 900px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .row, .row3, .metric-row, .close-row, .renegotiate-row { grid-template-columns: 1fr; }
+    }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Zade Commitments Ledger</h1>
+      <div class="sub">What was promised, by whom, and whether it held. Missing a commitment is always a founder-recorded act.</div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/ui">Back to Zade</a>
+      <a class="button secondary" href="/ui/founder.html">Founder Ops</a>
+      <a class="button secondary" href="/ui/ledger.html">Ledger</a>
+      <a class="button secondary" href="/ui/ops.html">Ops</a>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>Accountability Check</h2><div class="sub">Overdue, due-soon, drifting, and monitor-due — computed fresh, never auto-closed.</div></div>
+        <button id="checkBtn">Run Check</button>
+      </div>
+      <section class="metric-row" id="checkMetrics"></section>
+      <div id="checkDetail" style="margin-top:12px;"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><h2>Commitments <span class="muted" id="listCount"></span></h2><div class="sub">Founder and Zade promises, sorted by soonest due.</div></div>
+        <div class="filters">
+          <select id="fStatus">
+            <option value="open">Open</option>
+            <option value="">All statuses</option>
+            <option value="done">Done</option>
+            <option value="missed">Missed</option>
+            <option value="dropped">Dropped</option>
+          </select>
+          <select id="fWho">
+            <option value="">Anyone</option>
+            <option value="founder">Founder</option>
+            <option value="zade">Zade</option>
+          </select>
+          <select id="fKind">
+            <option value="">Any kind</option>
+            <option value="do">do</option>
+            <option value="monitor">monitor</option>
+            <option value="decide">decide</option>
+            <option value="deliver">deliver</option>
+          </select>
+          <button class="secondary tiny" id="loadBtn">Load</button>
+        </div>
+      </div>
+      <div class="list" id="list"></div>
+
+      <details class="create-form">
+        <summary>+ New Commitment</summary>
+        <div class="form" style="margin-top:10px;">
+          <div class="row3">
+            <label>Who
+              <select id="cWho"><option value="founder">founder</option><option value="zade">zade</option></select>
+            </label>
+            <label>Kind
+              <select id="cKind"><option value="do">do</option><option value="monitor">monitor</option><option value="decide">decide</option><option value="deliver">deliver</option></select>
+            </label>
+            <label>Cadence (monitor only)
+              <select id="cCadence"><option value="">none</option><option value="daily">daily</option><option value="weekly">weekly</option><option value="monthly">monthly</option></select>
+            </label>
+          </div>
+          <label>Title <input id="cTitle" placeholder="Ship the weekly cadence review"></label>
+          <label>Detail <textarea id="cDetail" rows="2"></textarea></label>
+          <div class="row">
+            <label>Due at <input id="cDueAt" placeholder="2026-07-20 or 2026-07-20T17:00:00-05:00"></label>
+            <label>Source type <input id="cSourceType" value="manual"></label>
+          </div>
+          <div class="actions">
+            <button id="createBtn">Create</button>
+            <span class="notice" id="createNotice"></span>
+          </div>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <script>
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    // RC1 bootstrap: fetch the local mutation token from the loopback kernel once,
+    // so mutations carry X-Zade-Token without a manual paste. Reads need no token,
+    // so fire-and-forget is safe — the token lands before any button is clicked.
+    (async () => {
+      if (localStorage.getItem('zadeKernelToken')) return;
+      try {
+        const r = await fetch('/session/token');
+        if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); }
+      } catch (e) { /* offline or non-loopback bind: leave token unset */ }
+    })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    async function withBusy(btn, workingLabel, fn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = workingLabel;
+      try { return await fn(); }
+      finally { btn.disabled = false; btn.textContent = original; }
+    }
+
+    let items = [];
+
+    function metric(value, label) {
+      return '<div class="metric"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>';
+    }
+
+    function briefList(label, entries) {
+      if (!entries || !entries.length) return '';
+      return `<div style="margin-top:8px;"><h3>${esc(label)}</h3>` +
+        entries.map((e) => `<div class="muted">#${esc(e.id)} · ${esc(e.who)}/${esc(e.kind)} · ${esc(e.title)}${e.due_at ? ' · due ' + esc(e.due_at) : ''}</div>`).join('') +
+        `</div>`;
+    }
+
+    async function runCheck() {
+      const result = await api('/commitments/check', { method: 'POST' });
+      byId('checkMetrics').innerHTML = [
+        metric(result.open, 'Open'),
+        metric((result.overdue || []).length, 'Overdue'),
+        metric((result.due_soon || []).length, 'Due soon'),
+        metric((result.drifting || []).length, 'Drifting'),
+        metric((result.monitor_due || []).length, 'Monitor due')
+      ].join('');
+      byId('checkDetail').innerHTML = [
+        briefList('Overdue', result.overdue),
+        briefList('Due soon', result.due_soon),
+        briefList('Drifting', result.drifting),
+        briefList('Monitor due', result.monitor_due)
+      ].join('') || '<div class="muted">Nothing needs attention right now.</div>';
+      return result;
+    }
+
+    async function loadList() {
+      const params = new URLSearchParams();
+      if (byId('fStatus').value) params.set('status', byId('fStatus').value);
+      if (byId('fWho').value) params.set('who', byId('fWho').value);
+      if (byId('fKind').value) params.set('kind', byId('fKind').value);
+      params.set('limit', '100');
+      const data = await api('/commitments?' + params.toString());
+      items = data.items || [];
+      byId('listCount').textContent = '(' + items.length + ')';
+      byId('list').innerHTML = items.length ? items.map(renderItem).join('') : '<div class="muted">Nothing in this view.</div>';
+      wireItemActions();
+    }
+
+    function renderItem(item) {
+      const overdue = item.status === 'open' && item.due_at && item.due_at < new Date().toISOString();
+      const closeControls = item.status === 'open' ? `
+        <div class="close-row">
+          <label>Note <input id="note-${item.id}" placeholder="optional"></label>
+          <label>Evidence ID <input id="evidence-${item.id}" type="number"></label>
+          <button class="ok tiny" data-close="done" data-id="${item.id}">Done</button>
+          <button class="bad tiny" data-close="missed" data-id="${item.id}">Missed</button>
+          <button class="secondary tiny" data-close="dropped" data-id="${item.id}">Drop</button>
+        </div>
+        <div class="renegotiate-row">
+          <label>New due at <input id="renegotiate-due-${item.id}" placeholder="2026-07-25"></label>
+          <label>Reason <input id="renegotiate-note-${item.id}" placeholder="optional"></label>
+          <button class="warn tiny" data-renegotiate="${item.id}">Renegotiate</button>
+        </div>` : '';
+      return `
+        <article class="item${overdue ? ' overdue' : ''}" data-item="${item.id}">
+          <div class="topline">
+            <div>
+              <strong>${esc(item.title)}</strong>
+              ${item.detail ? `<div class="muted" style="margin-top:4px;">${esc(item.detail)}</div>` : ''}
+            </div>
+            <div class="pillrow">
+              <span class="pill ${esc(item.status)}">${esc(item.status)}</span>
+              <span class="pill">${esc(item.who)}</span>
+              <span class="pill">${esc(item.kind)}${item.cadence ? '/' + esc(item.cadence) : ''}</span>
+            </div>
+          </div>
+          <div class="muted mono" style="font-size:12px;">
+            ${item.due_at ? 'due ' + esc(item.due_at) : 'no due date'}
+            ${item.renegotiation_count ? ' · renegotiated ' + esc(item.renegotiation_count) + 'x' : ''}
+            ${item.follow_up_count ? ' · ' + esc(item.follow_up_count) + ' follow-up(s)' : ''}
+          </div>
+          <div class="notice" id="notice-${item.id}"></div>
+          ${closeControls}
+          <details>
+            <summary class="small">Events &amp; full record</summary>
+            <pre id="events-${item.id}">Loading&hellip;</pre>
+          </details>
+        </article>
+      `;
+    }
+
+    function wireItemActions() {
+      document.querySelectorAll('[data-close]').forEach((btn) => {
+        const label = { done: 'Marking done…', missed: 'Marking missed…', dropped: 'Dropping…' }[btn.dataset.close];
+        btn.addEventListener('click', () => withBusy(btn, label, () => closeCommitment(btn.dataset.id, btn.dataset.close)));
+      });
+      document.querySelectorAll('[data-renegotiate]').forEach((btn) => {
+        btn.addEventListener('click', () => withBusy(btn, 'Renegotiating…', () => renegotiateCommitment(btn.dataset.renegotiate)));
+      });
+      document.querySelectorAll('details').forEach((d) => {
+        d.addEventListener('toggle', () => {
+          const article = d.closest('[data-item]');
+          if (d.open && article) loadEvents(article.dataset.item);
+        }, { once: true });
+      });
+    }
+
+    async function loadEvents(id) {
+      try {
+        const item = await api('/commitments/' + encodeURIComponent(id));
+        byId('events-' + id).textContent = JSON.stringify(item, null, 2);
+      } catch (err) {
+        byId('events-' + id).textContent = 'Failed to load: ' + err.message;
+      }
+    }
+
+    async function closeCommitment(id, status) {
+      const notice = byId('notice-' + id);
+      notice.textContent = ''; notice.className = 'notice';
+      const note = byId('note-' + id).value;
+      const evidenceRaw = byId('evidence-' + id).value.trim();
+      const body = { note };
+      if (evidenceRaw) body.evidence_id = Number(evidenceRaw);
+      try {
+        await api(`/commitments/${encodeURIComponent(id)}/${status}`, { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Marked ' + status + '.'; notice.className = 'notice good';
+        await loadList();
+      } catch (err) { notice.textContent = 'Failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function renegotiateCommitment(id) {
+      const notice = byId('notice-' + id);
+      notice.textContent = ''; notice.className = 'notice';
+      const dueAt = byId('renegotiate-due-' + id).value.trim();
+      if (!dueAt) { notice.textContent = 'New due date is required.'; notice.className = 'notice err'; return; }
+      const note = byId('renegotiate-note-' + id).value;
+      try {
+        await api(`/commitments/${encodeURIComponent(id)}/renegotiate`, { method: 'POST', body: JSON.stringify({ due_at: dueAt, note }) });
+        notice.textContent = 'Renegotiated.'; notice.className = 'notice good';
+        await loadList();
+      } catch (err) { notice.textContent = 'Failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function createCommitment() {
+      const notice = byId('createNotice');
+      notice.textContent = ''; notice.className = 'notice';
+      const title = byId('cTitle').value.trim();
+      if (!title) { notice.textContent = 'Title is required.'; notice.className = 'notice err'; return; }
+      const body = {
+        who: byId('cWho').value,
+        kind: byId('cKind').value,
+        title,
+        detail: byId('cDetail').value,
+        due_at: byId('cDueAt').value.trim() || null,
+        cadence: byId('cCadence').value,
+        source_type: byId('cSourceType').value.trim() || 'manual'
+      };
+      try {
+        await api('/commitments', { method: 'POST', body: JSON.stringify(body) });
+        notice.textContent = 'Created.'; notice.className = 'notice good';
+        byId('cTitle').value = ''; byId('cDetail').value = ''; byId('cDueAt').value = '';
+        await loadList();
+      } catch (err) { notice.textContent = 'Create failed: ' + err.message; notice.className = 'notice err'; }
+    }
+
+    async function loadAll() {
+      await Promise.all([runCheck(), loadList()]);
+    }
+
+    byId('refreshBtn').addEventListener('click', () => withBusy(byId('refreshBtn'), 'Refreshing…', () => loadAll().catch((err) => { byId('createNotice').textContent = err.message; })));
+    byId('checkBtn').addEventListener('click', () => withBusy(byId('checkBtn'), 'Checking…', () => runCheck().catch((err) => { byId('checkDetail').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('loadBtn').addEventListener('click', () => withBusy(byId('loadBtn'), 'Loading…', () => loadList().catch((err) => { byId('list').innerHTML = `<div class="notice err">${esc(err.message)}</div>`; })));
+    byId('createBtn').addEventListener('click', () => withBusy(byId('createBtn'), 'Creating…', createCommitment));
+    loadAll().catch((err) => { console.error('Initial commitments load failed', err); });
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>
