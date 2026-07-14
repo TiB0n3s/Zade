@@ -294,6 +294,12 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         # above), so a strict CSP blocks any external load/exfil from the browser.
         for header, value in _SECURITY_HEADERS.items():
             response.headers.setdefault(header, value)
+        # StaticFiles emits ETag/Last-Modified but no Cache-Control, so WebView2
+        # (and the Claude browser pane) fall back to heuristic caching and serve
+        # stale ui/zade-ui.js|css after edits. Force revalidation on every /ui
+        # asset — the existing ETag still yields cheap 304s when unchanged.
+        if request.url.path.startswith("/ui"):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.get("/health")

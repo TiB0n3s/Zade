@@ -62,6 +62,23 @@ def test_static_ui_is_served_from_kernel(tmp_path: Path, monkeypatch) -> None:
     assert "item.href" in response.text
 
 
+def test_ui_assets_send_no_cache_header(tmp_path: Path, monkeypatch) -> None:
+    """The shared /ui assets must revalidate so WebView2 never serves a stale
+    zade-ui.js|css after an edit (heuristic caching bug)."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    for path in ("/ui", "/ui/zade-ui.js", "/ui/zade-ui.css"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers.get("cache-control") == "no-cache", path
+
+
 def test_health_and_memory_routes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     config = KernelConfig(
