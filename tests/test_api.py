@@ -3,6 +3,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import cofounder_kernel.handlers as handlers_module
+import cofounder_kernel.research as research_module
+from cofounder_kernel import netguard
 from cofounder_kernel.api import _build_prompt, create_app
 from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, SecurityConfig
 from cofounder_kernel.ollama import GenerateResult, OllamaClient
@@ -89,6 +92,42 @@ def test_health_and_memory_routes(tmp_path: Path, monkeypatch) -> None:
     brief = client.get("/brief/daily")
     assert brief.status_code == 200
     assert "Build local kernel" in brief.json()["brief"]
+
+
+def test_memory_forget_and_stats_routes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    created = client.post(
+        "/memory",
+        json={"kind": "note", "title": "Ephemeral fact", "content": "Forget me on command."},
+    )
+    memory_id = created.json()["memory_id"]
+
+    stats = client.get("/memory/stats")
+    assert stats.status_code == 200
+    assert stats.json()["hot_memories"] == 1
+    assert stats.json()["cold_documents"] == 0
+
+    forgotten = client.delete(f"/memory/{memory_id}")
+    assert forgotten.status_code == 200
+    assert forgotten.json()["forgotten"]["id"] == memory_id
+
+    # Gone from the row store, the FTS index, and the count.
+    searched = client.post("/memory/search", json={"query": "Ephemeral", "limit": 5})
+    assert searched.json()["matches"] == []
+    assert client.get("/memory/stats").json()["hot_memories"] == 0
+    assert client.delete(f"/memory/{memory_id}").status_code == 404
+
+    # The forget ran through the tool registry at the memory-write tier.
+    events = client.get("/audit/recent").json()["events"]
+    forget_events = [e for e in events if e["target"] == "memory.forget" and e["status"] == "ok"]
+    assert forget_events and forget_events[0]["permission_tier"] == "L1_MEMORY_WRITE"
 
 
 def test_optional_local_mutation_token_guard(tmp_path: Path, monkeypatch) -> None:
@@ -726,6 +765,379 @@ def test_runtime_replaces_replayed_status_claim_for_completion_question(
     assert "I am here. I am ready. I am doing." not in payload["response"]
     assert "conversation_replay_repaired" in payload["governor"]["applied_rules"]
     assert any("near-verbatim prior reply" in note for note in payload["governor"]["notes"])
+
+
+def test_runtime_appends_honesty_line_when_reply_promises_unqueued_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    # A work promise that is NOT a research command (research commands now route
+    # into the gated queue instead of tripping the honesty stopgap).
+    promised_work = (
+        "I will take over investor outreach. I will draft the replies, line up the follow-ups, "
+        "and keep the pipeline warm. I will begin immediately."
+    )
+
+    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=promised_work, model=model or "qwen3:14b", raw={})
+
+    monkeypatch.setattr(OllamaClient, "generate", promising_generate)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Take over investor outreach and keep me posted on replies",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "background_work_honesty" in payload["governor"]["applied_rules"]
+    assert "research_work_routed" not in payload["governor"]["applied_rules"]
+    assert "this reply doesn't start anything" in payload["response"]
+    assert any("cannot start" in note for note in payload["governor"]["notes"])
+
+
+def test_runtime_leaves_ordinary_answers_without_work_promises_untouched(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    plain_answer = (
+        "Close the beta waitlist. It has done its job. Leave it open and you're just collecting "
+        "names you'll never call — shut it, and put that energy on the leads already warm."
+    )
+
+    def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=plain_answer, model=model or "qwen3:14b", raw={})
+
+    monkeypatch.setattr(OllamaClient, "generate", plain_generate)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Should I close the beta waitlist?",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "background_work_honesty" not in payload["governor"]["applied_rules"]
+    assert payload["response"] == plain_answer
+
+
+def test_runtime_executes_memory_command_from_chat(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(
+            response="I will record that for you. I will begin immediately.",
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    monkeypatch.setattr(OllamaClient, "generate", promising_generate)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Remember this: Tuesday investor follow-up is hot.",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "chat_action_routed" in payload["governor"]["applied_rules"]
+    assert "background_work_honesty" not in payload["governor"]["applied_rules"]
+    assert payload["chat_action"]["status"] == "dispatched"
+    assert payload["chat_action"]["action"] == "local.memory.write"
+    item_id = payload["chat_action"]["item_id"]
+
+    queue = client.get("/work/queue").json()["items"]
+    item = next(row for row in queue if row["id"] == item_id)
+    assert item["status"] == "done"
+    assert item["result"]["handler"] == "local.memory.write"
+
+    searched = client.post("/memory/search", json={"query": "Tuesday investor", "limit": 5})
+    assert searched.json()["matches"][0]["content"] == "Tuesday investor follow-up is hot."
+    assert f"work item #{item_id}" in payload["response"]
+
+
+def test_runtime_executes_browser_open_command_from_chat(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    opened: list[str] = []
+    monkeypatch.setattr(handlers_module.webbrowser, "open", lambda url: opened.append(url) or True)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Open http://127.0.0.1:8787/ui/memory.html",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["chat_action"]["status"] == "dispatched"
+    assert payload["chat_action"]["action"] == "local.browser.open"
+    assert payload["chat_action"]["result"]["handler"] == "local.browser.open"
+    assert opened == ["http://127.0.0.1:8787/ui/memory.html"]
+    assert "chat_action_routed" in payload["governor"]["applied_rules"]
+
+
+def _research_config(tmp_path: Path) -> KernelConfig:
+    return KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+
+
+def test_runtime_routes_research_command_into_gated_inbox_item(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A founder research command must stop being generate-only: it creates the
+    topic, proposes sources locally, and queues an approval-gated research run to
+    the Inbox — never a direct dispatch."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    # Proposed reference URLs (Wikipedia) resolve through the egress policy without
+    # a live DNS lookup, so validation is hermetic. No fetch happens (approval-gated).
+    monkeypatch.setattr(netguard, "is_private_host", lambda host: False)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Please research and learn everything possible regarding synthetic intelligence engineering",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    # The stopgap honesty line is superseded by a real routed item.
+    assert "research_work_routed" in payload["governor"]["applied_rules"]
+    assert "background_work_honesty" not in payload["governor"]["applied_rules"]
+
+    route = payload["research"]
+    assert route["status"] == "queued"
+    assert "synthetic intelligence engineering" in route["topic"]
+    assert route["url_count"] >= 1
+    assert route["queue_status"] == "approval_required"
+    item_id = route["item_id"]
+    assert isinstance(item_id, int)
+
+    # The reply states exactly what was queued and what needs the founder's word.
+    body = payload["response"].lower()
+    assert "inbox" in body
+    assert "typed phrase" in body
+    assert f"#{item_id}" in payload["response"]
+
+    # The item is really in the queue, gated (approval_required), never dispatched.
+    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    match = next((item for item in queued if item["id"] == item_id), None)
+    assert match is not None
+    assert match["kind"] == "research_run"
+    assert match["action"] == "external.research.run"
+    assert match["permission_tier"] == "L3_EXTERNAL_ACTION"
+
+    # The topic entered the operating layer as a research assumption.
+    assumptions = client.get("/founder/assumptions").json()["items"]
+    assert any("synthetic intelligence engineering" in a["statement"].lower() for a in assumptions)
+
+
+def test_runtime_research_command_uses_founder_supplied_urls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When the founder names sources in the message, route those exact URLs
+    (hermetic: a public IP literal passes egress without DNS)."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Look into our pricing model using https://93.184.216.34/pricing",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    route = response.json()["research"]
+    assert route["status"] == "queued"
+    assert route["urls"] == ["https://93.184.216.34/pricing"]
+    # The URL is treated as a source, not folded into the topic.
+    assert "http" not in route["topic"]
+    assert "pricing model" in route["topic"]
+
+
+def test_runtime_research_command_stays_gated_until_typed_phrase(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """End to end from a chat turn: routing enqueues the run, nothing egresses,
+    and only the typed-phrase approval dispatches the fetch that files evidence."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    fetched: dict[str, str] = {}
+
+    def fake_fetch(url, *, timeout=20.0, max_bytes=2_000_000, allowed_hosts=None):
+        fetched["url"] = url
+        return "<html><body><h1>Synthetic intelligence engineering</h1><p>Signal.</p></body></html>"
+
+    monkeypatch.setattr(research_module, "fetch_url", fake_fetch)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Research synthetic intelligence engineering using https://93.184.216.34/si",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    item_id = response.json()["research"]["item_id"]
+
+    # Egress has not happened just from queueing.
+    assert "url" not in fetched
+
+    phrase = app.state.authority.summary()["typed_confirmation_phrase"]
+    approved = client.post(
+        f"/work/items/{item_id}/approve",
+        json={"resolved_by": "founder", "dispatch": True, "typed_confirmation": phrase},
+    )
+    assert approved.status_code == 200, approved.text
+    result = approved.json()["dispatch_result"]
+    assert result["handler"] == "external.research.run"
+    assert result["ok"] is True
+    assert fetched["url"] == "https://93.184.216.34/si"
+
+    evidence = client.get("/founder/evidence").json()["items"]
+    assert any(item["evidence_type"] == "web_research" for item in evidence)
+
+
+def test_runtime_skips_research_routing_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    """With research disabled there is no egress lane to queue into, so a research
+    command is not routed; the honesty stopgap still guards work promises."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(
+            response="On it. I have initiated the research and will begin immediately.",
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    monkeypatch.setattr(OllamaClient, "generate", promising_generate)
+    from cofounder_kernel.config import ResearchConfig
+
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        research=ResearchConfig(enabled=False),
+    )
+    client = TestClient(create_app(config))
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Research synthetic intelligence engineering",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["research"] is None
+    assert "research_work_routed" not in payload["governor"]["applied_rules"]
+    assert "background_work_honesty" in payload["governor"]["applied_rules"]
+
+
+def test_runtime_does_not_route_research_questions(tmp_path: Path, monkeypatch) -> None:
+    """A question *about* research is not a command to perform it — leave it as an
+    ordinary answer with no queued work."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    answer = "I lean on the evidence graph first, then public sources when a gap is worth the reach."
+
+    def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=answer, model=model or "qwen3:14b", raw={})
+
+    monkeypatch.setattr(OllamaClient, "generate", plain_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "How do you research competitors when we need an edge?",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["research"] is None
+    assert "research_work_routed" not in payload["governor"]["applied_rules"]
+    assert payload["response"] == answer
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
 
 
 def test_runtime_repairs_charter_recitation_into_conversational_voice(

@@ -39,6 +39,16 @@ from .autonomy import WorkQueueService
 
 RESEARCH_RUN_ACTION = "external.research.run"
 
+# Reference-URL templates the local source proposer builds from a topic when the
+# founder asks for research without naming sources. Path-based canonical forms are
+# preferred (they don't redirect, which the fetch lane refuses); the fulltext
+# search form is the reliable fallback. These are starting points the founder
+# edits behind the approval gate, not curated authorities.
+DEFAULT_SOURCE_SEEDS = (
+    "https://en.wikipedia.org/wiki/{slug}",
+    "https://en.wikipedia.org/w/index.php?search={query}&fulltext=1",
+)
+
 _STOPWORDS = frozenset(
     {"the", "and", "for", "are", "was", "our", "will", "with", "that", "this", "from", "into",
      "what", "which", "about", "evidence", "against", "should", "would", "could", "does", "have"}
@@ -112,6 +122,47 @@ class ResearchService:
             )
         topics.sort(key=lambda topic: topic["score"], reverse=True)
         return topics[:limit]
+
+    def propose_sources(self, topic: str, *, limit: int | None = None) -> list[str]:
+        """Propose candidate web sources for *topic*, fully LOCAL — no network, no
+        approval. This is the source half of the "daydream": given a topic the
+        founder wants researched but no URLs, build well-formed reference URLs the
+        founder can approve or edit in the Inbox before any fetch.
+
+        Every candidate is run through the same egress policy the fetch lane uses
+        (https only, host allowlist honored, private/internal refused), so a
+        proposal can never smuggle in an unfetchable or internal target. These are
+        editable candidates behind an approval gate, never asserted as authoritative.
+        """
+        topic = (topic or "").strip()
+        if not topic:
+            return []
+        cap = limit or self.config.research.max_urls_per_run
+        allowed = frozenset(self.config.research.allow_hosts)
+        words = re.findall(r"[A-Za-z0-9]+", topic)
+        if not words:
+            return []
+        slug = "_".join(word.capitalize() for word in words)
+        query = urllib.parse.quote(" ".join(words))
+        candidates = [template.format(slug=slug, query=query) for template in DEFAULT_SOURCE_SEEDS]
+        if allowed:
+            allowed_lower = {host.lower() for host in allowed}
+            on_allowed = [url for url in candidates if _host(url) in allowed_lower]
+            # If none of the default reference hosts are allowlisted, fall back to
+            # the allowed hosts' landing pages so we can still propose something valid.
+            candidates = on_allowed or [f"https://{host}/" for host in sorted(allowed)]
+        proposed: list[str] = []
+        for url in candidates:
+            if url in proposed:
+                continue
+            try:
+                netguard.assert_allowed(url, require_https=True, allowed_hosts=allowed or None)
+            except netguard.EgressError:
+                continue
+            proposed.append(url)
+            if len(proposed) >= cap:
+                break
+        return proposed
 
     def daydream(self, *, limit: int = 3, notify: bool = True) -> dict[str, Any]:
         """Derive top research questions and (optionally) surface them as notifications."""

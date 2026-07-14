@@ -23,7 +23,10 @@
     memory: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
     trading: '<path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/>',
     voice: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/>',
-    system: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'
+    system: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+    browser: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+    vault: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4"/><path d="M12 8v1M12 15v1M8 12h1M15 12h1"/>',
+    research: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><path d="M11 8v3l2 2"/>'
   };
 
   // Redesign: 10 destinations folded into 6. No group labels at this count.
@@ -46,7 +49,25 @@
         ["Trading", "trading", I.trading],
         ["Settings", "settings", I.system]
       ]
+    },
+    {
+      label: "Ops",
+      pages: [
+        ["Browser", "browser", I.browser],
+        ["Vault", "vault", I.vault],
+        ["Research", "research", I.research]
+      ]
     }
+  ];
+
+  // Every reachable page, for the command palette. The sidebar shows the
+  // folded 6 + Ops; the palette also reaches the standalone consoles.
+  const ALL_PAGES = [
+    ["Home", "index"], ["Inbox", "inbox"], ["Strategy", "strategy"], ["Memory", "memory"],
+    ["Trading", "trading"], ["Settings", "settings"], ["Browser", "browser"], ["Vault", "vault"],
+    ["Research", "research"], ["Approvals console", "approvals"], ["Founder ops", "founder"],
+    ["Operating ledger", "ledger"], ["Commitments", "commitments"], ["Attention & notifications", "surfacing"],
+    ["System", "system"], ["Voice", "voice"]
   ];
 
   const canonicalPath = (link) => {
@@ -126,6 +147,50 @@
 
   const esc = (value) =>
     String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  // ============================================================
+  //  Character layer — ambient breathe, presence line, optional
+  //  cursor glow. The presence line is Zade's heartbeat: a
+  //  serif-italic first-person status rotating under the logo.
+  // ============================================================
+  const PRESENCE_LINES = [
+    "Awake. I don’t sleep.",
+    "Watching the doors.",
+    "Everything’s where you left it.",
+    "I’ve got you, Ellie.",
+  ];
+
+  const injectAmbient = () => {
+    if (document.querySelector(".zade-ambient")) return;
+    document.body.insertBefore(el("div", "zade-ambient"), document.body.firstChild);
+  };
+
+  // Cursor-following glow — the founder disabled it in review, so it ships
+  // OFF and only wakes when Settings flips localStorage.zadeCursorGlow to "on".
+  const injectCursorGlow = () => {
+    if (localStorage.getItem("zadeCursorGlow") !== "on") return;
+    if (document.querySelector(".zade-cursor-glow")) return;
+    const glow = el("div", "zade-cursor-glow");
+    document.body.appendChild(glow);
+    window.addEventListener("mousemove", (event) => {
+      glow.style.transform = "translate(" + event.clientX + "px, " + event.clientY + "px)";
+    });
+  };
+
+  const injectPresence = (aside) => {
+    const wrap = el("div", "zade-presence");
+    wrap.innerHTML =
+      '<span class="zade-presence-dot" aria-hidden="true"></span>' +
+      '<span class="zade-presence-line" data-presence-line aria-live="off"></span>';
+    aside.appendChild(wrap);
+    const line = wrap.querySelector("[data-presence-line]");
+    let idx = Math.floor(Date.now() / 5200) % PRESENCE_LINES.length;
+    line.textContent = PRESENCE_LINES[idx];
+    window.setInterval(() => {
+      idx = (idx + 1) % PRESENCE_LINES.length;
+      line.textContent = PRESENCE_LINES[idx];
+    }, 5200);
+  };
 
   // ============================================================
   //  Activity beacon — surfaces the work Zade does off-thread.
@@ -327,9 +392,7 @@
     const chip = pending > 0 ? pending + " queued" : "";
 
     if (working) {
-      const what =
-        running > 0 ? running + " task" + (running > 1 ? "s" : "") + " running" : rows[0] ? rows[0].label : "Thinking";
-      setActivityState("working", "Working", what, chip);
+      setActivityState("working", "Working", "Sweeping the operating layer for you", chip);
     } else if (rows.length) {
       const lead = rows[0].silent ? rows[0].label + " · " : "Last active ";
       setActivityState(recent ? "recent" : "idle", "Idle", lead + relTime(rows[0].at), chip);
@@ -367,6 +430,9 @@
       '<div class="zade-mark">Z</div>' +
       '<div><div class="zade-name">Zade</div><div class="zade-tag">Local AI Co-founder</div></div>';
     aside.appendChild(logo);
+
+    // Zade's heartbeat: the rotating first-person presence line.
+    injectPresence(aside);
 
     GROUPS.forEach((group) => {
       const wrap = el("div", "zade-nav-group");
@@ -506,6 +572,143 @@
     }
   };
 
+  // ============================================================
+  //  Command palette — Ctrl+K (or Cmd+K) from any page.
+  //  Navigation across every surface + a capture-to-memory action,
+  //  so the universe is one keystroke deep from anywhere.
+  // ============================================================
+  let paletteRefs = null;
+  let paletteIndex = 0;
+
+  const paletteCommands = (query) => {
+    const q = query.trim().toLowerCase();
+    const rows = [];
+    for (const [label, file] of ALL_PAGES) {
+      if (!q || label.toLowerCase().includes(q)) {
+        rows.push({ kind: "nav", label: "Go to " + label, hint: href(file), run: () => { window.location.href = href(file); } });
+      }
+    }
+    if (q) {
+      rows.push({
+        kind: "capture",
+        label: 'Remember: "' + query.trim() + '"',
+        hint: "saves to memory",
+        run: async () => {
+          const tokenValue = localStorage.getItem("zadeKernelToken") || "";
+          const headers = { "Content-Type": "application/json" };
+          if (tokenValue) headers["X-Zade-Token"] = tokenValue;
+          const response = await fetch("/memory", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ kind: "note", title: query.trim(), content: "", source: "palette" })
+          });
+          if (!response.ok) throw new Error(await response.text());
+          const data = await response.json();
+          return "Saved — memory #" + data.memory_id;
+        }
+      });
+    }
+    return rows.slice(0, 9);
+  };
+
+  const renderPalette = () => {
+    if (!paletteRefs) return;
+    const rows = paletteCommands(paletteRefs.input.value);
+    paletteRefs.rows = rows;
+    if (paletteIndex >= rows.length) paletteIndex = Math.max(0, rows.length - 1);
+    paletteRefs.list.innerHTML = rows.length
+      ? rows
+          .map(
+            (row, i) =>
+              '<div class="zade-palette-row' + (i === paletteIndex ? " active" : "") + '" data-idx="' + i + '">' +
+              '<span class="zade-palette-label">' + esc(row.label) + "</span>" +
+              '<span class="zade-palette-hint">' + esc(row.hint) + "</span></div>"
+          )
+          .join("")
+      : '<div class="zade-palette-empty">Nothing matches.</div>';
+  };
+
+  const closePalette = () => {
+    if (!paletteRefs) return;
+    paletteRefs.overlay.classList.remove("open");
+    paletteRefs.input.value = "";
+    paletteRefs.note.textContent = "";
+    paletteIndex = 0;
+  };
+
+  const openPalette = () => {
+    if (!paletteRefs) injectPalette();
+    paletteRefs.overlay.classList.add("open");
+    paletteIndex = 0;
+    renderPalette();
+    paletteRefs.input.focus();
+  };
+
+  const runPaletteRow = async (row) => {
+    if (!row) return;
+    if (row.kind === "capture") {
+      paletteRefs.note.textContent = "Saving…";
+      try {
+        paletteRefs.note.textContent = await row.run();
+        paletteRefs.input.value = "";
+        renderPalette();
+      } catch (err) {
+        paletteRefs.note.textContent = "Save failed: " + formatKernelError(err.message);
+      }
+      return;
+    }
+    closePalette();
+    row.run();
+  };
+
+  const injectPalette = () => {
+    if (paletteRefs) return;
+    const overlay = el("div", "zade-palette-overlay");
+    overlay.innerHTML =
+      '<div class="zade-palette" role="dialog" aria-label="Command palette">' +
+      '<input type="text" class="zade-palette-input" placeholder="Go anywhere, or type a thought to remember…" aria-label="Command">' +
+      '<div class="zade-palette-list"></div>' +
+      '<div class="zade-palette-note" aria-live="polite"></div>' +
+      '<div class="zade-palette-foot">↑↓ choose · Enter run · Esc close</div>' +
+      "</div>";
+    document.body.appendChild(overlay);
+    paletteRefs = {
+      overlay,
+      input: overlay.querySelector(".zade-palette-input"),
+      list: overlay.querySelector(".zade-palette-list"),
+      note: overlay.querySelector(".zade-palette-note"),
+      rows: []
+    };
+    overlay.addEventListener("mousedown", (event) => {
+      if (event.target === overlay) closePalette();
+    });
+    paletteRefs.list.addEventListener("click", (event) => {
+      const rowEl = event.target.closest("[data-idx]");
+      if (rowEl) runPaletteRow(paletteRefs.rows[Number(rowEl.dataset.idx)]);
+    });
+    paletteRefs.input.addEventListener("input", () => {
+      paletteIndex = 0;
+      paletteRefs.note.textContent = "";
+      renderPalette();
+    });
+    paletteRefs.input.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") { event.preventDefault(); paletteIndex = Math.min(paletteIndex + 1, paletteRefs.rows.length - 1); renderPalette(); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); paletteIndex = Math.max(paletteIndex - 1, 0); renderPalette(); }
+      else if (event.key === "Enter") { event.preventDefault(); runPaletteRow(paletteRefs.rows[paletteIndex]); }
+      else if (event.key === "Escape") { event.preventDefault(); closePalette(); }
+    });
+  };
+
+  const bindPaletteHotkey = () => {
+    document.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (paletteRefs && paletteRefs.overlay.classList.contains("open")) closePalette();
+        else openPalette();
+      }
+    });
+  };
+
   const boot = () => {
     // Type system 1b is the default: serif panel headings.
     // Opt out per page with <body data-zade-type="sans">.
@@ -513,6 +716,8 @@
       document.body.setAttribute("data-zade-type", "serif");
     }
     injectSkipLink();
+    injectAmbient();
+    injectCursorGlow();
     injectSidebar();
     hideHeaderWorkspaceLinks();
     normalizeMessages(document);
@@ -521,6 +726,7 @@
     observeUi();
     bootstrapToken();
     startActivityPoller();
+    bindPaletteHotkey();
   };
 
   if (document.readyState === "loading") {

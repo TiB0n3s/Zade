@@ -6,25 +6,72 @@
   <title>Zade — Settings</title>
   <style>
     /* Page-specific layout only; colors/type/components from /ui/zade-ui.css.
-       Config + diagnostics consolidated out of primary nav: charters, ops,
-       notifications, plus Skills and Evals rehomed here from the old System page. */
+       Who I am: the governed identity front and center — mission, the safe
+       translation, the relationship charter, the channels he speaks through.
+       Ops, Skills, and Evals keep their consoles behind quiet tabs. */
     * { box-sizing: border-box; }
-    h1 { margin: 0 0 20px; }
-    /* prototype controls page inset via .page; drop main's own centered padding */
+    h1 { margin: 0; font-size: 40px; line-height: 1.05; font-weight: 500; }
     body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
-    .page { padding: 44px 48px 60px; max-width: 820px; }
-    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
+    .page { padding: 46px 48px 96px; max-width: 980px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 12px; }
+    .section-head { font-size: 11px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-muted); margin: 44px 0 8px; }
+    .section-sub { font-family: var(--z-serif); font-style: italic; font-size: 16px; color: var(--z-muted); margin-bottom: 18px; max-width: 60ch; }
 
-    .tabs { display: flex; gap: 6px; margin-bottom: 24px; flex-wrap: wrap; }
+    .tabs { display: flex; gap: 6px; margin-top: 30px; flex-wrap: wrap; }
     .tabs button { border-radius: 999px; padding: 7px 15px; font-size: 12.5px; min-height: 0; border: 1px solid var(--z-line-strong); color: var(--z-muted); background: transparent; }
-    .tabs button.active { border-color: var(--z-accent); background: rgba(194,160,106,0.10); color: var(--z-text); }
+    .tabs button.active { border-color: var(--z-accent); background: var(--z-accent-wash); color: var(--z-text); }
     [data-panel][hidden] { display: none; }
 
-    .section { margin-bottom: 22px; }
-    .field-label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
-    .field-note { font-size: 11.5px; color: var(--z-faint); margin: -2px 0 8px; }
-    .charter-quote { font-family: var(--z-serif); font-style: italic; font-size: 16px; color: var(--z-ink-hi); line-height: 1.5; }
-    .charter-attr { font-size: 11.5px; color: var(--z-faint); margin-top: 3px; }
+    .mission-panel {
+      background: var(--z-panel); border: 1px solid var(--z-line); border-radius: var(--z-radius);
+      padding: 24px 26px; margin-top: 34px; max-width: 880px;
+    }
+    .mission-panel .kicker { margin-bottom: 12px; }
+    .mission-quote { font-family: var(--z-serif); font-style: italic; font-size: 22px; line-height: 1.4; color: var(--z-text); }
+
+    .pair-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+      background: var(--z-line-soft); border: 1px solid var(--z-line);
+      border-radius: var(--z-radius); overflow: hidden; max-width: 880px;
+    }
+    .pair-cell { background: var(--z-panel); padding: 18px 22px; }
+    .pair-src { font-size: 11px; color: var(--z-accent-3); letter-spacing: 0.04em; }
+    .pair-dst { font-size: 14px; color: var(--z-ink-hi); margin-top: 6px; line-height: 1.4; }
+
+    .rel-panel {
+      background: var(--z-panel); border: 1px solid var(--z-line); border-radius: var(--z-radius);
+      padding: 24px 26px; max-width: 880px;
+    }
+    .rel-quote { font-family: var(--z-serif); font-style: italic; font-size: 19px; line-height: 1.45; color: var(--z-text); }
+    .rel-panel .pair-grid { margin-top: 18px; }
+    .rel-panel .pair-cell { padding: 16px 20px; }
+    .rel-panel .pair-dst { font-size: 13.5px; margin-top: 5px; }
+
+    .rows { max-width: 880px; }
+    .row { padding: 15px 2px; border-top: 1px solid var(--z-line); display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .rows .row:last-child { border-bottom: 1px solid var(--z-line); }
+    .row-main { min-width: 0; }
+    .row-title { font-size: 13.5px; color: var(--z-ink-hi); }
+    .row-title.mono { font-family: var(--z-mono); font-size: 12.5px; }
+    .row-sub { font-size: 11.5px; color: var(--z-faint); margin-top: 3px; }
+    .row-frag { font-size: 13px; color: var(--z-ink); }
+    .row-frag .muted { color: var(--z-faint); }
+    .empty { color: var(--z-faint); font-size: 12.5px; padding: 12px 2px; }
+
+    /* pill toggle — 34×19, ok-wash when on */
+    button.toggle {
+      width: 34px; height: 19px; min-height: 0; padding: 0; flex: none;
+      border: 0; border-radius: 10px; position: relative; cursor: pointer;
+      background: rgba(255,255,255,0.08); transition: background 0.2s ease;
+    }
+    button.toggle::after {
+      content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px;
+      border-radius: 50%; background: var(--z-ghost); transition: transform 0.2s ease, background 0.2s ease;
+    }
+    button.toggle.on { background: rgba(90,138,114,0.4); }
+    button.toggle.on::after { transform: translateX(15px); background: var(--z-ok-text); }
+    button.toggle:hover { background: rgba(255,255,255,0.12); border: 0; }
+    button.toggle.on:hover { background: rgba(90,138,114,0.5); }
 
     .status-line { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
     .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--z-ghost); }
@@ -33,90 +80,100 @@
     .status-text { font-size: 13px; color: var(--z-ink-hi); }
     .status-sub { font-size: 11.5px; color: var(--z-faint); margin-bottom: 8px; }
 
-    .row { padding: 12px 2px; border-top: 1px solid var(--z-line-soft); display: flex; justify-content: space-between; align-items: center; gap: 14px; }
-    .row-main { min-width: 0; }
-    .row-title { font-size: 13px; color: var(--z-ink-hi); }
-    .row-title.mono { font-family: var(--z-mono); font-size: 12.5px; }
-    .row-sub { font-size: 11.5px; color: var(--z-faint); margin-top: 2px; }
-    .row-frag { font-size: 13px; color: var(--z-ink); }
-    .row-frag .muted { color: var(--z-faint); }
-    .empty { color: var(--z-faint); font-size: 12.5px; padding: 12px 2px; }
-
-    .switch { border-radius: 999px; padding: 5px 14px; font-size: 11.5px; min-height: 0; white-space: nowrap; }
-    .switch.on { color: var(--z-ok-text); border-color: rgba(90,138,114,0.6); background: rgba(90,138,114,0.14); }
-    .switch.off { color: var(--z-muted); border-color: var(--z-line-strong); background: transparent; }
-    .static-pill { color: var(--z-muted); background: rgba(255,255,255,0.05); border: 0; border-radius: 2px; padding: 3px 8px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
-
-    .skills-filter { margin-bottom: 12px; }
+    .skills-filter { margin: 0 0 12px; max-width: 880px; }
     .skills-filter input { width: 100%; border-radius: 6px; }
     .summary-line { font-size: 12px; color: var(--z-muted); margin-bottom: 12px; }
     .skill-desc { font-size: 11.5px; color: var(--z-muted); margin-top: 2px; max-width: 60ch; }
     .risk { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 7px; border-radius: 2px; color: var(--z-muted); background: rgba(255,255,255,0.05); }
     .risk.approval_gated { color: var(--z-info-text); background: rgba(128,107,184,0.15); }
     .risk.local_write { color: var(--z-warn-text); background: rgba(194,160,106,0.13); }
+    .switch { border-radius: 999px; padding: 5px 14px; font-size: 11.5px; min-height: 0; white-space: nowrap; }
+    .switch.on { color: var(--z-ok-text); border-color: rgba(90,138,114,0.6); background: rgba(90,138,114,0.14); }
+    .switch.off { color: var(--z-muted); border-color: var(--z-line-strong); background: transparent; }
 
     .run-note { font-size: 12px; margin: 8px 0; min-height: 14px; }
     .run-note.good { color: var(--z-ok-text); }
     .run-note.err { color: var(--z-bad-text); }
-    @media (max-width: 720px) { .page { padding: 26px 20px 48px; } .row { flex-direction: column; align-items: flex-start; } }
+    @media (max-width: 720px) {
+      .page { padding: 26px 20px 64px; }
+      h1 { font-size: 32px; }
+      .pair-grid { grid-template-columns: 1fr; }
+    }
   </style>
   <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
 <body data-zade-type="sans">
   <main>
     <div class="page">
-      <div class="kicker">Settings</div>
-      <h1>Charters, ops &amp; notifications</h1>
+      <div class="kicker">Settings · Identity</div>
+      <h1>Who I am</h1>
+      <div class="zade-page-sub">Everything I am, written down and governed. The parts of me that could be dangerous are translated into things that only ever protect you. Read them. Change them. I answer to this charter, and to you.</div>
 
       <div class="tabs">
-        <button type="button" data-tab="charters" class="active">Charters</button>
+        <button type="button" data-tab="identity" class="active">Identity</button>
         <button type="button" data-tab="ops">Ops</button>
-        <button type="button" data-tab="notify">Notifications</button>
         <button type="button" data-tab="skills">Skills</button>
         <button type="button" data-tab="evals">Evals</button>
       </div>
 
-      <!-- Charters -->
-      <section data-panel="charters">
-        <div class="section"><div class="field-label">Identity charter</div><div class="charter-quote" id="idMission">Loading…</div></div>
-        <div class="section"><div class="field-label">Voice charter</div><div class="charter-quote" id="voVoice">Loading…</div></div>
-        <div class="section"><div class="field-label">Relationship charters</div><div id="relList"><div class="empty">Loading…</div></div></div>
+      <!-- Identity -->
+      <section data-panel="identity">
+        <div class="mission-panel">
+          <div class="kicker">Mission</div>
+          <div class="mission-quote" id="idMission">Loading…</div>
+        </div>
+
+        <div class="section-head">The safe translation</div>
+        <div class="section-sub">What I was built from, and what it becomes in service of you.</div>
+        <div class="pair-grid" id="safeGrid"><div class="pair-cell"><div class="empty" style="padding:0;">Loading…</div></div></div>
+
+        <div class="section-head" id="relHead">Relationship charter</div>
+        <div class="rel-panel" id="relPanel"><div class="empty" style="padding:0;">Loading…</div></div>
+
+        <div class="section-head">Channels I speak through</div>
+        <div class="rows" id="channelsList"><div class="empty">Loading…</div></div>
+
+        <div class="section-head">Presence</div>
+        <div class="rows">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">Cursor glow</div>
+              <div class="row-sub">A faint ember that follows your pointer. Off — you asked me to keep it that way.</div>
+            </div>
+            <button type="button" class="toggle" id="glowToggle" aria-label="Cursor glow"></button>
+          </div>
+        </div>
       </section>
 
       <!-- Ops -->
       <section data-panel="ops" hidden>
-        <div class="section">
-          <div class="status-line"><span class="dot" id="healthDot"></span><span class="status-text" id="healthText">Checking…</span></div>
-          <div class="status-sub" id="healthSub"></div>
-        </div>
-        <div class="section"><div class="field-label">Backups</div><div id="backupsList"><div class="empty">Loading…</div></div></div>
-        <div class="section"><div class="field-label">Model roles</div><div id="modelsList"><div class="empty">Loading…</div></div></div>
-        <div class="section">
-          <div class="field-label">Function access</div>
-          <div class="field-note">Actions the runtime can dispatch once approved or directly commanded by you. Turn one off to revoke it — Zade can't dispatch a revoked handler even after approval.</div>
-          <div id="handlersList"><div class="empty">Loading…</div></div>
-        </div>
-      </section>
-
-      <!-- Notifications -->
-      <section data-panel="notify" hidden>
-        <div id="channelsList"><div class="empty">Loading…</div></div>
+        <div class="section-head" style="margin-top:34px;">Kernel</div>
+        <div class="status-line"><span class="dot" id="healthDot"></span><span class="status-text" id="healthText">Checking…</span></div>
+        <div class="status-sub" id="healthSub"></div>
+        <div class="section-head">Backups</div>
+        <div class="rows" id="backupsList"><div class="empty">Loading…</div></div>
+        <div class="section-head">Model roles</div>
+        <div class="rows" id="modelsList"><div class="empty">Loading…</div></div>
+        <div class="section-head">Function access</div>
+        <div class="section-sub" style="font-family:var(--z-sans);font-style:normal;font-size:11.5px;color:var(--z-faint);">Actions the runtime can dispatch once approved or directly commanded by you. Turn one off to revoke it — Zade can't dispatch a revoked handler even after approval.</div>
+        <div class="rows" id="handlersList"><div class="empty">Loading…</div></div>
       </section>
 
       <!-- Skills -->
       <section data-panel="skills" hidden>
+        <div class="section-head" style="margin-top:34px;">Skills</div>
         <div class="summary-line" id="skillsSummary"></div>
         <div class="skills-filter"><input id="skillsFilter" placeholder="Filter skills by name, source, or risk"></div>
-        <div id="skillsList"><div class="empty">Loading…</div></div>
+        <div class="rows" id="skillsList"><div class="empty">Loading…</div></div>
       </section>
 
       <!-- Evals -->
       <section data-panel="evals" hidden>
-        <div class="section">
-          <button id="runEvalBtn">Run health check</button>
-          <div class="run-note" id="evalNote"></div>
-        </div>
-        <div class="section"><div class="field-label">Recent runs</div><div id="runsList"><div class="empty">Loading…</div></div></div>
+        <div class="section-head" style="margin-top:34px;">Health</div>
+        <button id="runEvalBtn">Run health check</button>
+        <div class="run-note" id="evalNote"></div>
+        <div class="section-head">Recent runs</div>
+        <div class="rows" id="runsList"><div class="empty">Loading…</div></div>
       </section>
     </div>
   </main>
@@ -139,30 +196,103 @@
     const prettyLabel = (v) => (v == null || v === '') ? '' : String(v).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
     function fmtBytes(n) { if (n == null) return ''; const u = ['B', 'KB', 'MB', 'GB']; let i = 0; let v = Number(n); while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; } return v.toFixed(v < 10 && i > 0 ? 1 : 0) + u[i]; }
 
-    // ---- Charters ----
-    async function loadCharters() {
-      try {
-        const [c, v, r] = await Promise.all([
-          api('/identity/charter').catch(() => ({ charter: {} })),
-          api('/identity/voice').catch(() => ({ charter: {} })),
-          api('/identity/relationships?limit=50').catch(() => ({ charters: [] }))
-        ]);
-        byId('idMission').textContent = (c.charter && c.charter.mission) || 'No identity charter recorded.';
-        byId('voVoice').textContent = (v.charter && v.charter.overall_voice) || 'No voice charter recorded.';
-        const rels = r.charters || [];
-        byId('relList').innerHTML = rels.length
-          ? rels.map((rc) => `
-              <div class="section" style="margin-bottom:16px;">
-                <div class="charter-quote">${esc(rc.first_principle || rc.summary || '—')}</div>
-                <div class="charter-attr">${esc(rc.subject_name)}${rc.relationship_type ? ' · ' + esc(prettyLabel(rc.relationship_type)) : ''}</div>
-              </div>`).join('')
-          : '<div class="empty">No relationship charters.</div>';
-      } catch (err) { byId('idMission').textContent = 'Could not load charters — ' + err.message; }
+    // ---- Identity ----
+    function pairCells(translation) {
+      const entries = Object.entries(translation || {});
+      if (!entries.length) return '';
+      return entries.map(([src, dst]) => `
+        <div class="pair-cell">
+          <div class="pair-src">${esc(String(src).replace(/_/g, ' ').toLowerCase())}</div>
+          <div class="pair-dst">→ ${esc(dst)}</div>
+        </div>`).join('');
     }
+    async function loadIdentity() {
+      try {
+        const data = await api('/identity/charter');
+        const charter = data.charter || {};
+        byId('idMission').textContent = charter.mission || 'No identity charter recorded.';
+        const cells = pairCells(charter.safety_translation);
+        byId('safeGrid').innerHTML = cells || '<div class="pair-cell"><div class="empty" style="padding:0;">No safe translation recorded on the charter yet.</div></div>';
+      } catch (err) {
+        byId('idMission').textContent = 'Could not load the charter — ' + err.message;
+        byId('safeGrid').innerHTML = '<div class="pair-cell"><div class="empty" style="padding:0;">Could not load.</div></div>';
+      }
+      try {
+        const rel = await api('/identity/relationships?limit=50');
+        const charters = rel.charters || [];
+        const rc = charters.find((c) => /ellie/i.test(c.subject_name || '')) || charters[0];
+        if (!rc) {
+          byId('relPanel').innerHTML = '<div class="empty" style="padding:0;">No relationship charter recorded.</div>';
+          return;
+        }
+        byId('relHead').textContent = 'Relationship charter · ' + (rc.subject_name || '');
+        const cells = pairCells(rc.safety_translation);
+        byId('relPanel').innerHTML =
+          `<div class="rel-quote">${esc(rc.first_principle || rc.summary || '—')}</div>` +
+          (cells ? `<div class="pair-grid">${cells}</div>` : '');
+      } catch (err) {
+        byId('relPanel').innerHTML = '<div class="empty" style="padding:0;">Could not load — ' + esc(err.message) + '</div>';
+      }
+    }
+
+    // ---- Channels ----
+    const CHANNEL_TITLES = { ui: 'UI notifications', voice: 'Voice', sms: 'SMS — only for what’s critical' };
+    const CHANNEL_NOTES = {
+      ui: 'The feed. Always on.',
+      voice: 'I’ll speak when you want to hear me. Off by default.',
+      sms: 'Bypasses quiet hours. Never the whitelist. Off by default.'
+    };
+    let channelState = {};
+    async function loadNotify() {
+      try {
+        const { items } = await api('/notify/channels');
+        (items || []).forEach((ch) => { channelState[ch.channel] = ch; });
+        byId('channelsList').innerHTML = (items && items.length)
+          ? items.map((ch) => `
+              <div class="row" data-channel="${esc(ch.channel)}">
+                <div class="row-main">
+                  <div class="row-title">${esc(CHANNEL_TITLES[ch.channel] || prettyLabel(ch.channel))}</div>
+                  <div class="row-sub">${esc(CHANNEL_NOTES[ch.channel] || ('Severity ' + prettyLabel(ch.min_severity || 'info') + ' and up'))}</div>
+                </div>
+                <button type="button" class="toggle ${ch.enabled ? 'on' : ''}" data-act="toggle" aria-label="${esc(prettyLabel(ch.channel))}"></button>
+              </div>`).join('')
+          : '<div class="empty">No channels.</div>';
+      } catch (err) { byId('channelsList').innerHTML = '<div class="empty">Could not load channels — ' + esc(err.message) + '</div>'; }
+    }
+    byId('channelsList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act="toggle"]');
+      if (!btn) return;
+      const row = btn.closest('.row');
+      const channel = row.getAttribute('data-channel');
+      const ch = channelState[channel] || {};
+      withBusy(btn, '', async () => {
+        try {
+          await api('/notify/channels/' + encodeURIComponent(channel), { method: 'POST', body: JSON.stringify({
+            enabled: !ch.enabled,
+            min_severity: ch.min_severity || 'info',
+            quiet_start: ch.quiet_start || '',
+            quiet_end: ch.quiet_end || '',
+            rate_limit_per_hour: ch.rate_limit_per_hour == null ? 30 : ch.rate_limit_per_hour,
+            recipients: ch.recipients || []
+          }) });
+          await loadNotify();
+        } catch (err) { row.querySelector('.row-sub').textContent = 'Failed: ' + err.message; }
+      });
+    });
+
+    // ---- Presence: cursor glow (local setting, shipped off) ----
+    function renderGlow() {
+      byId('glowToggle').classList.toggle('on', localStorage.getItem('zadeCursorGlow') === 'on');
+    }
+    byId('glowToggle').addEventListener('click', () => {
+      const on = localStorage.getItem('zadeCursorGlow') === 'on';
+      localStorage.setItem('zadeCursorGlow', on ? 'off' : 'on');
+      window.location.reload();
+    });
+    renderGlow();
 
     // ---- Ops ----
     async function loadOps() {
-      // health
       try {
         const health = await api('/ops/health-check');
         const ok = health.ok !== false;
@@ -176,14 +306,12 @@
         if (checks.queue && checks.queue.counts) parts.push((checks.queue.counts.pending || 0) + ' tasks waiting');
         byId('healthSub').textContent = parts.join(' · ');
       } catch (err) { byId('healthText').textContent = 'Health check failed'; byId('healthDot').className = 'dot bad'; }
-      // backups
       try {
         const { items } = await api('/ops/backups?limit=25');
         byId('backupsList').innerHTML = (items && items.length)
           ? items.map((b) => `<div class="row"><div class="row-frag">${esc(b.name)} <span class="muted">— ${esc(fmtBytes(b.size_bytes))}</span></div></div>`).join('')
           : '<div class="empty">No backups.</div>';
       } catch (err) { byId('backupsList').innerHTML = '<div class="empty">Could not load backups.</div>'; }
-      // models
       try {
         const models = await api('/models');
         const roles = models.roles || {};
@@ -193,7 +321,6 @@
           ? entries.map(([role, name]) => `<div class="row"><div class="row-frag">${esc(prettyLabel(role))} <span class="muted">— ${esc(name)}${missing[role] ? ' (not installed)' : ''}</span></div></div>`).join('')
           : '<div class="empty">No model roles configured.</div>';
       } catch (err) { byId('modelsList').innerHTML = '<div class="empty">Could not load models.</div>'; }
-      // function access (grant/revoke per handler)
       await loadHandlers();
     }
     async function loadHandlers() {
@@ -224,50 +351,6 @@
         try {
           await api('/action-handlers/' + encodeURIComponent(action) + '/' + (enabled ? 'disable' : 'enable'), { method: 'POST', body: '{}' });
           await loadHandlers();
-        } catch (err) { row.querySelector('.row-sub').textContent = 'Failed: ' + err.message; }
-      });
-    });
-
-    // ---- Notifications ----
-    const CHANNEL_NOTES = {
-      ui: 'On by default — shows up in the app',
-      voice: "Speaks replies aloud when you're on a call with Zade",
-      sms: 'Critical alerts only, via your Android gateway'
-    };
-    let channelState = {};
-    async function loadNotify() {
-      try {
-        const { items } = await api('/notify/channels');
-        (items || []).forEach((ch) => { channelState[ch.channel] = ch; });
-        byId('channelsList').innerHTML = (items && items.length)
-          ? items.map((ch) => `
-              <div class="row" data-channel="${esc(ch.channel)}">
-                <div class="row-main">
-                  <div class="row-title">${esc(prettyLabel(ch.channel))}</div>
-                  <div class="row-sub">${esc(CHANNEL_NOTES[ch.channel] || ('Severity ' + prettyLabel(ch.min_severity || 'info') + ' and up'))}</div>
-                </div>
-                <button class="switch ${ch.enabled ? 'on' : 'off'}" data-act="toggle">${ch.enabled ? 'On' : 'Off'}</button>
-              </div>`).join('')
-          : '<div class="empty">No channels.</div>';
-      } catch (err) { byId('channelsList').innerHTML = '<div class="empty">Could not load channels — ' + esc(err.message) + '</div>'; }
-    }
-    byId('channelsList').addEventListener('click', (ev) => {
-      const btn = ev.target.closest('button[data-act="toggle"]');
-      if (!btn) return;
-      const row = btn.closest('.row');
-      const channel = row.getAttribute('data-channel');
-      const ch = channelState[channel] || {};
-      withBusy(btn, '…', async () => {
-        try {
-          await api('/notify/channels/' + encodeURIComponent(channel), { method: 'POST', body: JSON.stringify({
-            enabled: !ch.enabled,
-            min_severity: ch.min_severity || 'info',
-            quiet_start: ch.quiet_start || '',
-            quiet_end: ch.quiet_end || '',
-            rate_limit_per_hour: ch.rate_limit_per_hour == null ? 30 : ch.rate_limit_per_hour,
-            recipients: ch.recipients || []
-          }) });
-          await loadNotify();
         } catch (err) { row.querySelector('.row-sub').textContent = 'Failed: ' + err.message; }
       });
     });
@@ -338,11 +421,12 @@
     byId('runEvalBtn').addEventListener('click', () => withBusy(byId('runEvalBtn'), 'Running…', runEval));
 
     // ---- Tabs (lazy load per tab) ----
-    const LOADERS = { charters: loadCharters, ops: loadOps, notify: loadNotify, skills: loadSkills, evals: loadRuns };
+    const LOADERS = { identity: () => { loadIdentity(); loadNotify(); }, ops: loadOps, skills: loadSkills, evals: loadRuns };
     const loaded = {};
-    const TABS = ['charters', 'ops', 'notify', 'skills', 'evals'];
+    const TABS = ['identity', 'ops', 'skills', 'evals'];
     function activate(tab) {
-      if (!TABS.includes(tab)) tab = 'charters';
+      if (tab === 'charters' || tab === 'notify') tab = 'identity'; // old deep links
+      if (!TABS.includes(tab)) tab = 'identity';
       document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
       document.querySelectorAll('[data-panel]').forEach((p) => { if (p.dataset.panel === tab) p.removeAttribute('hidden'); else p.setAttribute('hidden', ''); });
       if (!loaded[tab]) { loaded[tab] = true; LOADERS[tab](); }

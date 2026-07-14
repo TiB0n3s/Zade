@@ -6,40 +6,50 @@
   <title>Zade — Memory</title>
   <style>
     /* Page-specific layout only; colors/type/components from /ui/zade-ui.css.
-       Same scope as before, de-densified: write & search on one tab, connectors
-       on another, hairline rows instead of nested boxes. */
+       Everything he holds: ask what he remembers, what he holds about Ellie
+       (charter lines — real, from the identity layer), the doors he reads. */
     * { box-sizing: border-box; }
-    h1 { margin: 0 0 20px; }
-    /* prototype controls page inset via .page; drop main's own centered padding */
+    h1 { margin: 0; font-size: 40px; line-height: 1.05; font-weight: 500; }
     body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
-    .page { padding: 44px 48px 60px; max-width: 820px; }
-    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
+    .page { padding: 46px 48px 96px; max-width: 980px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 12px; }
+    .section-head { font-size: 11px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-muted); margin: 44px 0 16px; }
 
-    .tabs { display: flex; gap: 6px; margin-bottom: 24px; flex-wrap: wrap; }
-    .tabs button { border-radius: 999px; padding: 7px 15px; font-size: 12.5px; min-height: 0; border: 1px solid var(--z-line-strong); color: var(--z-muted); background: transparent; }
-    .tabs button.active { border-color: var(--z-accent); background: rgba(194,160,106,0.10); color: var(--z-text); }
-    [data-panel][hidden] { display: none; }
+    .searchbar { display: flex; gap: 10px; max-width: 680px; margin-top: 32px; }
+    .searchbar input {
+      flex: 1; background: var(--z-well); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px;
+      padding: 12px 15px; color: var(--z-ink-hi); font-family: var(--z-sans); font-size: 14px;
+    }
+    .searchbar button { border-radius: 8px; padding: 11px 18px; min-height: 0; }
+    .result { border-top: 1px solid var(--z-line-soft); padding: 12px 2px; max-width: 680px; }
+    .result:first-child { margin-top: 14px; }
+    .result-quote { font-size: 13px; color: var(--z-ink); line-height: 1.5; }
+    .result-src { color: var(--z-faint); }
+    .result-held { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .forget-btn { min-height: 26px; padding: 4px 11px; font-size: 11px; flex: none; }
 
-    .section { margin-bottom: 24px; }
-    .field-label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 10px; }
+    .metric-row { margin-top: 24px; max-width: 680px; }
+
+    .hold-row { padding: 15px 2px; border-top: 1px solid var(--z-line); max-width: 760px; }
+    .hold-row:last-child { border-bottom: 1px solid var(--z-line); }
+    .hold-text { font-size: 13.5px; color: var(--z-ink-hi); font-weight: 500; }
+    .hold-meta { font-size: 12px; color: var(--z-faint); margin-top: 4px; }
+
+    .stack { max-width: 680px; }
     .stack input, .stack textarea { width: 100%; margin-bottom: 8px; border-radius: 6px; }
     .stack textarea { resize: vertical; }
     .save-note { font-size: 11.5px; margin-top: 4px; min-height: 14px; }
     .save-note.good { color: var(--z-ok-text); }
     .save-note.err { color: var(--z-bad-text); }
 
-    .result { border-top: 1px solid var(--z-line-soft); padding: 12px 2px; }
-    .result-quote { font-size: 13px; color: var(--z-ink); line-height: 1.5; }
-    .result-src { color: var(--z-faint); }
-    .empty { color: var(--z-faint); font-size: 12.5px; padding: 12px 2px; }
-
-    .row { padding: 13px 2px; border-top: 1px solid var(--z-line-soft); display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .row { padding: 13px 2px; border-top: 1px solid var(--z-line-soft); display: flex; justify-content: space-between; align-items: center; gap: 14px; max-width: 760px; }
     .row-title { font-size: 13.5px; color: var(--z-ink-hi); }
-    .row-sub { font-size: 11.5px; color: var(--z-faint); }
+    .row-sub { font-size: 11.5px; color: var(--z-faint); margin-top: 2px; }
     .row-actions { display: flex; gap: 6px; flex: none; }
     .row-actions button { min-height: 26px; padding: 4px 11px; font-size: 11px; }
     .pill.disabled { color: var(--z-muted); background: rgba(255,255,255,0.05); }
-    @media (max-width: 720px) { .page { padding: 26px 20px 48px; } }
+    .empty { color: var(--z-faint); font-size: 12.5px; padding: 12px 2px; }
+    @media (max-width: 720px) { .page { padding: 26px 20px 64px; } h1 { font-size: 32px; } }
   </style>
   <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
@@ -47,40 +57,37 @@
   <main>
     <div class="page">
       <div class="kicker">Memory</div>
-      <h1>What Zade remembers</h1>
+      <h1>I remember everything.</h1>
+      <div class="zade-page-sub">Every word you’ve given me lives here — hot on this machine, cold in the archive, none of it anywhere else. It’s yours. You can make me forget any of it, anytime.</div>
 
-      <div class="tabs">
-        <button type="button" data-tab="write" class="active">Write &amp; search</button>
-        <button type="button" data-tab="connectors">Connectors · <span id="stagedCount">0</span></button>
+      <div class="searchbar">
+        <input id="searchInput" placeholder="Ask what I remember…" autocomplete="off">
+        <button type="button" id="searchBtn">Search</button>
+      </div>
+      <div id="searchResults"></div>
+
+      <div class="metric-row">
+        <div class="metric"><strong id="mHot">—</strong><span>Hot memories</span></div>
+        <div class="metric"><strong id="mCold">—</strong><span>Cold archive</span></div>
+        <div class="metric"><strong>100%</strong><span>On your machine</span></div>
       </div>
 
-      <!-- Write & search -->
-      <section data-panel="write">
-        <div class="section stack">
-          <div class="field-label">Write a memory</div>
-          <input id="mTitle" placeholder="What should Zade remember?">
-          <textarea id="mContent" rows="2" placeholder="Detail (optional)"></textarea>
-          <button id="saveBtn" style="border-radius:6px;">Save</button>
-          <div class="save-note" id="saveNote"></div>
-        </div>
-        <div class="section stack">
-          <div class="field-label">Search memory</div>
-          <input id="searchInput" placeholder="Search by meaning, not just keywords">
-          <div id="searchResults"></div>
-        </div>
-      </section>
+      <div class="section-head">What I hold about you</div>
+      <div id="holdList"><div class="empty">Loading…</div></div>
 
-      <!-- Connectors -->
-      <section data-panel="connectors" hidden>
-        <div class="section">
-          <div class="field-label">Connected sources</div>
-          <div id="connectorsList"><div class="empty">Loading…</div></div>
-        </div>
-        <div class="section">
-          <div class="field-label">Staged — nothing here is used until you import it</div>
-          <div id="stagedList"><div class="empty">Loading…</div></div>
-        </div>
-      </section>
+      <div class="section-head">Tell me something to hold</div>
+      <div class="stack">
+        <input id="mTitle" placeholder="What should I remember?">
+        <textarea id="mContent" rows="2" placeholder="Detail (optional)"></textarea>
+        <button type="button" id="saveBtn" style="border-radius:6px;">Hold it</button>
+        <div class="save-note" id="saveNote"></div>
+      </div>
+
+      <div class="section-head">The doors I read</div>
+      <div id="connectorsList"><div class="empty">Loading…</div></div>
+
+      <div class="section-head">Staged — nothing here is used until you import it</div>
+      <div id="stagedList"><div class="empty">Loading…</div></div>
     </div>
   </main>
 
@@ -101,6 +108,74 @@
     }
     const prettyLabel = (v) => (v == null || v === '') ? '' : String(v).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
+    // ---- What I hold about you — real charter lines, never invented ----
+    async function loadHold() {
+      const rows = [];
+      try {
+        const rel = await api('/identity/relationships?limit=10').catch(() => ({ charters: [] }));
+        const charter = (rel.charters || [])[0] || {};
+        if (charter.first_principle) rows.push({ text: charter.first_principle, meta: 'charter · you told me this on day one' });
+        (charter.boundaries || []).forEach((b) => rows.push({ text: b, meta: 'boundary · a line I will not cross' }));
+        const idc = await api('/identity/charter').catch(() => ({ charter: {} }));
+        ((idc.charter || {}).personal_standards || []).slice(0, 4).forEach((s) => rows.push({ text: s, meta: 'standard · how I hold myself for you' }));
+      } catch (e) { /* render what we have */ }
+      byId('holdList').innerHTML = rows.length
+        ? rows.map((r) => `<div class="hold-row"><div class="hold-text">${esc(r.text)}</div><div class="hold-meta">${esc(r.meta)}</div></div>`).join('')
+        : '<div class="empty">Nothing on file yet. Talk to me — I keep what matters.</div>';
+    }
+
+    // ---- Search: held memories (forgettable) + semantic archive chunks ----
+    let searchTimer = null;
+    async function runSearch() {
+      const query = byId('searchInput').value.trim();
+      const box = byId('searchResults');
+      if (!query) { box.innerHTML = ''; return; }
+      try {
+        const [held, semantic] = await Promise.all([
+          api('/memory/search', { method: 'POST', body: JSON.stringify({ query, limit: 5 }) }).catch(() => ({ matches: [] })),
+          api('/memory/semantic-search', { method: 'POST', body: JSON.stringify({ query, limit: 8, mode: 'hybrid' }) }),
+        ]);
+        const rows = (held.matches || []).map(renderMemoryMatch).concat((semantic.matches || []).map(renderMatch));
+        box.innerHTML = rows.length ? rows.join('') : '<div class="empty">Nothing surfaced for that. Ask me another way.</div>';
+      } catch (err) { box.innerHTML = '<div class="empty">Search failed — ' + esc(err.message) + '</div>'; }
+    }
+    function renderMatch(m) {
+      const quote = m.content || m.text || m.excerpt || m.title || m.document_title || '(no text)';
+      const src = [prettyLabel(m.kind), prettyLabel(m.source), m.source_uri].filter(Boolean).join(', ');
+      return `<div class="result"><span class="result-quote">"${esc(quote)}"${src ? ` <span class="result-src">— from ${esc(src)}</span>` : ''}</span></div>`;
+    }
+    function renderMemoryMatch(m) {
+      const quote = [m.title, m.content].filter(Boolean).join(' — ') || '(no text)';
+      const src = ['held memory', prettyLabel(m.kind)].filter(Boolean).join(' · ');
+      return `<div class="result result-held">
+        <span class="result-quote">"${esc(quote)}" <span class="result-src">— ${esc(src)}</span></span>
+        <button type="button" class="secondary forget-btn" data-forget="${esc(m.id)}">Forget</button>
+      </div>`;
+    }
+    byId('searchResults').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-forget]');
+      if (!btn) return;
+      const row = btn.closest('.result');
+      withBusy(btn, '…', async () => {
+        try {
+          await api('/memory/' + Number(btn.dataset.forget), { method: 'DELETE' });
+          row.innerHTML = '<span class="result-src">Forgotten. Gone from this machine — I don’t keep copies.</span>';
+          loadStats();
+        } catch (err) {
+          row.insertAdjacentHTML('beforeend', `<span class="result-src"> — couldn’t forget: ${esc(err.message)}</span>`);
+        }
+      });
+    });
+
+    // ---- Metric strip: hot rows here, cold documents in the archive ----
+    async function loadStats() {
+      try {
+        const stats = await api('/memory/stats');
+        byId('mHot').textContent = stats.hot_memories;
+        byId('mCold').textContent = stats.cold_documents;
+      } catch (e) { /* leave the dashes */ }
+    }
+
     // ---- Write ----
     async function saveMemory() {
       const note = byId('saveNote'); note.textContent = ''; note.className = 'save-note';
@@ -108,28 +183,11 @@
       const content = byId('mContent').value.trim();
       if (!title && !content) { note.textContent = 'Write something first.'; note.className = 'save-note err'; return; }
       try {
-        const result = await api('/memory', { method: 'POST', body: JSON.stringify({ kind: 'note', title, content, source: 'local' }) });
-        note.textContent = 'Saved — memory #' + result.memory_id + '.'; note.className = 'save-note good';
+        const result = await api('/memory', { method: 'POST', body: JSON.stringify({ kind: 'note', title, content: content || title, source: 'local' }) });
+        note.textContent = 'Held — memory #' + result.memory_id + '. It doesn’t leave this machine.'; note.className = 'save-note good';
         byId('mTitle').value = ''; byId('mContent').value = '';
+        loadStats();
       } catch (err) { note.textContent = 'Save failed: ' + err.message; note.className = 'save-note err'; }
-    }
-
-    // ---- Search ----
-    let searchTimer = null;
-    async function runSearch() {
-      const query = byId('searchInput').value.trim();
-      const box = byId('searchResults');
-      if (!query) { box.innerHTML = ''; return; }
-      try {
-        const result = await api('/memory/semantic-search', { method: 'POST', body: JSON.stringify({ query, limit: 8, mode: 'hybrid' }) });
-        const matches = result.matches || [];
-        box.innerHTML = matches.length ? matches.map(renderMatch).join('') : '<div class="empty">No matches.</div>';
-      } catch (err) { box.innerHTML = '<div class="empty">Search failed — ' + esc(err.message) + '</div>'; }
-    }
-    function renderMatch(m) {
-      const quote = m.content || m.text || m.excerpt || m.title || m.document_title || '(no text)';
-      const src = [prettyLabel(m.kind), prettyLabel(m.source), m.source_uri].filter(Boolean).join(', ');
-      return `<div class="result"><span class="result-quote">"${esc(quote)}"${src ? ` <span class="result-src">— from ${esc(src)}</span>` : ''}</span></div>`;
     }
 
     // ---- Connectors ----
@@ -138,7 +196,7 @@
         const { items } = await api('/connectors?limit=100');
         byId('connectorsList').innerHTML = (items && items.length)
           ? items.map(renderConnector).join('')
-          : '<div class="empty">No connected sources.</div>';
+          : '<div class="empty">No doors connected. Everything I know, you told me yourself.</div>';
       } catch (err) { byId('connectorsList').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>'; }
     }
     function renderConnector(c) {
@@ -158,8 +216,7 @@
       try {
         const { items } = await api('/connectors/items?status=candidate&limit=100');
         const list = items || [];
-        byId('stagedCount').textContent = list.length;
-        byId('stagedList').innerHTML = list.length ? list.map(renderStaged).join('') : '<div class="empty">Nothing staged.</div>';
+        byId('stagedList').innerHTML = list.length ? list.map(renderStaged).join('') : '<div class="empty">Nothing staged. When a door brings something in, it waits here for your word.</div>';
       } catch (err) { byId('stagedList').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>'; }
     }
     function renderStaged(item) {
@@ -192,21 +249,13 @@
       });
     });
 
-    // ---- Tabs ----
-    const TABS = ['write', 'connectors'];
-    function activate(tab) {
-      if (!TABS.includes(tab)) tab = 'write';
-      document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-      document.querySelectorAll('[data-panel]').forEach((p) => { if (p.dataset.panel === tab) p.removeAttribute('hidden'); else p.setAttribute('hidden', ''); });
-    }
-    document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.tab; activate(b.dataset.tab); }));
-    window.addEventListener('hashchange', () => activate(location.hash.replace('#', '')));
-    activate(location.hash.replace('#', ''));
-
-    byId('saveBtn').addEventListener('click', () => withBusy(byId('saveBtn'), 'Saving…', saveMemory));
+    byId('saveBtn').addEventListener('click', () => withBusy(byId('saveBtn'), 'Holding…', saveMemory));
+    byId('searchBtn').addEventListener('click', () => withBusy(byId('searchBtn'), '…', runSearch));
     byId('searchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
     byId('searchInput').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 450); });
 
+    loadHold();
+    loadStats();
     loadConnectors();
     loadStaged();
   </script>

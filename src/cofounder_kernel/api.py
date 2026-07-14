@@ -198,6 +198,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         conversations=conversations,
         critic=critic,
         trading_bot=trading_bot,
+        approvals=approvals,
     )
     teaching = DeepThoughtTeachingBridge(config=cfg, db=db, founder=founder, ingestion=ingestion)
     experiments = ExperimentService(config=cfg, db=db, founder=founder, ingestion=ingestion)
@@ -235,6 +236,10 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         config=cfg, db=db, founder=founder, ingestion=ingestion, work_queue=work_queue, bus=bus
     )
     research.register_into(handlers)
+    # Let the chat runtime route founder research commands into the gated research
+    # queue. Injected here because ResearchService is built after the runtime (it
+    # needs the notification bus, which is built later).
+    runtime.research = research
 
     app = FastAPI(title=f"{cfg.identity.name} Local AI Co-founder Kernel", version="0.1.0")
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
@@ -1718,6 +1723,22 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         result = tools.call("memory.search", payload.model_dump(), actor="api")
         if not result.ok:
             raise HTTPException(status_code=400, detail=_tool_error(result.data))
+        return result.data
+
+    @app.get("/memory/stats")
+    def memory_stats() -> dict[str, Any]:
+        """Counts backing the Memory surface: hot = memory rows on this machine,
+        cold = ingested documents (and their chunks) in the archive."""
+        return db.memory_stats()
+
+    @app.delete("/memory/{memory_id}")
+    def forget_memory(memory_id: int) -> dict[str, Any]:
+        """Founder-commanded forget: removes the memory row and its FTS entry.
+        Runs through the tool registry so it is audited at L1_MEMORY_WRITE."""
+        result = tools.call("memory.forget", {"memory_id": memory_id}, actor="api")
+        if not result.ok:
+            status_code = 404 if result.data.get("error") == "memory_not_found" else 400
+            raise HTTPException(status_code=status_code, detail=_tool_error(result.data))
         return result.data
 
     @app.post("/ingest/text")

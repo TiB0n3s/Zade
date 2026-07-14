@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade — Research</title>
+  <style>
+    /* Page-specific layout only; colors/type/components from /ui/zade-ui.css. */
+    * { box-sizing: border-box; }
+    h1 { margin: 0; font-size: 38px; line-height: 1.05; font-weight: 500; }
+    body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
+    .page { padding: 46px 48px 96px; max-width: 860px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 12px; }
+
+    .section { margin-bottom: 26px; }
+    .section:first-of-type { margin-top: 32px; }
+    .field-label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 10px; }
+    .stack input, .stack textarea { width: 100%; margin-bottom: 8px; border-radius: 6px; }
+    .stack textarea { resize: vertical; }
+    .inline { display: flex; gap: 8px; align-items: center; }
+
+    .topic { padding: 12px 2px; border-top: 1px solid var(--z-line-soft); }
+    .topic-q { font-size: 13.5px; color: var(--z-ink-hi); }
+    .topic-sub { font-size: 11.5px; color: var(--z-faint); margin-top: 3px; }
+    .topic-score { color: var(--z-accent-2, #d07d74); }
+    .empty { color: var(--z-faint); font-size: 12.5px; padding: 12px 2px; }
+    .note { font-size: 11.5px; margin-top: 6px; min-height: 14px; }
+    .note.good { color: var(--z-ok-text); }
+    .note.err { color: var(--z-bad-text); }
+    .queued { border-left: 2px solid var(--z-accent-dim, rgba(176,71,63,0.4)); padding: 10px 14px; margin-top: 12px; font-size: 12.5px; color: var(--z-muted); }
+    .queued a { color: var(--z-accent-2, #d07d74); }
+    .guard { font-size: 11px; color: var(--z-faint); margin-top: 4px; }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body data-zade-type="sans">
+  <main>
+    <div class="page">
+      <div class="kicker">Ops · Research</div>
+      <h1>While you sleep, I dig.</h1>
+      <div class="zade-page-sub">Deep, patient research runs on the local models. I chase every thread to its end, grade what I find, and surface only what earns your attention.</div>
+
+      <div class="section">
+        <div class="inline">
+          <div class="field-label" style="margin:0;">Open research topics (from evidence gaps)</div>
+          <button id="daydreamBtn" class="secondary" style="min-height:26px;padding:4px 11px;font-size:11px;">Daydream now</button>
+        </div>
+        <div id="topicsOut"><div class="empty">Loading…</div></div>
+        <div class="note" id="daydreamNote"></div>
+      </div>
+
+      <div class="section stack">
+        <div class="field-label">Run research (queues an external fetch)</div>
+        <input id="runTopic" placeholder="Research question / topic">
+        <textarea id="runUrls" rows="3" placeholder="Source URLs, one per line (https only, public hosts)"></textarea>
+        <button id="runBtn">Queue research for approval</button>
+        <div class="note" id="runNote"></div>
+        <div class="queued" id="runBox" hidden></div>
+        <div class="guard">Fetched pages are salience-scored against the topic and filed as graded web_research evidence + ingested documents.</div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    (async () => { if (token()) return; try { const r = await fetch('/session/token'); if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); } } catch (e) {} })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    async function withBusy(btn, label, fn) {
+      const original = btn.textContent; btn.disabled = true; btn.textContent = label;
+      try { return await fn(); } finally { btn.disabled = false; btn.textContent = original; }
+    }
+
+    function renderTopic(t) {
+      const question = t.question || t.topic || t.title || '(topic)';
+      const source = t.assumption_title || t.assumption || t.source || '';
+      const score = t.score != null ? `<span class="topic-score">score ${esc(t.score)}</span>` : '';
+      return `<div class="topic">
+        <div class="topic-q">${esc(question)}</div>
+        <div class="topic-sub">${[score, source ? 'from: ' + esc(source) : ''].filter(Boolean).join(' · ')}</div>
+      </div>`;
+    }
+
+    async function loadTopics() {
+      const out = byId('topicsOut');
+      try {
+        const result = await api('/research/topics?limit=8');
+        const topics = result.topics || [];
+        out.innerHTML = topics.length ? topics.map(renderTopic).join('') : '<div class="empty">No open gaps — nothing to research right now.</div>';
+      } catch (err) { out.innerHTML = '<div class="empty">Could not load topics — ' + esc(err.message) + '</div>'; }
+    }
+
+    async function daydream() {
+      const note = byId('daydreamNote'); note.textContent = ''; note.className = 'note';
+      try {
+        const result = await api('/research/daydream', { method: 'POST', body: JSON.stringify({ limit: 3, notify: true }) });
+        const count = (result.topics || result.surfaced || []).length ?? 0;
+        note.textContent = 'Daydream complete — ' + (result.notified ?? count) + ' topic(s) surfaced as notifications. Local only, nothing fetched.';
+        note.className = 'note good';
+        await loadTopics();
+      } catch (err) { note.textContent = 'Daydream failed: ' + err.message; note.className = 'note err'; }
+    }
+
+    async function queueRun() {
+      const note = byId('runNote'); note.textContent = ''; note.className = 'note';
+      const box = byId('runBox'); box.hidden = true;
+      const topic = byId('runTopic').value.trim();
+      const urls = byId('runUrls').value.split('\n').map((u) => u.trim()).filter(Boolean);
+      if (!topic || !urls.length) { note.textContent = 'Topic and at least one URL are required.'; note.className = 'note err'; return; }
+      try {
+        const result = await api('/research/run', { method: 'POST', body: JSON.stringify({ topic, urls, create_evidence: true }) });
+        note.textContent = 'Queued.'; note.className = 'note good';
+        box.hidden = false;
+        box.innerHTML = `Work item <strong>#${esc(result.work_item_id ?? result.id ?? '?')}</strong> is waiting in ` +
+          `<a href="/ui/approvals.html">Approvals</a> — approve, then dispatch with the typed phrase to fetch. ` +
+          `<div style="margin-top:6px;">${esc(result.note || '')}</div>`;
+      } catch (err) { note.textContent = 'Queue failed: ' + err.message; note.className = 'note err'; }
+    }
+
+    byId('daydreamBtn').addEventListener('click', () => withBusy(byId('daydreamBtn'), 'Daydreaming…', daydream));
+    byId('runBtn').addEventListener('click', () => withBusy(byId('runBtn'), 'Queuing…', queueRun));
+
+    loadTopics();
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

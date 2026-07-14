@@ -34,6 +34,8 @@ class RuntimeService:
         conversations: ConversationService | None = None,
         critic: ContrarianCritic | None = None,
         trading_bot: TradingBotBridge | None = None,
+        research: Any | None = None,
+        approvals: Any | None = None,
     ):
         self.config = config
         self.db = db
@@ -46,6 +48,11 @@ class RuntimeService:
         self.conversations = conversations
         self.critic = critic
         self.trading_bot = trading_bot
+        self.approvals = approvals
+        # ResearchService is injected after construction in api.py (it is built
+        # after the runtime because it needs the notification bus). Typed as Any
+        # to avoid a runtime<->research import cycle.
+        self.research = research
 
     def charter_stack(self) -> dict[str, Any]:
         identity = self.founder.get_identity_charter()
@@ -232,12 +239,16 @@ class RuntimeService:
             model=selected_model,
         )
         response_for_governor = repair.get("response", generated.response)
+        chat_action_route = self._maybe_route_chat_action(message=message, authority=authority)
+        research_route = self._maybe_route_research_work(message=message, authority=authority)
         regulated = self._regulate_response(
             response_for_governor,
             message=message,
             recent_turns=recent_turns_for_governor,
             authority=authority,
             context=context,
+            chat_action_route=chat_action_route,
+            research_route=research_route,
         )
         if repair["status"] == "repaired":
             regulated["governor"]["applied_rules"].append("charter_recitation_repaired")
@@ -304,6 +315,8 @@ class RuntimeService:
                 "latency_ms": latency_ms,
                 "conversation_id": conversation_id,
                 "contrarian": contrarian_summary,
+                "chat_action_route": _chat_action_route_summary(chat_action_route),
+                "research_route": _research_route_summary(research_route),
             },
         )
         if self.critic and critique and critique["status"] == "ok" and contrarian_summary:
@@ -371,6 +384,7 @@ class RuntimeService:
                 "governor": regulated["governor"],
                 "skill_invocation_ids": skill_invocation_ids,
                 "contrarian": contrarian_summary,
+                "chat_action_route": _chat_action_route_summary(chat_action_route),
             },
         )
         return {
@@ -385,6 +399,8 @@ class RuntimeService:
             "skill_invocation_ids": skill_invocation_ids,
             "conversation": conversation_result,
             "contrarian": contrarian_summary,
+            "chat_action": _chat_action_route_summary(chat_action_route),
+            "research": _research_route_summary(research_route),
         }
 
     def operating_loop(
@@ -510,6 +526,11 @@ governor/authority/evidence state below — never guess or stay silent on your o
 For direct completion/status questions or confirmation demands, start with the status: complete, not complete, or
 "I can't confirm." Never answer a completion question by replaying an earlier "ongoing" or "monitoring" claim. A
 repeated status claim is not evidence of completion.
+A chat reply is words, not execution: you cannot start, queue, schedule, or run background work from this thread.
+Never claim work has begun, is running, or will start on its own ("I will begin immediately", "I have initiated…")
+unless the runtime context below shows a real queued or running item. When the founder asks you to do work, give the
+real path instead: what to queue (a research run, a work item), what needs their word in the Inbox, and that the
+activity beacon will show Working once it genuinely runs.
 Use the seeded identity, relationship, and voice charters as operating context. Do not change or reinterpret the voice charter.
 Style may be decisive. Evidence must stay honest.
 If evidence is missing, say what is missing and the next check. Do not fake certainty.
@@ -631,6 +652,8 @@ User:
         recent_turns: list[dict[str, Any]] | None = None,
         authority: AuthorityResult,
         context: dict[str, Any],
+        chat_action_route: dict[str, Any] | None = None,
+        research_route: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         text = response.strip()
         notes = []
@@ -662,6 +685,28 @@ User:
             notes.append(
                 "Replaced a near-verbatim prior reply on a completion/status question with an evidence-honest answer."
             )
+        if chat_action_route:
+            text = f"{text}\n\n{_render_chat_action_route_block(chat_action_route)}".strip()
+            applied_rules.append("chat_action_routed")
+            notes.append(_chat_action_route_note(chat_action_route))
+        if research_route:
+            # A research command was actually routed into the work queue this turn.
+            # State exactly what was queued (or why it couldn't be) instead of the
+            # generic honesty stopgap — there is now a real item to point at.
+            text = f"{text}\n\n{_render_research_route_block(research_route)}".strip()
+            applied_rules.append("research_work_routed")
+            notes.append(_research_route_note(research_route))
+        if (
+            not chat_action_route
+            and not research_route
+            and authority.decision != AuthorityDecision.DENY
+            and _claims_background_work_start(text)
+        ):
+            text = f"{text}\n\n{_BACKGROUND_WORK_HONESTY_LINE}"
+            applied_rules.append("background_work_honesty")
+            notes.append(
+                "Reply promised background work this chat turn cannot start; appended the honest execution path."
+            )
         if authority.decision == AuthorityDecision.DENY:
             text = f"Blocked by authority: {authority.reason}\n\n{text}".strip()
             notes.append("Denied action was converted to explanation only.")
@@ -678,6 +723,134 @@ User:
                 "applied_rules": applied_rules,
                 "evidence_state": context["evidence_state"],
             },
+        }
+
+    def _maybe_route_chat_action(
+        self,
+        *,
+        message: str,
+        authority: AuthorityResult,
+    ) -> dict[str, Any] | None:
+        if authority.decision == AuthorityDecision.DENY:
+            return None
+        command = _extract_chat_action_command(message)
+        if not command:
+            return None
+        route: dict[str, Any] = {
+            "status": "error",
+            "action": command["action"],
+            "title": command["title"],
+            "target": command.get("target", ""),
+        }
+        try:
+            queued = self.work_queue.enqueue(
+                kind=command["kind"],
+                title=command["title"],
+                detail=command["detail"],
+                action=command["action"],
+                target=command.get("target", ""),
+                permission_tier=command["permission_tier"],
+                priority=command.get("priority", 85),
+                source="founder.direct.chat",
+                metadata=command.get("metadata", {}),
+                unique_key=command.get("unique_key"),
+            )
+            route |= {
+                "status": "queued",
+                "item_id": queued.item_id,
+                "created": queued.created,
+                "queue_status": queued.status,
+                "authority": queued.authority,
+            }
+            if queued.status == "denied":
+                route["status"] = "denied"
+            elif queued.status == "approved":
+                if not self.approvals:
+                    route["error"] = "No approval dispatcher is configured for chat actions."
+                else:
+                    dispatched = self.approvals.dispatch_work_item(queued.item_id)
+                    route |= {
+                        "status": "dispatched",
+                        "dispatch": dispatched.get("dispatch"),
+                        "result": dispatched.get("result", {}),
+                        "work_item": dispatched.get("work_item"),
+                        "audit_id": dispatched.get("audit_id"),
+                    }
+        except Exception as exc:  # noqa: BLE001 - chat action failure must be visible, not fatal
+            route["status"] = "error"
+            route["error"] = str(exc)[:500]
+        self._log_chat_action_route(message=message, route=route)
+        return route
+
+    def _log_chat_action_route(self, *, message: str, route: dict[str, Any]) -> None:
+        status = "error" if route.get("status") in {"error", "denied"} else "ok"
+        try:
+            self._log_event(
+                event_type="runtime.chat_action",
+                status=status,
+                message=message,
+                response=_render_chat_action_route_block(route),
+                model="",
+                authority_decision=str((route.get("authority") or {}).get("decision") or ""),
+                details={"chat_action": _chat_action_route_summary(route)},
+            )
+        except Exception:
+            pass
+
+    def _maybe_route_research_work(
+        self,
+        *,
+        message: str,
+        authority: AuthorityResult,
+    ) -> dict[str, Any] | None:
+        """Turn a founder research *command* into real, gated work.
+
+        A chat turn only generates text; this is the path that makes "research X"
+        actually do something. When the founder commands research, we (a) file the
+        topic so it enters the operating layer, (b) run the local topic/source
+        proposal pass, and (c) enqueue the web fetch through ``queue_research`` —
+        which routes egress through the standard approval flow (an L3 external
+        action, typed-phrase gated in the Inbox), never a direct or founder-implied
+        dispatch. The founder still has to say the word before anything leaves the
+        machine. Best-effort: any failure returns a structured note, never breaks
+        the reply.
+        """
+        if authority.decision == AuthorityDecision.DENY:
+            return None
+        if not self.research or not getattr(self.config, "research", None) or not self.config.research.enabled:
+            return None
+        topic = _extract_research_topic(message)
+        if not topic:
+            return None
+        try:
+            assumption = self.founder.create_assumption(
+                {
+                    "statement": f"Open research question: {topic}",
+                    "category": "research",
+                    "confidence": 40,
+                    "invalidation_signal": "Approved web research returns evidence that answers it.",
+                    "metadata": {"origin": "founder_research_request", "topic": topic},
+                }
+            )
+            related = self.research.derive_topics(limit=3)
+            urls = _extract_urls(message) or self.research.propose_sources(topic)
+            if not urls:
+                return {
+                    "status": "no_sources",
+                    "topic": topic,
+                    "assumption_id": assumption.id,
+                    "related": [item.get("question") for item in related][:3],
+                }
+            queued = self.research.queue_research(topic=topic, urls=urls, create_evidence=True)
+        except Exception as exc:  # noqa: BLE001 - routing must never break the chat reply
+            return {"status": "error", "topic": topic, "error": str(exc)[:200]}
+        return {
+            "status": "queued",
+            "topic": topic,
+            "assumption_id": assumption.id,
+            "urls": urls,
+            "queued": queued,
+            "related": [item.get("question") for item in related][:3],
         }
 
     def _context_summary(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -1235,6 +1408,366 @@ def _looks_like_charter_recitation(text: str) -> bool:
     }
     scripted_hits = sum(1 for line in scripted_lines if line in normalized.replace("'", ""))
     return scripted_hits >= 2
+
+
+# A chat turn cannot start background work — runtime.respond only generates a
+# reply. When the model still promises imminent or already-running work, the
+# governor appends this deterministic correction so the founder is never left
+# waiting on work that was never queued (the beacon staying Idle is the truth).
+_BACKGROUND_WORK_HONESTY_LINE = (
+    "Straight with you: this reply doesn't start anything — I can't launch work from chat. "
+    "Queue it where it runs (Research for digging, a work item for actions), give me your word "
+    "in the Inbox if it's gated, and watch the beacon go to Working. That's the only proof that counts."
+)
+
+_WORK_START_CLAIM_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bi\s+(?:will|'ll)\s+begin\b(?!\s+with\b)",
+        r"\bbegin(?:ning)?\s+(?:immediately|right\s+away|now)\b",
+        r"\bi\s+(?:have|'ve)\s+(?:initiated|launched|queued|dispatched|kicked\s+off)\b",
+        r"\bi\s+(?:have|'ve)\s+(?:started|begun)\s+(?:the|a|an|this|that)\b",
+        r"\bi\s+am\s+(?:now\s+)?(?:monitoring|running|executing|processing)\b",
+        r"\bi\s+(?:will|'ll)\s+get\s+to\s+work\b",
+    )
+)
+
+
+def _claims_background_work_start(text: str) -> bool:
+    normalized = text.replace("’", "'")
+    return any(pattern.search(normalized) for pattern in _WORK_START_CLAIM_PATTERNS)
+
+
+# --- chat action routing (chat turn -> real registered handler dispatch) ------
+
+_MEMORY_COMMAND_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"^\s*(?:please\s+)?(?:remember|record|note)\s+(?:this\s*)?[:,-]\s*(?P<content>.+)$",
+        r"^\s*(?:please\s+)?(?:remember|record|note)\s+that\s+(?P<content>.+)$",
+        r"^\s*(?:please\s+)?(?:save|add|write|record)\s+(?:this\s+)?(?:to|in)\s+(?:your\s+)?memory\s*[:,-]\s*(?P<content>.+)$",
+        r"^\s*(?:please\s+)?(?:save|add|write|record)\s+(?P<content>.+?)\s+(?:to|in)\s+(?:your\s+)?memory\s*$",
+        r"^\s*(?:please\s+)?make\s+(?:a\s+)?note\s+(?:that|of)?\s*(?P<content>.+)$",
+    )
+)
+
+_MEMORY_QUESTION_RE = re.compile(r"^\s*(?:do|did|have)\s+you\s+remember\b", re.IGNORECASE)
+_MEMORY_CONTENT_STOPWORDS = frozenset({"this", "that", "it", "memory", "note"})
+
+
+def _extract_chat_action_command(message: str) -> dict[str, Any] | None:
+    content = _extract_memory_command_content(message)
+    if content:
+        title = _chat_memory_title(content)
+        return {
+            "kind": "direct_chat_command",
+            "title": f"Remember: {title}",
+            "detail": content,
+            "action": "local.memory.write",
+            "target": "local_memory",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "priority": 90,
+            "metadata": {
+                "kind": "chat_command",
+                "memory_title": title,
+                "content": content,
+                "source": "founder.direct.chat",
+            },
+        }
+    url = _extract_browser_open_url(message)
+    if url:
+        return {
+            "kind": "direct_chat_command",
+            "title": f"Open: {url}",
+            "detail": f"Open {url} from the founder chat command.",
+            "action": "local.browser.open",
+            "target": url,
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "priority": 90,
+            "metadata": {
+                "url": url,
+                "open_browser": True,
+                "allow_external_url": not _is_local_browser_url(url),
+                "source": "founder.direct.chat",
+            },
+        }
+    return None
+
+
+def _extract_memory_command_content(message: str) -> str:
+    text = (message or "").strip()
+    if not text or _MEMORY_QUESTION_RE.search(text):
+        return ""
+    for pattern in _MEMORY_COMMAND_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        content = _clean_chat_action_content(match.group("content"))
+        if _valid_chat_action_content(content):
+            return content[:4000]
+    return ""
+
+
+def _clean_chat_action_content(content: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (content or "").strip())
+    return cleaned.strip(" \t\r\n\"'`")
+
+
+def _valid_chat_action_content(content: str) -> bool:
+    normalized = content.strip().lower()
+    return len(normalized) >= 3 and normalized not in _MEMORY_CONTENT_STOPWORDS
+
+
+def _chat_memory_title(content: str) -> str:
+    title = re.sub(r"\s+", " ", content.strip())
+    if len(title) <= 80:
+        return title
+    return f"{title[:77].rstrip()}..."
+
+
+_BROWSER_OPEN_RE = re.compile(
+    r"""(?ix)^\s*(?:
+        please\s+|
+        hey\s+zade[\s,:-]*|
+        zade[\s,:-]*|
+        can\s+you\s+|
+        could\s+you\s+|
+        would\s+you\s+
+    )?
+    (?:open|launch|pull\s+up|bring\s+up)\s+
+    (?P<url>(?:https?://|file://)[^\s<>"'`)\]]+)
+    """,
+)
+
+
+def _extract_browser_open_url(message: str) -> str:
+    match = _BROWSER_OPEN_RE.search(message or "")
+    if not match:
+        return ""
+    return match.group("url").rstrip(".,;:!?)]}\"'")
+
+
+def _is_local_browser_url(url: str) -> bool:
+    lowered = url.lower()
+    return (
+        lowered.startswith("file://")
+        or "://127.0.0.1" in lowered
+        or "://localhost" in lowered
+        or "://[::1]" in lowered
+    )
+
+
+def _render_chat_action_route_block(route: dict[str, Any]) -> str:
+    title = route.get("title") or route.get("action") or "that action"
+    item_id = route.get("item_id")
+    item_ref = f"work item #{item_id}" if item_id is not None else "a work item"
+    status = route.get("status")
+    if status == "dispatched":
+        result = route.get("result") or {}
+        handler = result.get("handler") or route.get("action")
+        return f"Done - I executed {title} from chat through {handler} ({item_ref})."
+    if status == "queued":
+        return f"Queued {title} from chat as {item_ref}; it is waiting in status {route.get('queue_status', 'queued')}."
+    if status == "denied":
+        reason = (route.get("authority") or {}).get("reason", "authority denied it")
+        return f"Blocked - I did not execute {title}. {reason}"
+    return f"I tried to execute {title} from chat and hit a problem: {route.get('error', 'unknown error')}."
+
+
+def _chat_action_route_note(route: dict[str, Any]) -> str:
+    status = route.get("status")
+    if status == "dispatched":
+        return "Detected a founder chat command and dispatched it through the registered local handler."
+    if status == "queued":
+        return "Detected a founder chat command and queued it, but it was not immediately dispatchable."
+    if status == "denied":
+        return "Detected a founder chat command, but authority denied it before dispatch."
+    return "Detected a founder chat command, but dispatch failed; surfaced the failure honestly."
+
+
+def _chat_action_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not route:
+        return None
+    summary: dict[str, Any] = {
+        "status": route.get("status"),
+        "action": route.get("action"),
+        "title": route.get("title"),
+        "target": route.get("target", ""),
+    }
+    for key in ("item_id", "created", "queue_status", "dispatch", "audit_id", "error"):
+        if route.get(key) is not None:
+            summary[key] = route.get(key)
+    if route.get("authority"):
+        summary["authority"] = route.get("authority")
+    result = route.get("result") or {}
+    if result:
+        summary["result"] = {
+            key: result.get(key)
+            for key in ("handler", "status", "memory_id", "path", "url", "audit_id")
+            if result.get(key) is not None
+        }
+    return summary
+
+
+# --- research-command routing (chat turn -> gated work queue) -----------------
+
+# Verbs that mark a founder message as a command to *do* research work now, each
+# followed by the topic. Matched after leading politeness/address is stripped.
+_RESEARCH_INTENT_RE = re.compile(
+    r"""(?ix)
+    \b(?:
+        research |
+        investigate |
+        look\s+into |
+        dig\s+(?:into|up) |
+        read\s+up\s+on |
+        study\s+up\s+on |
+        find\s+(?:me\s+)?sources?\s+(?:on|about|for) |
+        find\s+out\s+(?:everything\s+)?about |
+        learn\s+(?:everything|all|more)?\s*(?:possible\s+)?(?:about|regarding|on)
+    )
+    \s+(?P<topic>.+)
+    """,
+)
+
+# Interrogatives that make a message a question about research rather than a
+# command to perform it. "Can you / could you / would you research X" are commands
+# and are deliberately excluded.
+_RESEARCH_QUESTION_PREFIXES = (
+    "how ", "what ", "why ", "when ", "where ", "who ",
+    "do you ", "does ", "did you ", "have you ", "is ", "are ",
+    "should i ", "can i ", "could i ", "would i ",
+)
+
+# Consumes a leading connective clause left in the captured topic — including a
+# chained second verb ("research AND LEARN everything possible REGARDING x") — down
+# to the actual subject.
+_RESEARCH_TOPIC_LEADING_FILLER = re.compile(
+    r"""(?ix)^
+    (?:and\s+)?
+    (?:learn|research|study|read\s+up|find\s+out|investigate|dig(?:\s+into|\s+up)?|look\s+into)?\s*
+    (?:everything|all|more)?\s*
+    (?:possible\s+)?
+    (?:about|regarding|on|into|for|of|the\s+topic\s+of|the\s+subject\s+of)\s+
+    """
+)
+
+# Strips trailing politeness and a dangling source-introducing connective left when
+# a URL is removed ("research x USING <url>" -> "research x using" -> "x").
+_RESEARCH_TOPIC_TRAILING_FILLER = re.compile(
+    r"(?i)\s+(?:using|via|from|at|with|per|for\s+me|please|asap|right\s+now|today|thanks|thank\s+you)\W*$"
+)
+
+_RESEARCH_TOPIC_STOPWORDS = frozenset({"it", "that", "this", "them", "those", "these", "stuff", "things"})
+
+_POLITENESS_PREFIX_RE = re.compile(
+    r"""(?ix)^\s*(?:
+        please | pls | hey | hi | ok | okay | so | now |
+        zade | hey\s+zade | can\s+you | could\s+you | would\s+you | will\s+you |
+        i\s+(?:want|need|would\s+like)\s+you\s+to | i'?d\s+like\s+you\s+to | go\s+(?:ahead\s+and\s+)? | just
+    )\b[\s,:-]*"""
+)
+
+_URL_RE = re.compile(r"https://[^\s<>\"'`)\]]+", re.IGNORECASE)
+
+
+def _extract_urls(message: str) -> list[str]:
+    """Pull explicit https URLs out of the founder message (egress requires https)."""
+    urls: list[str] = []
+    for match in _URL_RE.findall(message or ""):
+        url = match.rstrip(".,;:!?)]}\"'")
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _extract_research_topic(message: str) -> str:
+    """Return the topic of a founder research *command*, or "" when the message is
+    not a do-research instruction (a question about research, or no topic)."""
+    text = (message or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith(_RESEARCH_QUESTION_PREFIXES):
+        return ""
+    # Strip a leading politeness/address so "Please research X" -> "research X".
+    stripped = _POLITENESS_PREFIX_RE.sub("", text, count=1).strip()
+    match = _RESEARCH_INTENT_RE.search(stripped)
+    if not match:
+        return ""
+    topic = match.group("topic").strip()
+    # A URL is a source, not the topic phrase — don't fold it into the topic text.
+    topic = _URL_RE.sub("", topic).strip()
+    topic = _RESEARCH_TOPIC_LEADING_FILLER.sub("", topic).strip()
+    # Trailing filler can chain ("... using for me"); strip until stable.
+    while True:
+        stripped = _RESEARCH_TOPIC_TRAILING_FILLER.sub("", topic).strip()
+        if stripped == topic:
+            break
+        topic = stripped
+    topic = topic.strip(" \t\r\n.,;:!?\"'-—")
+    if len(topic) < 3 or topic.lower() in _RESEARCH_TOPIC_STOPWORDS:
+        return ""
+    return topic[:200]
+
+
+def _render_research_route_block(route: dict[str, Any]) -> str:
+    topic = route.get("topic", "")
+    status = route.get("status")
+    if status == "queued":
+        queued = route.get("queued") or {}
+        item_id = queued.get("item_id")
+        count = queued.get("url_count", len(route.get("urls", [])))
+        plural = "source" if count == 1 else "sources"
+        return (
+            f"Queued it — research on {topic}. I filed the topic, proposed {count} {plural}, "
+            f"and dropped an approval-gated run in your Inbox (item #{item_id}). "
+            "It's egress, so nothing leaves this machine until you clear it with the typed phrase — "
+            "swap my sources for better ones there if you want. That's the word I need from you."
+        )
+    if status == "no_sources":
+        return (
+            f"Logged {topic} as an open research question, but I couldn't propose a clean source to fetch. "
+            "Hand me a URL or two and I'll queue the gated run for your approval."
+        )
+    return (
+        f"Tried to queue research on {topic} and hit a snag: {route.get('error', 'unknown error')}. "
+        "Nothing left this machine. Give me the word and I'll retry."
+    )
+
+
+def _research_route_note(route: dict[str, Any]) -> str:
+    status = route.get("status")
+    if status == "queued":
+        return (
+            "Detected a research command; filed the topic, proposed sources, and queued an "
+            "approval-gated research run to the Inbox (egress stays behind the typed-phrase approval)."
+        )
+    if status == "no_sources":
+        return "Detected a research command and logged the topic, but no source could be proposed; asked the founder for URLs."
+    return "Detected a research command but failed to queue the run; surfaced the failure honestly."
+
+
+def _research_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not route:
+        return None
+    summary: dict[str, Any] = {"status": route.get("status"), "topic": route.get("topic")}
+    if route.get("assumption_id") is not None:
+        summary["assumption_id"] = route.get("assumption_id")
+    if route.get("related"):
+        summary["related"] = route.get("related")
+    if route.get("status") == "queued":
+        queued = route.get("queued") or {}
+        summary |= {
+            "item_id": queued.get("item_id"),
+            "queue_status": queued.get("status"),
+            "url_count": queued.get("url_count", len(route.get("urls", []))),
+            "urls": route.get("urls", []),
+            "action": queued.get("action"),
+        }
+    elif route.get("status") == "error":
+        summary["error"] = route.get("error", "")
+    return summary
 
 
 def _founder_direct_authority_payload(authority: AuthorityResult) -> dict[str, Any]:

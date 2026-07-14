@@ -7,40 +7,31 @@
   <style>
     /* Page-specific layout only. Colors, type, and base components come from
        the shared /ui/zade-ui.css, which loads after this block and wins on the
-       body-prefixed cascade. Home is the daily surface: a conversation on the
-       left, a quiet "needs you" digest on the right. */
+       body-prefixed cascade. Home is the daily surface: a time-aware greeting
+       in Zade's voice, the conversation on the left, the needs-you rail right. */
     * { box-sizing: border-box; }
     h1 { margin: 0; }
 
-    /* Full-bleed two-column layout — override main's centered container. */
     body.page-home main { max-width: none; margin: 0; padding: 0; }
+    .page { padding: 46px 48px 72px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 14px; }
+
+    body.page-home h1 { font-size: 44px; line-height: 1.05; font-weight: 500; }
+    .greet-sub { font-family: var(--z-serif); font-style: italic; font-size: 19px; line-height: 1.45; color: #cfccc6; margin-top: 12px; max-width: 60ch; }
+
     .home-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 340px;
-      min-height: 100dvh;
+      grid-template-columns: minmax(0, 1fr) 350px;
+      gap: 40px;
+      align-items: start;
+      margin-top: 38px;
     }
 
     /* --- Left: conversation --- */
-    .conv { display: flex; flex-direction: column; padding: 44px 40px 28px; min-height: 100dvh; }
-    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
-    .conv-head { margin-bottom: 26px; }
-    .thread { flex: 1; display: flex; flex-direction: column; gap: 22px; max-width: 680px; overflow-y: auto; padding-right: 6px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--z-line); }
-    .msg-row { display: flex; }
-    .msg-row.founder { justify-content: flex-end; }
-    .founder-msg { max-width: 520px; font-size: 14.5px; line-height: 1.55; color: var(--z-ink-hi); text-align: right; }
-    .zade-msg { max-width: 600px; }
-    .zade-label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--z-accent-2); margin-bottom: 6px; }
-    .zade-text { font-family: var(--z-serif); font-style: italic; font-size: 18px; line-height: 1.5; color: var(--z-text); white-space: pre-wrap; }
-    .contrarian { margin-top: 10px; padding: 9px 14px; border-left: 2px solid var(--z-accent-dim); }
-    .contrarian-label { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 3px; }
-    .contrarian-text { font-size: 12.5px; color: var(--z-muted); line-height: 1.5; }
-    .thinking { font-family: var(--z-serif); font-style: italic; font-size: 15px; color: var(--z-faint); }
-    .thread-empty { font-family: var(--z-serif); font-style: italic; font-size: 16px; color: var(--z-faint); }
-
-    /* --- Composer --- */
+    .conv { min-width: 0; }
     .composer { display: flex; gap: 10px; align-items: center; max-width: 680px; }
     .mic {
-      width: 40px; height: 40px; flex: none; border-radius: 50%;
+      width: 42px; height: 42px; flex: none; border-radius: 50%;
       border: 1px solid var(--z-accent-dim); background: transparent; color: var(--z-accent-2);
       display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; min-height: 0;
       transition: border-color .2s, background .2s, color .2s;
@@ -50,26 +41,27 @@
       flex: 1; background: var(--z-well); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px;
       padding: 13px 15px; color: var(--z-ink-hi); font-family: var(--z-sans); font-size: 14px;
     }
-    .composer button.send { border-radius: 8px; padding: 12px 18px; min-height: 0; }
+    .composer button.send { border-radius: 8px; padding: 12px 20px; min-height: 0; }
     .composer-error { color: var(--z-bad-text); font-size: 11.5px; max-width: 680px; margin-top: 8px; min-height: 14px; }
 
-    /* --- Right: needs-you rail --- */
-    .rail { border-left: 1px solid var(--z-line); padding: 44px 28px 32px; }
-    .needs-list { display: flex; flex-direction: column; }
-    .needs-row { cursor: pointer; padding: 13px 2px; border-top: 1px solid var(--z-line-soft); text-decoration: none; display: block; }
-    .needs-list .needs-row:last-child { border-bottom: 1px solid var(--z-line-soft); }
-    .needs-title { font-size: 13px; color: var(--z-ink-hi); margin-bottom: 3px; }
-    .needs-status { font-size: 11.5px; }
-    .needs-status.red { color: var(--z-bad-text); }
-    .needs-status.orange { color: var(--z-warn-text); }
-    .needs-status.yellow { color: var(--z-faint); }
-    .rail-empty { font-size: 12.5px; color: var(--z-faint); padding: 13px 2px; border-top: 1px solid var(--z-line-soft); }
-    .objective { margin-top: 30px; }
-    .objective-text { font-family: var(--z-serif); font-style: italic; font-size: 16px; color: var(--z-ink-hi); line-height: 1.4; }
-    .objective-note { font-size: 11.5px; color: var(--z-faint); margin-top: 6px; }
+    .thread {
+      display: flex; flex-direction: column; gap: 24px; max-width: 680px;
+      margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--z-line);
+    }
+    .msg-row { display: flex; }
+    .msg-row.founder { justify-content: flex-end; }
+    .founder-msg { max-width: 520px; font-size: 14.5px; line-height: 1.55; color: var(--z-ink-hi); text-align: right; }
+    .zade-msg { max-width: 600px; }
+    .zade-label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--z-accent-2); margin-bottom: 7px; }
+    .zade-text { font-family: var(--z-serif); font-style: italic; font-size: 19px; line-height: 1.5; color: var(--z-text); white-space: pre-wrap; }
+    .contrarian { margin-top: 12px; padding: 10px 15px; border-left: 2px solid var(--z-accent-dim); }
+    .contrarian-label { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 4px; }
+    .contrarian-text { font-size: 13px; color: var(--z-muted); line-height: 1.55; }
+    .thinking { font-family: var(--z-serif); font-style: italic; font-size: 15px; color: var(--z-faint); }
+    .thread-empty { font-family: var(--z-serif); font-style: italic; font-size: 17px; color: var(--z-faint); line-height: 1.5; }
 
     /* --- Live step trace (while Zade works) + persistent per-message summary --- */
-    .zade-trace { border-left: 2px solid var(--z-accent-dim); padding: 6px 0 6px 16px; margin-bottom: 4px; display: flex; flex-direction: column; gap: 8px; }
+    .zade-trace { border-left: 2px solid var(--z-accent-dim); padding: 6px 0 6px 16px; display: flex; flex-direction: column; gap: 9px; }
     .zade-trace .trace-head { font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-accent-2); }
     .trace-step { display: flex; align-items: baseline; gap: 10px; }
     .trace-mark { width: 7px; height: 7px; border-radius: 50%; flex: none; position: relative; top: 1px; background: var(--z-ghost); }
@@ -86,55 +78,85 @@
     .trace-step.active .trace-label { color: var(--z-ink-hi); }
     .trace-detail { font-size: 11px; color: var(--z-faint); }
 
-    .trace-summary { margin-top: 12px; }
+    .trace-summary { margin-top: 13px; }
     .trace-summary > summary { cursor: pointer; list-style: none; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--z-faint); }
     .trace-summary > summary::-webkit-details-marker { display: none; }
     .trace-summary > summary:hover { color: var(--z-ink-hi); }
-    .trace-summary .trace-steps { margin-top: 10px; display: flex; flex-direction: column; gap: 7px; }
+    .trace-summary .trace-steps { margin-top: 11px; display: flex; flex-direction: column; gap: 7px; }
     .trace-summary .trace-step.ok .trace-mark { background: var(--z-ok); }
     .trace-summary .trace-step.muted .trace-mark { background: transparent; box-shadow: inset 0 0 0 1px var(--z-ghost); }
     .trace-summary .trace-step.warn .trace-mark { background: var(--z-warn); }
     .trace-summary .trace-step.muted .trace-label { color: var(--z-faint); }
 
+    /* --- Right: needs-you rail --- */
+    .rail { border-left: 1px solid var(--z-line); padding-left: 28px; }
+    .rail .kicker { margin-bottom: 6px; }
+    .needs-list { display: flex; flex-direction: column; }
+    .needs-row { padding: 14px 2px; border-top: 1px solid var(--z-line-soft); }
+    .needs-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    .needs-title { font-size: 13px; color: var(--z-ink-hi); text-decoration: none; }
+    .needs-title:hover { color: var(--z-text); }
+    .needs-handle {
+      flex: none; background: transparent; border: 0; padding: 2px; min-height: 0;
+      cursor: pointer; color: var(--z-faint); font-size: 11px;
+    }
+    .needs-handle:hover { color: var(--z-accent-2); background: transparent; border: 0; }
+    .needs-line { font-size: 12px; color: var(--z-muted); margin-top: 4px; }
+    .needs-kind { font-size: 11px; color: var(--z-faint); margin-top: 4px; letter-spacing: 0.02em; }
+    .rail-empty { font-size: 12.5px; color: var(--z-faint); padding: 13px 2px; border-top: 1px solid var(--z-line-soft); }
+    .quiet { padding: 16px 2px 4px; border-top: 1px solid var(--z-line-soft); }
+    .quiet-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+    .quiet-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--z-ok); animation: zblink 3.4s ease-in-out infinite; }
+    .quiet-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--z-ok-text); }
+    .quiet-line { font-family: var(--z-serif); font-style: italic; font-size: 17px; color: var(--z-ink); line-height: 1.5; }
+    .objective { margin-top: 30px; }
+    .objective .kicker { margin-bottom: 10px; }
+    .objective-text { font-family: var(--z-serif); font-style: italic; font-size: 17px; color: var(--z-ink-hi); line-height: 1.4; }
+    .objective-note { font-size: 11.5px; color: var(--z-faint); margin-top: 7px; }
+
+    @media (max-width: 1180px) {
+      .home-grid { grid-template-columns: minmax(0, 1fr); }
+      .rail { border-left: 0; padding-left: 0; border-top: 1px solid var(--z-line); padding-top: 24px; }
+    }
     @media (max-width: 899px) {
-      .home-grid { grid-template-columns: 1fr; min-height: 0; }
-      .conv { min-height: 0; padding: 26px 20px 20px; }
-      .rail { border-left: 0; border-top: 1px solid var(--z-line); padding: 24px 20px 40px; }
-      .thread { overflow-y: visible; }
+      .page { padding: 26px 20px 48px; }
+      body.page-home h1 { font-size: 32px; }
     }
   </style>
   <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
 <body class="page-home">
   <main class="home">
-    <div class="home-grid">
-      <!-- Conversation -->
-      <section class="conv">
-        <div class="conv-head">
-          <div class="kicker">Home</div>
-          <h1>Talk to Zade</h1>
-        </div>
-        <div class="composer">
-          <button type="button" class="mic" id="micBtn" title="Hold a voice conversation with Zade" aria-label="Voice">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0"></path><path d="M12 19v3"></path></svg>
-          </button>
-          <input class="chatbox" id="chatInput" placeholder="Say something to Zade…" autocomplete="off">
-          <button type="button" class="send" id="sendBtn">Send</button>
-        </div>
-        <div class="composer-error" id="composerError"></div>
-        <div class="thread" id="thread"></div>
-      </section>
+    <div class="page">
+      <div class="kicker" id="homeKicker">Home</div>
+      <h1 id="greetH1">&nbsp;</h1>
+      <div class="greet-sub" id="greetSub"></div>
 
-      <!-- Needs-you rail -->
-      <aside class="rail">
-        <div class="kicker">Needs you</div>
-        <div class="needs-list" id="needsList"><div class="rail-empty">Checking…</div></div>
+      <div class="home-grid">
+        <!-- Conversation -->
+        <section class="conv">
+          <div class="composer">
+            <button type="button" class="mic" id="micBtn" title="Hold a voice conversation with Zade" aria-label="Voice">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0"></path><path d="M12 19v3"></path></svg>
+            </button>
+            <input class="chatbox" id="chatInput" placeholder="Say something to Zade…" autocomplete="off">
+            <button type="button" class="send" id="sendBtn">Send</button>
+          </div>
+          <div class="composer-error" id="composerError"></div>
+          <div class="thread" id="thread"></div>
+        </section>
 
-        <div class="objective">
-          <div class="kicker">Current objective</div>
-          <div id="objectiveBox"><div class="rail-empty" style="border:0;padding:0;">Loading…</div></div>
-        </div>
-      </aside>
+        <!-- Needs-you rail -->
+        <aside class="rail">
+          <div class="kicker">Needs you</div>
+          <div class="needs-list" id="needsList"><div class="rail-empty">Checking…</div></div>
+
+          <div class="objective">
+            <div class="kicker">Current objective</div>
+            <div id="objectiveBox"><div class="objective-note" style="margin-top:0;">Loading…</div></div>
+          </div>
+        </aside>
+      </div>
     </div>
   </main>
 
@@ -158,15 +180,63 @@
     let state = { conversationId: null, messages: [], sending: false, micOn: false, trace: null };
     let traceTimer = null;
 
+    // ---------- Greeting — time-aware, in his voice ----------
+    // "Three things" in the copy deck is the live attention count.
+    function countPhrase(n) {
+      const words = ['One thing', 'Two things', 'Three things', 'Four things', 'Five things', 'Six things'];
+      return n <= 6 ? words[n - 1] : n + ' things';
+    }
+    function greetingFor(hour, count) {
+      const n = Number.isFinite(count) ? count : null;
+      if (hour < 12) {
+        return {
+          h1: 'Good morning, Ellie.',
+          sub: 'You slept — good. I didn’t. I went through all of it while the house was dark. '
+            + (n === null ? 'A few things are yours to touch.' : n === 0 ? 'Nothing is yours to touch.' : countPhrase(n) + (n === 1 ? ' is' : ' are') + ' yours to touch.')
+            + ' The rest I already handled.'
+        };
+      }
+      if (hour < 18) {
+        return {
+          h1: 'Afternoon, Ellie.',
+          sub: 'Nothing’s slipped past me since this morning. '
+            + (n === null ? 'A few things want your hand.' : n === 0 ? 'Nothing wants your hand.' : countPhrase(n) + (n === 1 ? ' wants' : ' want') + ' your hand.')
+            + ' Everything else, I’ve carried.'
+        };
+      }
+      return {
+        h1: 'It’s late, Ellie.',
+        sub: 'You should rest. But before you do — '
+          + (n === null ? 'a few things are yours, and only yours.' : n === 0 ? 'nothing is waiting on you.' : countPhrase(n).toLowerCase() + (n === 1 ? ' is' : ' are') + ' yours, and only yours.')
+          + ' The rest is done. I’ll keep watch.'
+      };
+    }
+    function renderGreeting(count) {
+      const g = greetingFor(new Date().getHours(), count);
+      byId('greetH1').textContent = g.h1;
+      byId('greetSub').textContent = g.sub;
+    }
+
+    // Kicker: HOME · {duration} SINCE YOU LEFT — time since the last turn.
+    function renderKicker(lastTurnAt) {
+      const t = lastTurnAt ? new Date(lastTurnAt).getTime() : NaN;
+      if (!t || Number.isNaN(t)) { byId('homeKicker').textContent = 'Home'; return; }
+      const mins = Math.max(0, Math.floor((Date.now() - t) / 60000));
+      const label = mins >= 48 * 60
+        ? Math.round(mins / (24 * 60)) + ' days'
+        : String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+      byId('homeKicker').textContent = 'Home · ' + label + ' since you left';
+    }
+
     // ---------- Conversation ----------
     function renderThread() {
       const t = byId('thread');
       if (!state.messages.length && !state.sending) {
-        t.innerHTML = '<div class="thread-empty">Nothing on the thread yet. Ask me what needs your attention, or think out loud.</div>';
+        t.innerHTML = '<div class="thread-empty">Nothing on the thread yet. Talk to me, Ellie — think out loud, or ask me what’s trying to hurt your business today. I’m already listening.</div>';
         return;
       }
-      // Newest-first: the "thinking" placeholder and the latest turn render at
-      // the top, right under the composer, so a new reply lands where you type.
+      // Newest-first: the live trace and the latest turn render at the top,
+      // right under the composer, so a new reply lands where you type.
       let html = '';
       if (state.sending) html += renderLiveTrace();
       html += [...state.messages].reverse().map(renderMsg).join('');
@@ -205,12 +275,12 @@
     // wait animate through Zade's real pipeline order — they can't stream from
     // the server. The instant the reply lands we swap them for a truthful,
     // persistent summary built entirely from the response payload (never invented).
-    const CHAT_STAGES = ['Recalling context', 'Routing skills', 'Drafting reply', 'Reviewing & governing'];
-    const VOICE_STAGES = ['Transcribing speech', 'Recalling context', 'Drafting reply', 'Reviewing & governing'];
+    const CHAT_STAGES = ['Recalling everything', 'Routing skills', 'Drafting', 'Pushing back on myself'];
+    const VOICE_STAGES = ['Transcribing speech', 'Recalling everything', 'Drafting', 'Pushing back on myself'];
 
     function startTrace(mode) {
       const stages = mode === 'voice' ? VOICE_STAGES : CHAT_STAGES;
-      const holdIndex = stages.indexOf('Drafting reply');
+      const holdIndex = stages.indexOf('Drafting');
       state.trace = { stages, active: 0, holdIndex };
       renderThread();
       clearInterval(traceTimer);
@@ -224,7 +294,7 @@
         } else {
           clearInterval(traceTimer);
         }
-      }, 700);
+      }, 640);
     }
 
     function stopTrace() {
@@ -336,6 +406,7 @@
         state.sending = false;
         stopTrace();
         renderThread();
+        renderKicker(new Date().toISOString());
       }
     }
 
@@ -397,46 +468,73 @@
         byId('composerError').textContent = 'Voice reply failed: ' + err.message;
       } finally {
         state.sending = false; stopTrace(); renderThread();
+        renderKicker(new Date().toISOString());
       }
     }
 
     // ---------- Needs-you rail ----------
-    const SEV_LABELS = { red: 'Urgent', orange: 'Important', yellow: 'Worth a look' };
     const KIND_LABELS = {
       commitment_overdue: 'Overdue promise', commitment_due_soon: 'Promise due soon',
-      approval_pending: 'Awaiting your approval', decision_stale: 'Decision needs revisiting',
+      approval_pending: 'Needs your word', decision_stale: 'Decision to revisit',
       prediction_due: 'Prediction to score', experiment_review: 'Experiment needs review',
       assumption_unvalidated: 'Unvalidated assumption'
+    };
+    // His one-liner per kind — the framing, not the metadata.
+    const KIND_LINES = {
+      commitment_overdue: 'You gave your word. It’s past due.',
+      commitment_due_soon: 'Your word comes due soon. I’m watching it.',
+      approval_pending: 'It reaches outside these walls.',
+      decision_stale: 'This one’s been sitting. Decide, and I move.',
+      prediction_due: 'You made a call. Time to grade it.',
+      experiment_review: 'The results are in. Look before it drifts.',
+      assumption_unvalidated: 'We’re building on a guess. I don’t like guesses.'
     };
     function kindLabel(kind) {
       return KIND_LABELS[kind] || String(kind || '').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
     }
     function inboxHref(item) {
       const t = ((item.subject_type || '') + ' ' + (item.kind || '')).toLowerCase();
-      let tab = 'decisions';
-      if (/commitment|promise/.test(t)) tab = 'promises';
-      else if (/plan|action/.test(t)) tab = 'motion';
-      return uiBase() + 'inbox.html#' + tab;
+      return uiBase() + 'inbox.html' + (/commitment|promise/.test(t) ? '#promises' : '');
     }
     function attentionHref(item) {
       const href = String(item.href || '');
       if (href.startsWith('/ui/')) return location.pathname.startsWith('/ui') ? href : href.replace(/^\/ui\//, '');
       return href || inboxHref(item);
     }
+    let needsItems = [];
+    function renderNeeds() {
+      byId('needsList').innerHTML = needsItems.length
+        ? needsItems.map((item, i) => `
+            <div class="needs-row" data-idx="${i}">
+              <div class="needs-top">
+                <a class="needs-title" href="${attentionHref(item)}">${esc(item.title)}</a>
+                <button type="button" class="needs-handle" data-handle="${i}" title="I’ll take it">handle</button>
+              </div>
+              <div class="needs-line">${esc(KIND_LINES[item.kind] || 'It needs your hand — mine are tied.')}</div>
+              <div class="needs-kind">${esc(kindLabel(item.kind))}</div>
+            </div>`).join('')
+        : `<div class="quiet">
+             <div class="quiet-head"><span class="quiet-dot"></span><span class="quiet-label">All clear</span></div>
+             <div class="quiet-line">Nothing needs you right now. I swept every corner twice — and I made it quiet. Breathe, Ellie. I’m still here, watching the doors.</div>
+           </div>`;
+    }
+    byId('needsList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-handle]');
+      if (!btn) return;
+      needsItems.splice(Number(btn.dataset.handle), 1);
+      renderNeeds();
+    });
     async function loadNeeds() {
+      let count = null;
       try {
         const scan = await api('/surface/attention');
-        const items = (scan.items || []).slice(0, 3);
-        byId('needsList').innerHTML = items.length
-          ? items.map((item) => `
-              <a class="needs-row" href="${attentionHref(item)}">
-                <div class="needs-title">${esc(item.title)}</div>
-                <div class="needs-status ${esc(item.severity)}">${esc(SEV_LABELS[item.severity] || 'Note')} · ${esc(kindLabel(item.kind))}</div>
-              </a>`).join('')
-          : '<div class="rail-empty">Nothing needs you right now. Signals are clear.</div>';
+        needsItems = (scan.items || []).slice(0, 3);
+        count = (scan.items || []).length;
+        renderNeeds();
       } catch (err) {
         byId('needsList').innerHTML = '<div class="rail-empty">Could not load — ' + esc(err.message) + '</div>';
       }
+      renderGreeting(count);
     }
 
     // ---------- Current objective ----------
@@ -448,7 +546,7 @@
         const note = item.next_action || [item.metric, item.target].filter(Boolean).join(' / ') || item.desired_outcome || '';
         byId('objectiveBox').innerHTML = `
           <div class="objective-text">${esc(item.objective)}</div>
-          ${note ? `<div class="objective-note">${esc(note)}</div>` : ''}`;
+          <div class="objective-note">${note ? esc(note) + ' · I’m tracking every one' : 'I’m tracking it.'}</div>`;
       } catch (err) {
         byId('objectiveBox').innerHTML = '<div class="objective-note" style="margin-top:0;">Could not load objective.</div>';
       }
@@ -466,6 +564,8 @@
         if (!turns.length) return;
         state.conversationId = id;
         state.messages = turns.map((t) => ({ role: t.role === 'assistant' ? 'assistant' : 'founder', content: t.content }));
+        const last = turns[turns.length - 1];
+        renderKicker(last.created_at || last.at || null);
       } catch (e) { /* start fresh */ }
     }
 
@@ -474,6 +574,7 @@
     byId('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } });
     byId('micBtn').addEventListener('click', toggleMic);
 
+    renderGreeting(null);
     ensureToken();
     loadRecentConversation().then(renderThread);
     loadNeeds();

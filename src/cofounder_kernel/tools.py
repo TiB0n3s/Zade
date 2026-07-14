@@ -49,6 +49,14 @@ class ToolRegistry:
         )
         self.register(
             ToolDefinition(
+                name="memory.forget",
+                description="Delete a local memory record and its search-index entry at the founder's request.",
+                permission_tier=PermissionTier.MEMORY_WRITE,
+                handler=self._memory_forget,
+            )
+        )
+        self.register(
+            ToolDefinition(
                 name="memory.search",
                 description="Search local memory using SQLite FTS.",
                 permission_tier=PermissionTier.READ,
@@ -181,6 +189,13 @@ class ToolRegistry:
             metadata=dict(args.get("metadata") or {}),
         )
         return ToolResult(ok=True, data={"memory_id": memory_id})
+
+    def _memory_forget(self, args: dict[str, Any]) -> ToolResult:
+        memory_id = int(args["memory_id"])
+        deleted = self.db.delete_memory(memory_id)
+        if deleted is None:
+            return ToolResult(ok=False, data={"error": "memory_not_found", "memory_id": memory_id})
+        return ToolResult(ok=True, data={"forgotten": deleted})
 
     def _memory_search(self, args: dict[str, Any]) -> ToolResult:
         records = self.db.search_memories(str(args["query"]), int(args.get("limit", 8)))

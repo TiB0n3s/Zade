@@ -6,57 +6,93 @@
   <title>Zade — Inbox</title>
   <style>
     /* Page-specific layout only; colors/type/components from /ui/zade-ui.css.
-       Inbox folds three old pages (Approvals, Commitments, Action Plans) into
-       one decision surface split by kind, not by which page it used to live on. */
+       Inbox is where Zade waits on Ellie: gated actions (his case for each,
+       approved through the typed-confirmation ritual) and the promises ledger. */
     * { box-sizing: border-box; }
-    h1 { margin: 0 0 8px; }
-    /* prototype controls page inset via .page; drop main's own centered padding */
+    h1 { margin: 0; font-size: 40px; line-height: 1.05; font-weight: 500; }
     body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
-    .page { padding: 44px 48px 60px; max-width: 920px; }
-    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 8px; }
-    .lede { font-size: 13px; color: var(--z-muted); margin-bottom: 28px; max-width: 60ch; }
+    .page { padding: 46px 48px 96px; max-width: 980px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 12px; }
+    .section-head { font-size: 11px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-muted); margin: 40px 0 16px; }
+    .section-sub { font-family: var(--z-serif); font-style: italic; font-size: 16px; color: var(--z-muted); margin: -8px 0 16px; }
 
-    /* pill tabs */
-    .tabs { display: flex; gap: 6px; margin-bottom: 24px; flex-wrap: wrap; }
-    .tabs button {
-      border-radius: 999px; padding: 7px 15px; font-size: 12.5px; min-height: 0;
-      border: 1px solid var(--z-line-strong); color: var(--z-muted); background: transparent;
+    /* --- Gated actions --- */
+    .cards { display: flex; flex-direction: column; gap: 14px; max-width: 860px; }
+    .gated {
+      background: var(--z-panel); border: 1px solid var(--z-line);
+      border-radius: var(--z-radius); padding: 20px 22px;
     }
-    .tabs button.active { border-color: var(--z-accent); background: rgba(194,160,106,0.10); color: var(--z-text); }
-
-    [data-panel][hidden] { display: none; }
-
-    /* hairline rows */
-    .rows { display: flex; flex-direction: column; }
-    .row {
-      padding: 16px 2px; border-top: 1px solid var(--z-line-soft);
-      display: flex; justify-content: space-between; gap: 16px; align-items: flex-start;
+    .gated-top { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; }
+    .gated-title { font-family: var(--z-serif); font-style: italic; font-weight: 500; font-size: 20px; line-height: 1.3; color: var(--z-text); }
+    .gated-action { font-size: 12.5px; color: var(--z-faint); margin-top: 5px; letter-spacing: 0.02em; }
+    .gated-wants {
+      font-family: var(--z-serif); font-style: italic; font-size: 16px; color: var(--z-ink);
+      line-height: 1.45; margin-top: 14px; padding-left: 14px; border-left: 1px solid var(--z-line-strong);
     }
-    .row-main { min-width: 0; }
-    .row-title { font-size: 14px; color: var(--z-ink-hi); margin-bottom: 4px; }
-    .row-detail { font-size: 12px; color: var(--z-muted); margin-bottom: 6px; }
-    .row-meta { font-size: 12px; color: var(--z-faint); }
-    .row-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: none; }
-    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-    .row-actions button { min-height: 28px; padding: 4px 12px; font-size: 11.5px; }
+    .gated-risk { font-size: 11.5px; color: var(--z-faint); margin-top: 12px; }
+    .gated-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    .gated-done { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--z-ok-text); margin-top: 16px; }
+    .gated-done .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--z-ok); }
+    .gated-denied { font-size: 12.5px; color: var(--z-muted); margin-top: 16px; }
+    .gated-error { color: var(--z-bad-text); font-size: 11.5px; margin-top: 8px; min-height: 0; }
 
-    .due-urgent { color: var(--z-bad-text); }
-    .due-soon { color: var(--z-warn-text); }
+    /* --- Promises ledger --- */
+    .ledger { max-width: 860px; }
+    .promise { padding: 16px 2px; border-top: 1px solid var(--z-line); }
+    .promise-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .promise-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .who-pill {
+      font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-muted);
+      background: rgba(255,255,255,0.05); border-radius: var(--z-radius-sm); padding: 3px 8px; flex: none;
+    }
+    .promise-title { font-size: 14px; color: var(--z-ink-hi); font-weight: 500; }
+    .promise-due { flex: none; font-size: 11.5px; color: var(--z-faint); }
+    .promise-due.late { color: var(--z-bad-text); }
+    .promise-line { font-family: var(--z-serif); font-style: italic; font-size: 15px; color: var(--z-muted); line-height: 1.45; margin-top: 8px; }
+    .promise-actions { display: flex; gap: 9px; margin-top: 12px; flex-wrap: wrap; }
+    .promise-actions button { min-height: 28px; padding: 5px 12px; font-size: 11.5px; }
+    .promise-error { color: var(--z-bad-text); font-size: 11px; margin-top: 6px; }
 
-    /* tier chip */
-    .tier { display: inline-flex; align-items: center; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 7px; border-radius: 2px; }
-    .tier.l0 { color: var(--z-muted); background: rgba(255,255,255,0.05); }
-    .tier.l1, .tier.l2 { color: var(--z-warn-text); background: rgba(194,160,106,0.13); }
-    .tier.l3, .tier.l4 { color: var(--z-info-text); background: rgba(128,107,184,0.15); }
+    /* --- In motion (action plans, quiet) --- */
+    .motion-row { padding: 14px 2px; border-top: 1px solid var(--z-line-soft); display: flex; justify-content: space-between; gap: 14px; align-items: center; flex-wrap: wrap; }
+    .motion-title { font-size: 13.5px; color: var(--z-ink-hi); }
+    .motion-sub { font-size: 11.5px; color: var(--z-faint); margin-top: 3px; }
+    .motion-actions { display: flex; gap: 8px; align-items: center; }
+    .motion-actions button { min-height: 28px; padding: 4px 12px; font-size: 11.5px; }
 
-    /* status pills not already covered by shared css */
-    .pill.open, .pill.active { color: var(--z-warn-text); background: rgba(194,160,106,0.13); }
-    .pill.missed, .pill.failed, .pill.blocked, .pill.disapproved { color: var(--z-bad-text); background: rgba(168,74,74,0.15); }
-    .pill.dropped, .pill.abandoned, .pill.skipped { color: var(--z-muted); background: rgba(255,255,255,0.05); }
+    .empty { color: var(--z-faint); font-size: 12.5px; padding: 18px 2px; }
 
-    .row-error { color: var(--z-bad-text); font-size: 11px; margin-top: 4px; text-align: right; }
-    .empty { color: var(--z-faint); font-size: 12.5px; padding: 22px 2px; }
-    @media (max-width: 720px) { .page { padding: 26px 20px 48px; } .row { flex-direction: column; } .row-side { align-items: flex-start; } .row-actions { justify-content: flex-start; } }
+    /* --- Typed-confirmation ritual --- */
+    .ritual-overlay {
+      position: fixed; inset: 0; z-index: 300; display: none;
+      background: rgba(5,5,6,0.74); backdrop-filter: blur(3px);
+      align-items: center; justify-content: center; padding: 24px;
+    }
+    .ritual-overlay.open { display: flex; }
+    .ritual {
+      width: min(520px, 100%); background: var(--z-panel);
+      border: 1px solid var(--z-line-strong); border-radius: 6px;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.6); padding: 30px 32px;
+    }
+    .ritual-kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 10px; }
+    .ritual-title { font-family: var(--z-serif); font-style: italic; font-size: 23px; line-height: 1.35; color: var(--z-text); }
+    .ritual-body { font-family: var(--z-serif); font-style: italic; font-size: 16px; color: var(--z-ink); line-height: 1.5; margin-top: 14px; }
+    .ritual-phrase { font-family: var(--z-mono); font-size: 12px; color: var(--z-accent-2); margin-top: 18px; letter-spacing: 0.02em; }
+    .ritual input {
+      width: 100%; margin-top: 8px; background: var(--z-well);
+      border: 1px solid rgba(255,255,255,0.06); border-radius: var(--z-radius);
+      padding: 11px 13px; color: var(--z-ink-hi); font-family: var(--z-mono); font-size: 13px;
+    }
+    .ritual-buttons { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+    .ritual-buttons button.go { color: #cde5d8; border-color: rgba(90,138,114,0.7); background: rgba(90,138,114,0.16); }
+    .ritual-buttons button.go:hover:not(:disabled) { background: rgba(90,138,114,0.24); border-color: rgba(90,138,114,0.9); color: #cde5d8; }
+    .ritual-error { color: var(--z-bad-text); font-size: 11.5px; margin-top: 10px; min-height: 14px; }
+
+    @media (max-width: 720px) {
+      .page { padding: 26px 20px 64px; }
+      h1 { font-size: 32px; }
+      .ritual { padding: 22px 20px; }
+    }
   </style>
   <link rel="stylesheet" href="/ui/zade-ui.css">
 </head>
@@ -64,20 +100,36 @@
   <main>
     <div class="page">
       <div class="kicker">Inbox</div>
-      <h1>What needs you</h1>
-      <div class="lede">Approvals, promises, and plans in one place — everything that used to live across three separate pages.</div>
+      <h1>Waiting on you</h1>
+      <div class="zade-page-sub">Some things reach outside these walls. My hands stay tied until you say so — in your own words.</div>
 
-      <div class="tabs">
-        <button type="button" data-tab="decisions" class="active">Needs a decision · <span id="cDecisions">0</span></button>
-        <button type="button" data-tab="promises">Promises · <span id="cPromises">0</span></button>
-        <button type="button" data-tab="motion">In motion · <span id="cMotion">0</span></button>
-      </div>
+      <div class="section-head">Gated actions</div>
+      <div class="cards" id="gatedList"><div class="empty">Loading…</div></div>
 
-      <section data-panel="decisions"><div class="rows" id="decisionsRows"><div class="empty">Loading…</div></div></section>
-      <section data-panel="promises" hidden><div class="rows" id="promisesRows"><div class="empty">Loading…</div></div></section>
-      <section data-panel="motion" hidden><div class="rows" id="motionRows"><div class="empty">Loading…</div></div></section>
+      <div class="section-head">The promises ledger</div>
+      <div class="section-sub">What you said you’d do. What I said I’d watch. I keep both.</div>
+      <div class="ledger" id="promisesList"><div class="empty">Loading…</div></div>
+
+      <div class="section-head">In motion</div>
+      <div class="ledger" id="motionList"><div class="empty">Loading…</div></div>
     </div>
   </main>
+
+  <!-- Typed-confirmation ritual -->
+  <div class="ritual-overlay" id="ritualOverlay">
+    <div class="ritual" role="dialog" aria-modal="true" aria-label="Give me your word">
+      <div class="ritual-kicker">Give me your word</div>
+      <div class="ritual-title" id="ritualTitle"></div>
+      <div class="ritual-body">This one reaches outside these walls. I won’t move until you tell me to — in your own hand. Type the phrase, and it’s done.</div>
+      <div class="ritual-phrase" id="ritualPhrase"></div>
+      <input id="ritualInput" placeholder="Type it exactly…" autocomplete="off" spellcheck="false">
+      <div class="ritual-error" id="ritualError"></div>
+      <div class="ritual-buttons">
+        <button type="button" class="secondary" id="ritualCancel">Not yet</button>
+        <button type="button" class="go" id="ritualGo" hidden>It’s done — go</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const byId = (id) => document.getElementById(id);
@@ -96,194 +148,326 @@
     }
     const prettyLabel = (v) => (v == null || v === '') ? '' : String(v).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
-    const TIER_INFO = {
-      L0_READ: { label: 'Reads (L0)', cls: 'l0' },
-      L1_MEMORY_WRITE: { label: 'Saves to memory (L1)', cls: 'l1' },
-      L2_FILE_WRITE: { label: 'Writes a file (L2)', cls: 'l2' },
-      L3_EXTERNAL_ACTION: { label: 'Reaches outside (L3)', cls: 'l3' },
-      L4_IRREVERSIBLE: { label: 'Irreversible (L4)', cls: 'l4' }
+    // The kernel enforces the phrase exactly; /health publishes the canonical
+    // string so the ritual never drifts from policy.
+    let PHRASE = 'make the jump to hyperspace';
+    (async () => {
+      try {
+        const h = await api('/health');
+        if (h.authority && h.authority.typed_confirmation_phrase) PHRASE = h.authority.typed_confirmation_phrase;
+      } catch (e) { /* fall back to the known phrase */ }
+      byId('ritualPhrase').textContent = PHRASE;
+    })();
+
+    // ---------- Gated actions ----------
+    const TIER_LABELS = {
+      L0_READ: 'L0 · Read', L1_MEMORY_WRITE: 'L1 · Memory', L2_FILE_WRITE: 'L2 · Workspace',
+      L3_EXTERNAL_ACTION: 'L3 · External', L4_IRREVERSIBLE: 'L4 · Irreversible'
     };
-    function tierChip(tier) {
-      const info = TIER_INFO[String(tier || '').toUpperCase()];
-      if (!info) return '';
-      return `<span class="tier ${info.cls}">${esc(info.label)}</span>`;
+    let gated = [];
+
+    function riskLine(item) {
+      const risk = item.risk;
+      if (!risk) return '';
+      if (typeof risk === 'string') return risk;
+      if (Array.isArray(risk)) return risk.map((r) => (typeof r === 'string' ? r : r.summary || r.label || r.detail || '')).filter(Boolean).join(' · ');
+      return [risk.summary, ...(risk.items || risk.risks || [])].map((r) => (typeof r === 'string' ? r : r && (r.summary || r.label || r.detail) || '')).filter(Boolean).join(' · ');
     }
 
-    let state = { decisions: [], promises: [], motion: [] };
-
-    async function load() {
-      const [consoleData, commitments, plans] = await Promise.all([
-        api('/approval-console?status=pending&limit=50').catch(() => ({ items: [] })),
-        api('/commitments?status=open&limit=100').catch(() => ({ items: [] })),
-        api('/action-plans?status=active&limit=50').catch(() => ({ items: [] }))
-      ]);
-      state.decisions = consoleData.items || [];
-      state.promises = commitments.items || [];
-      // action-plan summaries need a detail fetch for their steps
-      const summaries = plans.items || [];
-      state.motion = await Promise.all(summaries.map((p) => api('/action-plans/' + p.id).then((d) => d.item).catch(() => p)));
-
-      byId('cDecisions').textContent = state.decisions.length;
-      byId('cPromises').textContent = state.promises.length;
-      byId('cMotion').textContent = state.motion.length;
-
-      renderDecisions();
-      renderPromises();
-      renderMotion();
-    }
-
-    // ---- Needs a decision (approval requests) ----
-    function renderDecisions() {
-      byId('decisionsRows').innerHTML = state.decisions.length
-        ? state.decisions.map(renderDecision).join('')
-        : '<div class="empty">Nothing is waiting on a decision.</div>';
-    }
-    function renderDecision(item) {
+    function renderGatedCard(item, i) {
       const request = item.request || {};
-      const authority = item.authority_tier || {};
-      const tier = authority.permission_tier || request.permission_tier;
-      const actions = item.available_actions || {};
-      const title = item.zade_wants || request.title || 'Approval request';
-      const detail = request.title && item.zade_wants ? request.title : (request.detail || '');
-      const canAct = actions.approve || actions.deny || actions.defer;
+      const tier = (item.authority_tier || {}).permission_tier || request.permission_tier || '';
+      const actionBits = [request.action, request.target].filter(Boolean).join(' · ');
+      const risk = riskLine(item);
+      let footer;
+      if (item._resolved === 'approved') {
+        footer = '<div class="gated-done"><span class="dot"></span>Done. It’s handled — exactly as far as you allowed, no further.</div>';
+      } else if (item._resolved === 'denied') {
+        footer = '<div class="gated-denied">Understood. My hands stay tied.</div>';
+      } else {
+        footer = `
+          <div class="gated-actions">
+            <button type="button" class="ok" data-act="ritual" data-idx="${i}">Approve — give me your word</button>
+            <button type="button" class="secondary" data-act="deny" data-idx="${i}">Deny</button>
+          </div>`;
+      }
       return `
-        <div class="row" data-id="${esc(item.id)}">
-          <div class="row-main">
-            <div class="row-title">${esc(title)}</div>
-            ${detail ? `<div class="row-detail">${esc(detail)}</div>` : ''}
-            ${tierChip(tier)}
+        <div class="gated" data-id="${esc(item.id)}">
+          <div class="gated-top">
+            <div class="gated-title">${esc(request.title || item.zade_wants || 'Approval request')}</div>
+            <span style="flex:none;display:flex;gap:6px;">
+              ${item.status === 'deferred' ? '<span class="pill deferred">Parked</span>' : ''}
+              ${tier ? `<span class="pill warn">${esc(TIER_LABELS[tier] || prettyLabel(tier))}</span>` : ''}
+            </span>
           </div>
-          <div class="row-side">
-            <span class="pill ${esc(item.status)}">${esc(prettyLabel(item.status))}</span>
-            ${canAct ? `<div class="row-actions">
-              ${actions.approve ? `<button class="ok" data-act="approve">Approve</button>` : ''}
-              ${actions.deny ? `<button class="bad" data-act="deny">Deny</button>` : ''}
-              ${actions.defer ? `<button class="warn" data-act="defer">Defer</button>` : ''}
-            </div>` : ''}
-            <div class="row-error" data-error></div>
-          </div>
+          ${actionBits ? `<div class="gated-action">${esc(actionBits)}</div>` : ''}
+          ${item.zade_wants ? `<div class="gated-wants">${esc(item.zade_wants)}</div>` : ''}
+          ${risk ? `<div class="gated-risk">${esc(risk)}</div>` : ''}
+          ${footer}
+          <div class="gated-error" data-error></div>
         </div>`;
     }
-    const DECISION_BODIES = {
-      approve: { resolved_by: 'founder', dispatch: false, note: '', typed_confirmation: '' },
-      deny: { resolved_by: 'founder', note: '' },
-      defer: { resolved_by: 'founder', note: '', defer_until: null }
-    };
-
-    // ---- Promises (commitments) ----
-    function dueText(item) {
-      if (!item.due_at) return { text: 'no due date', cls: '' };
-      const overdue = item.due_at < new Date().toISOString();
-      const soon = !overdue && item.due_at < new Date(Date.now() + 48 * 3600 * 1000).toISOString();
-      return { text: (overdue ? 'overdue · ' : 'due ') + item.due_at, cls: overdue ? 'due-urgent' : (soon ? 'due-soon' : '') };
-    }
-    function renderPromises() {
-      byId('promisesRows').innerHTML = state.promises.length
-        ? state.promises.map(renderPromise).join('')
-        : '<div class="empty">No open promises.</div>';
-    }
-    function renderPromise(item) {
-      const due = dueText(item);
-      const open = item.status === 'open';
-      return `
-        <div class="row" data-id="${esc(item.id)}">
-          <div class="row-main">
-            <div class="row-title">${esc(item.title)}</div>
-            <div class="row-meta">${esc(prettyLabel(item.who))} · <span class="${due.cls}">${esc(due.text)}</span></div>
-          </div>
-          <div class="row-side">
-            <span class="pill ${esc(item.status)}">${esc(prettyLabel(item.status))}</span>
-            ${open ? `<div class="row-actions">
-              <button class="ok" data-act="done">Done</button>
-              <button class="bad" data-act="miss">Missed</button>
-            </div>` : ''}
-            <div class="row-error" data-error></div>
-          </div>
-        </div>`;
+    function renderGatedList() {
+      byId('gatedList').innerHTML = gated.length
+        ? gated.map((item, i) => renderGatedCard(item, i)).join('')
+        : '<div class="empty">Nothing is waiting on your word. When something needs to reach outside, it lands here first.</div>';
     }
 
-    // ---- In motion (action plans) ----
-    const TERMINAL_PLAN = new Set(['done', 'failed', 'abandoned']);
-    function planProgress(plan) {
-      const steps = plan.steps || [];
-      const total = steps.length;
-      const needsApproval = steps.find((s) => s.status === 'approval_required');
-      if (needsApproval) return { text: 'Next step needs your sign-off', approveStep: needsApproval };
-      const current = steps.find((s) => !['done', 'skipped', 'failed'].includes(s.status));
-      const idx = current ? steps.indexOf(current) + 1 : total;
-      return { text: `Step ${idx} of ${total} · ${prettyLabel(plan.status)}`, approveStep: null };
-    }
-    function renderMotion() {
-      byId('motionRows').innerHTML = state.motion.length
-        ? state.motion.map(renderPlan).join('')
-        : '<div class="empty">No plans in motion.</div>';
-    }
-    function renderPlan(plan) {
-      const prog = planProgress(plan);
-      const terminal = TERMINAL_PLAN.has(plan.status);
-      return `
-        <div class="row" data-id="${esc(plan.id)}">
-          <div class="row-main">
-            <div class="row-title">${esc(plan.title)}</div>
-            <div class="row-meta">${esc(prog.text)}</div>
-          </div>
-          <div class="row-side">
-            <span class="pill ${esc(plan.status)}">${esc(prettyLabel(plan.status))}</span>
-            ${!terminal ? `<div class="row-actions">
-              ${prog.approveStep ? `<button class="ok" data-act="approve-step" data-step="${esc(prog.approveStep.id)}">Approve step</button>` : ''}
-              <button class="secondary" data-act="advance">Advance</button>
-            </div>` : ''}
-            <div class="row-error" data-error></div>
-          </div>
-        </div>`;
+    async function loadGated() {
+      try {
+        // Deferred is parked, not decided — it still waits on Ellie's word.
+        const [pending, deferred] = await Promise.all([
+          api('/approval-console?status=pending&limit=50'),
+          api('/approval-console?status=deferred&limit=50').catch(() => ({ items: [] }))
+        ]);
+        gated = [...(pending.items || []), ...(deferred.items || [])];
+        renderGatedList();
+      } catch (err) {
+        byId('gatedList').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>';
+      }
     }
 
-    // ---- Action wiring (delegated per panel) ----
-    function setRowError(row, msg) { const e = row.querySelector('[data-error]'); if (e) e.textContent = msg || ''; }
-
-    function wirePanel(panelId, handler) {
-      byId(panelId).addEventListener('click', (ev) => {
-        const btn = ev.target.closest('button[data-act]');
-        if (!btn) return;
-        const row = btn.closest('.row');
-        const id = row.getAttribute('data-id');
-        setRowError(row, '');
-        withBusy(btn, '…', async () => {
-          try { await handler(btn.dataset.act, id, btn); await load(); }
-          catch (err) { setRowError(row, err.message); }
+    // ---------- The ritual ----------
+    let ritualTarget = null;
+    function openRitual(idx) {
+      ritualTarget = gated[idx];
+      if (!ritualTarget) return;
+      byId('ritualTitle').textContent = (ritualTarget.request || {}).title || ritualTarget.zade_wants || 'Approval request';
+      byId('ritualInput').value = '';
+      byId('ritualError').textContent = '';
+      byId('ritualGo').hidden = true;
+      byId('ritualOverlay').classList.add('open');
+      byId('ritualInput').focus();
+    }
+    function closeRitual() {
+      ritualTarget = null;
+      byId('ritualOverlay').classList.remove('open');
+    }
+    byId('ritualInput').addEventListener('input', () => {
+      const match = byId('ritualInput').value.trim().toLowerCase() === PHRASE.toLowerCase();
+      byId('ritualGo').hidden = !match;
+    });
+    byId('ritualCancel').addEventListener('click', closeRitual);
+    byId('ritualOverlay').addEventListener('mousedown', (ev) => { if (ev.target === byId('ritualOverlay')) closeRitual(); });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && byId('ritualOverlay').classList.contains('open')) closeRitual();
+    });
+    byId('ritualGo').addEventListener('click', () => withBusy(byId('ritualGo'), '…', async () => {
+      if (!ritualTarget) return;
+      const item = ritualTarget;
+      try {
+        // Approve and dispatch in one motion — the phrase is his authorization
+        // to move, sent verbatim from policy (the kernel compares it exactly).
+        await api('/approval-requests/' + encodeURIComponent(item.id) + '/approve', {
+          method: 'POST',
+          body: JSON.stringify({ resolved_by: 'founder', dispatch: true, note: '', typed_confirmation: PHRASE })
         });
-      });
-    }
+        item._resolved = 'approved';
+        closeRitual();
+        renderGatedList();
+      } catch (err) {
+        byId('ritualError').textContent = err.message;
+      }
+    }));
 
-    wirePanel('decisionsRows', async (act, id) => {
-      await api(`/approval-requests/${encodeURIComponent(id)}/${act}`, { method: 'POST', body: JSON.stringify(DECISION_BODIES[act]) });
-    });
-    wirePanel('promisesRows', async (act, id) => {
-      // act is 'done' | 'miss' -> real routes /done, /miss
-      await api(`/commitments/${encodeURIComponent(id)}/${act}`, { method: 'POST', body: JSON.stringify({ note: '' }) });
-    });
-    wirePanel('motionRows', async (act, id, btn) => {
-      if (act === 'advance') {
-        await api(`/action-plans/${encodeURIComponent(id)}/advance`, { method: 'POST' });
-      } else if (act === 'approve-step') {
-        await api(`/action-plans/${encodeURIComponent(id)}/steps/${encodeURIComponent(btn.dataset.step)}/approve`, { method: 'POST', body: '{}' });
+    byId('gatedList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act]');
+      if (!btn) return;
+      const idx = Number(btn.dataset.idx);
+      if (btn.dataset.act === 'ritual') { openRitual(idx); return; }
+      if (btn.dataset.act === 'deny') {
+        const item = gated[idx];
+        const card = btn.closest('.gated');
+        withBusy(btn, '…', async () => {
+          try {
+            await api('/approval-requests/' + encodeURIComponent(item.id) + '/deny', {
+              method: 'POST', body: JSON.stringify({ resolved_by: 'founder', note: '' })
+            });
+            item._resolved = 'denied';
+            renderGatedList();
+          } catch (err) {
+            const e = card.querySelector('[data-error]'); if (e) e.textContent = err.message;
+          }
+        });
       }
     });
 
-    // ---- Tabs (hash-driven, deep-linkable from Home) ----
-    const TABS = ['decisions', 'promises', 'motion'];
-    function activate(tab) {
-      if (!TABS.includes(tab)) tab = 'decisions';
-      document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-      document.querySelectorAll('[data-panel]').forEach((p) => {
-        if (p.dataset.panel === tab) p.removeAttribute('hidden'); else p.setAttribute('hidden', '');
-      });
+    // ---------- The promises ledger ----------
+    let promises = [];
+    const DAY = 24 * 3600 * 1000;
+    const weekday = (d) => d.toLocaleDateString(undefined, { weekday: 'long' });
+    const shortDate = (d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    function dueDate(item) {
+      if (!item.due_at) return null;
+      const t = new Date(item.due_at).getTime();
+      return Number.isNaN(t) ? null : new Date(t);
     }
-    document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.tab; activate(b.dataset.tab); }));
-    window.addEventListener('hashchange', () => activate(location.hash.replace('#', '')));
-    activate(location.hash.replace('#', ''));
+    function dayName(d, now) { return Math.abs(d.getTime() - now.getTime()) <= 6 * DAY ? weekday(d) : shortDate(d); }
 
-    load().catch((err) => { byId('decisionsRows').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>'; });
+    // The row's serif status line — his framing of where the promise stands.
+    function promiseLine(item) {
+      if (item._line) return item._line;
+      const now = new Date();
+      const due = dueDate(item);
+      const isZade = String(item.who || '').toLowerCase() === 'zade';
+      if (isZade) {
+        const guard = /kill|guard|criteri/i.test((item.title || '') + ' ' + (item.kind || ''));
+        return guard
+          ? 'If it crosses the line you drew, I kill it — and tell you after.'
+          : 'Mine. You’ll hear from me the second it moves the wrong way.';
+      }
+      if (due && due.getTime() < now.getTime()) {
+        return 'You told me ' + dayName(due, now) + '. It’s ' + weekday(now) + '. I don’t forget, and I don’t let your word rot.';
+      }
+      if (due) return dayName(due, now) + '. I’ll have the whole case built for you before then.';
+      return 'No date on it. I’m holding it anyway.';
+    }
+    function promiseDueText(item) {
+      if (item._due) return { text: item._due, late: false };
+      const due = dueDate(item);
+      if (!due) return { text: item.cadence ? prettyLabel(item.cadence) + ' · monitoring' : 'No due date', late: false };
+      const now = new Date();
+      const lateDays = Math.floor((now.getTime() - due.getTime()) / DAY);
+      if (lateDays > 0) return { text: 'Due ' + dayName(due, now) + ' · ' + lateDays + (lateDays === 1 ? ' day late' : ' days late'), late: true };
+      return { text: 'Due ' + dayName(due, now), late: false };
+    }
+
+    function renderPromises() {
+      byId('promisesList').innerHTML = promises.length
+        ? promises.map((item, i) => {
+            const who = String(item.who || '').toLowerCase() === 'zade' ? 'Zade' : 'Ellie';
+            const due = promiseDueText(item);
+            const canAct = who === 'Ellie' && item.status === 'open';
+            return `
+              <div class="promise" data-idx="${i}">
+                <div class="promise-top">
+                  <div class="promise-who">
+                    <span class="who-pill">${who}</span>
+                    <span class="promise-title">${esc(item.title)}</span>
+                  </div>
+                  <span class="promise-due${due.late ? ' late' : ''}">${esc(due.text)}</span>
+                </div>
+                <div class="promise-line">${esc(promiseLine(item))}</div>
+                ${canAct ? `
+                  <div class="promise-actions">
+                    <button type="button" class="ok" data-act="done">Done</button>
+                    <button type="button" data-act="carry">Carry it for me</button>
+                    <button type="button" class="secondary" data-act="miss">Missed</button>
+                  </div>` : ''}
+                <div class="promise-error" data-error hidden></div>
+              </div>`;
+          }).join('')
+        : '<div class="empty">No promises on the ledger. Give me your word on something and I’ll hold it.</div>';
+    }
+
+    async function loadPromises() {
+      try {
+        const data = await api('/commitments?status=open&limit=100');
+        promises = data.items || [];
+        renderPromises();
+      } catch (err) {
+        byId('promisesList').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>';
+      }
+    }
+
+    // History is never rewritten: actions swap the row's status line in
+    // place — the row stays on the ledger.
+    byId('promisesList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act]');
+      if (!btn) return;
+      const row = btn.closest('.promise');
+      const item = promises[Number(row.dataset.idx)];
+      withBusy(btn, '…', async () => {
+        try {
+          if (btn.dataset.act === 'done') {
+            await api('/commitments/' + encodeURIComponent(item.id) + '/done', { method: 'POST', body: JSON.stringify({ note: '' }) });
+            item.status = 'done';
+            item._line = 'Done. I logged it as grade-A evidence. That’s one less thing that can hurt you.';
+          } else if (btn.dataset.act === 'miss') {
+            await api('/commitments/' + encodeURIComponent(item.id) + '/miss', { method: 'POST', body: JSON.stringify({ note: '' }) });
+            item.status = 'missed';
+            item._line = 'Missed. I don’t rewrite history — it’s on the record, and we move.';
+          } else if (btn.dataset.act === 'carry') {
+            const newDue = new Date(Date.now() + 3 * DAY).toISOString().slice(0, 10);
+            await api('/commitments/' + encodeURIComponent(item.id) + '/renegotiate', {
+              method: 'POST', body: JSON.stringify({ due_at: newDue, note: 'Carried by Zade.' })
+            });
+            item.status = 'open';
+            item.who = 'zade';
+            item._line = 'I’ve got it. Off your plate. I’ll surface it only if it’s about to slip.';
+            item._due = 'Carried by Zade · due ' + newDue;
+          }
+          renderPromises();
+        } catch (err) {
+          const e = row.querySelector('[data-error]');
+          if (e) { e.hidden = false; e.textContent = err.message; }
+        }
+      });
+    });
+
+    // ---------- In motion (action plans) ----------
+    const TERMINAL_PLAN = new Set(['done', 'failed', 'abandoned']);
+    let motion = [];
+    function planProgress(plan) {
+      const steps = plan.steps || [];
+      const needsApproval = steps.find((s) => s.status === 'approval_required');
+      if (needsApproval) return { text: 'Next step needs your sign-off', approveStep: needsApproval };
+      const current = steps.find((s) => !['done', 'skipped', 'failed'].includes(s.status));
+      const idx = current ? steps.indexOf(current) + 1 : steps.length;
+      return { text: `Step ${idx} of ${steps.length} · ${prettyLabel(plan.status)}`, approveStep: null };
+    }
+    function renderMotion() {
+      byId('motionList').innerHTML = motion.length
+        ? motion.map((plan, i) => {
+            const prog = planProgress(plan);
+            const terminal = TERMINAL_PLAN.has(plan.status);
+            return `
+              <div class="motion-row" data-idx="${i}">
+                <div>
+                  <div class="motion-title">${esc(plan.title)}</div>
+                  <div class="motion-sub">${esc(prog.text)}</div>
+                </div>
+                ${terminal ? `<span class="pill ${esc(plan.status)}">${esc(prettyLabel(plan.status))}</span>` : `
+                  <div class="motion-actions">
+                    ${prog.approveStep ? `<button type="button" class="ok" data-act="approve-step" data-step="${esc(prog.approveStep.id)}">Approve step</button>` : ''}
+                    <button type="button" class="secondary" data-act="advance">Advance</button>
+                  </div>`}
+              </div>`;
+          }).join('')
+        : '<div class="empty">Nothing in motion. When I’m running a plan for you, it shows here.</div>';
+    }
+    async function loadMotion() {
+      try {
+        const plans = await api('/action-plans?status=active&limit=50');
+        const summaries = plans.items || [];
+        motion = await Promise.all(summaries.map((p) => api('/action-plans/' + p.id).then((d) => d.item).catch(() => p)));
+        renderMotion();
+      } catch (err) {
+        byId('motionList').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>';
+      }
+    }
+    byId('motionList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act]');
+      if (!btn) return;
+      const row = btn.closest('.motion-row');
+      const plan = motion[Number(row.dataset.idx)];
+      withBusy(btn, '…', async () => {
+        try {
+          if (btn.dataset.act === 'advance') {
+            await api('/action-plans/' + encodeURIComponent(plan.id) + '/advance', { method: 'POST' });
+          } else {
+            await api('/action-plans/' + encodeURIComponent(plan.id) + '/steps/' + encodeURIComponent(btn.dataset.step) + '/approve', { method: 'POST', body: '{}' });
+          }
+          await loadMotion();
+        } catch (err) {
+          row.querySelector('.motion-sub').textContent = 'Failed: ' + err.message;
+        }
+      });
+    });
+
+    loadGated();
+    loadPromises();
+    loadMotion();
   </script>
   <script src="/ui/zade-ui.js"></script>
 </body>

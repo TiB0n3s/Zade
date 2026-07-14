@@ -578,9 +578,13 @@ class ApprovalService:
                 "policy_version": authority.get("policy_version", ""),
             },
             "available_actions": {
-                "approve": request.status == "pending",
-                "deny": request.status == "pending",
-                "defer": request.status == "pending",
+                # Deferred is parked, not decided — approve/deny/defer must stay
+                # available, matching _load_open_request's semantics. Advertising
+                # pending-only here left deferred requests with dead console
+                # buttons the backend would actually have accepted.
+                "approve": request.status in {"pending", "deferred"},
+                "deny": request.status in {"pending", "deferred"},
+                "defer": request.status in {"pending", "deferred"},
                 "edit": request.status in {"pending", "deferred"},
                 "dispatch": can_dispatch,
             },

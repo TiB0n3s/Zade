@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade — Vault</title>
+  <style>
+    /* Page-specific layout only; colors/type/components from /ui/zade-ui.css. */
+    * { box-sizing: border-box; }
+    h1 { margin: 0; font-size: 38px; line-height: 1.05; font-weight: 500; }
+    body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
+    .page { padding: 46px 48px 96px; max-width: 860px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 12px; }
+
+    .tabs { display: flex; gap: 6px; margin: 30px 0 24px; flex-wrap: wrap; }
+    .tabs button { border-radius: 999px; padding: 7px 15px; font-size: 12.5px; min-height: 0; border: 1px solid var(--z-line-strong); color: var(--z-muted); background: transparent; }
+    .tabs button.active { border-color: var(--z-accent); background: rgba(194,160,106,0.10); color: var(--z-text); }
+    [data-panel][hidden] { display: none; }
+
+    .section { margin-bottom: 24px; }
+    .field-label { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 10px; }
+    .stack input { width: 100%; margin-bottom: 8px; border-radius: 6px; }
+    .inline { display: flex; gap: 8px; }
+    .inline input { flex: 1; }
+    .inline button { flex: none; border-radius: 6px; }
+
+    .row { padding: 11px 2px; border-top: 1px solid var(--z-line-soft); display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .row-title { font-size: 13px; color: var(--z-ink-hi); word-break: break-all; }
+    .row-sub { font-size: 11px; color: var(--z-faint); }
+    .row-actions button { min-height: 26px; padding: 4px 11px; font-size: 11px; }
+    .empty { color: var(--z-faint); font-size: 12.5px; padding: 12px 2px; }
+    .note { font-size: 11.5px; margin-top: 6px; min-height: 14px; }
+    .note.good { color: var(--z-ok-text); }
+    .note.err { color: var(--z-bad-text); }
+    .plan { border-left: 2px solid var(--z-accent-dim, rgba(176,71,63,0.4)); padding: 10px 14px; margin-top: 10px; font-size: 12.5px; color: var(--z-muted); white-space: pre-wrap; word-break: break-all; }
+    .plan a { color: var(--z-accent-2, #d07d74); }
+    .guard { font-size: 11px; color: var(--z-faint); margin-top: 4px; }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body data-zade-type="sans">
+  <main>
+    <div class="page">
+      <div class="kicker">Ops · Vault</div>
+      <h1>Everything you’ve trusted me with.</h1>
+      <div class="zade-page-sub">Hot on C:\AI Brain, cold on the archive drive. Encrypted, local, and never once leaving this machine. I guard it like it’s the only thing that matters — because to you, some of it is.</div>
+
+      <div class="tabs">
+        <button type="button" data-tab="browse" class="active">Browse &amp; search</button>
+        <button type="button" data-tab="change">Move / delete</button>
+        <button type="button" data-tab="trash">Trash</button>
+      </div>
+
+      <section data-panel="browse">
+        <div class="section stack">
+          <div class="field-label">Browse a folder (empty = vault root)</div>
+          <div class="inline"><input id="listPath" placeholder="e.g. 03-projects/zade"><button id="listBtn">List</button></div>
+          <div id="listOut"><div class="empty">Pick a folder to list.</div></div>
+        </div>
+        <div class="section stack">
+          <div class="field-label">Search filenames</div>
+          <div class="inline"><input id="searchQuery" placeholder="Substring or glob"><button id="searchBtn">Search</button></div>
+          <div id="searchOut"></div>
+        </div>
+      </section>
+
+      <section data-panel="change" hidden>
+        <div class="section stack">
+          <div class="field-label">Move</div>
+          <input id="moveSrc" placeholder="Source path (relative to vault root)">
+          <input id="moveDst" placeholder="Destination path">
+          <div class="inline">
+            <button id="movePreviewBtn" class="secondary">Preview (dry-run)</button>
+            <button id="moveQueueBtn">Queue move for approval</button>
+          </div>
+          <div class="note" id="moveNote"></div>
+          <div class="plan" id="movePlan" hidden></div>
+        </div>
+        <div class="section stack">
+          <div class="field-label">Delete (to trash)</div>
+          <input id="delPath" placeholder="Path to delete">
+          <div class="inline">
+            <button id="delPreviewBtn" class="secondary">Preview (dry-run)</button>
+            <button id="delQueueBtn">Queue delete for approval</button>
+          </div>
+          <div class="note" id="delNote"></div>
+          <div class="plan" id="delPlan" hidden></div>
+          <div class="guard">Guards: raw-capture folders are protected, `.zade-protected` subtrees refuse changes, top-level folders need an explicit override, and the vault root is never deletable.</div>
+        </div>
+      </section>
+
+      <section data-panel="trash" hidden>
+        <div class="section">
+          <div class="field-label">Restorable snapshots</div>
+          <div id="trashOut"><div class="empty">Loading…</div></div>
+          <div class="note" id="trashNote"></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    (async () => { if (token()) return; try { const r = await fetch('/session/token'); if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); } } catch (e) {} })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    async function withBusy(btn, label, fn) {
+      const original = btn.textContent; btn.disabled = true; btn.textContent = label;
+      try { return await fn(); } finally { btn.disabled = false; btn.textContent = original; }
+    }
+    const fmtSize = (n) => n == null ? '' : n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 102.4) / 10 + ' KB' : Math.round(n / 104857.6) / 10 + ' MB';
+
+    const renderEntry = (e) => `
+      <div class="row">
+        <div>
+          <div class="row-title">${esc(e.path || e.name)}</div>
+          <div class="row-sub">${esc(e.type || (e.is_dir ? 'folder' : 'file'))}${e.size != null ? ' · ' + fmtSize(e.size) : ''}${e.protected ? ' · protected' : ''}${e.instructions ? ' · has .zade-instructions.md' : ''}</div>
+        </div>
+      </div>`;
+
+    async function listFolder() {
+      const out = byId('listOut');
+      try {
+        const result = await api('/vault/list?path=' + encodeURIComponent(byId('listPath').value.trim()) + '&limit=200');
+        const entries = result.entries || result.items || [];
+        out.innerHTML = entries.length ? entries.map(renderEntry).join('') : '<div class="empty">Empty folder.</div>';
+      } catch (err) { out.innerHTML = '<div class="empty">Could not list — ' + esc(err.message) + '</div>'; }
+    }
+
+    async function searchVault() {
+      const out = byId('searchOut');
+      const query = byId('searchQuery').value.trim();
+      if (!query) { out.innerHTML = ''; return; }
+      try {
+        const result = await api('/vault/search?query=' + encodeURIComponent(query) + '&limit=100');
+        const matches = result.matches || result.entries || result.items || [];
+        out.innerHTML = matches.length ? matches.map(renderEntry).join('') : '<div class="empty">No matches.</div>';
+      } catch (err) { out.innerHTML = '<div class="empty">Search failed — ' + esc(err.message) + '</div>'; }
+    }
+
+    function showPlan(box, result, queued) {
+      box.hidden = false;
+      const lines = [];
+      if (queued) lines.push(`Work item #${esc(result.work_item_id ?? result.id ?? '?')} queued — approve &amp; dispatch in <a href="/ui/approvals.html">Approvals</a>.`);
+      if (result.plan) lines.push(esc(JSON.stringify(result.plan, null, 2)));
+      else {
+        const copy = { ...result }; delete copy.note;
+        lines.push(esc(JSON.stringify(copy, null, 2)));
+      }
+      if (result.note) lines.push(esc(result.note));
+      box.innerHTML = lines.join('\n');
+    }
+
+    async function moveOp(dryRun) {
+      const note = byId('moveNote'); note.textContent = ''; note.className = 'note';
+      const box = byId('movePlan'); box.hidden = true;
+      const src = byId('moveSrc').value.trim(); const dst = byId('moveDst').value.trim();
+      if (!src || !dst) { note.textContent = 'Source and destination are both required.'; note.className = 'note err'; return; }
+      try {
+        const result = await api('/vault/move', { method: 'POST', body: JSON.stringify({ src, dst, dry_run: dryRun }) });
+        note.textContent = dryRun ? 'Dry-run only — nothing changed.' : 'Queued for approval.'; note.className = 'note good';
+        showPlan(box, result, !dryRun);
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+
+    async function deleteOp(dryRun) {
+      const note = byId('delNote'); note.textContent = ''; note.className = 'note';
+      const box = byId('delPlan'); box.hidden = true;
+      const path = byId('delPath').value.trim();
+      if (!path) { note.textContent = 'Path is required.'; note.className = 'note err'; return; }
+      try {
+        const result = await api('/vault/delete', { method: 'POST', body: JSON.stringify({ path, dry_run: dryRun }) });
+        note.textContent = dryRun ? 'Dry-run only — nothing changed.' : 'Queued for approval.'; note.className = 'note good';
+        showPlan(box, result, !dryRun);
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+
+    async function loadTrash() {
+      const out = byId('trashOut');
+      try {
+        const result = await api('/vault/trash?limit=50');
+        const items = result.items || result.entries || [];
+        out.innerHTML = items.length ? items.map((t) => `
+          <div class="row" data-trash="${esc(t.trash_id || t.id)}">
+            <div>
+              <div class="row-title">${esc(t.original_path || t.path || '(unknown)')}</div>
+              <div class="row-sub">${esc(t.deleted_at || t.created_at || '')}${t.size != null ? ' · ' + fmtSize(t.size) : ''}</div>
+            </div>
+            <div class="row-actions"><button data-act="restore">Restore</button></div>
+          </div>`).join('') : '<div class="empty">Trash is empty.</div>';
+      } catch (err) { out.innerHTML = '<div class="empty">Could not load trash — ' + esc(err.message) + '</div>'; }
+    }
+    byId('trashOut').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act="restore"]');
+      if (!btn) return;
+      const row = btn.closest('.row');
+      withBusy(btn, '…', async () => {
+        const note = byId('trashNote'); note.textContent = ''; note.className = 'note';
+        try {
+          await api('/vault/restore', { method: 'POST', body: JSON.stringify({ trash_id: row.getAttribute('data-trash') }) });
+          note.textContent = 'Restored.'; note.className = 'note good';
+          await loadTrash();
+        } catch (err) { note.textContent = 'Restore failed: ' + err.message; note.className = 'note err'; }
+      });
+    });
+
+    const TABS = ['browse', 'change', 'trash'];
+    function activate(tab) {
+      if (!TABS.includes(tab)) tab = 'browse';
+      document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+      document.querySelectorAll('[data-panel]').forEach((p) => { if (p.dataset.panel === tab) p.removeAttribute('hidden'); else p.setAttribute('hidden', ''); });
+      if (tab === 'trash') loadTrash();
+    }
+    document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.tab; activate(b.dataset.tab); }));
+    window.addEventListener('hashchange', () => activate(location.hash.replace('#', '')));
+    activate(location.hash.replace('#', ''));
+
+    byId('listBtn').addEventListener('click', () => withBusy(byId('listBtn'), '…', listFolder));
+    byId('listPath').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); listFolder(); } });
+    byId('searchBtn').addEventListener('click', () => withBusy(byId('searchBtn'), '…', searchVault));
+    byId('searchQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchVault(); } });
+    byId('movePreviewBtn').addEventListener('click', () => withBusy(byId('movePreviewBtn'), '…', () => moveOp(true)));
+    byId('moveQueueBtn').addEventListener('click', () => withBusy(byId('moveQueueBtn'), 'Queuing…', () => moveOp(false)));
+    byId('delPreviewBtn').addEventListener('click', () => withBusy(byId('delPreviewBtn'), '…', () => deleteOp(true)));
+    byId('delQueueBtn').addEventListener('click', () => withBusy(byId('delQueueBtn'), 'Queuing…', () => deleteOp(false)));
+
+    listFolder();
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

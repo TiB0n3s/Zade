@@ -256,6 +256,34 @@ class KernelDatabase:
             )
             return memory_id
 
+    def delete_memory(self, memory_id: int) -> dict[str, Any] | None:
+        """Remove a memory row plus its FTS entry; returns the deleted record's
+        summary, or None if no such memory exists. Relationships that cited the
+        memory as evidence keep the edge but lose the citation (FK is enforced,
+        so the reference must be cleared before the row can go)."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if row is None:
+                return None
+            # External-content FTS5 requires the old column values to delete.
+            conn.execute(
+                "INSERT INTO memory_fts (memory_fts, rowid, title, content, kind, source) VALUES ('delete', ?, ?, ?, ?, ?)",
+                (memory_id, row["title"], row["content"], row["kind"], row["source"]),
+            )
+            conn.execute(
+                "UPDATE relationships SET evidence_memory_id = NULL WHERE evidence_memory_id = ?",
+                (memory_id,),
+            )
+            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            return {"id": memory_id, "kind": row["kind"], "title": row["title"], "source": row["source"]}
+
+    def memory_stats(self) -> dict[str, int]:
+        with self.connect() as conn:
+            hot = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            documents = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            chunks = conn.execute("SELECT COUNT(*) FROM document_chunks").fetchone()[0]
+        return {"hot_memories": int(hot), "cold_documents": int(documents), "cold_chunks": int(chunks)}
+
     def create_ingestion_job(self, *, job_type: str, source: str, metadata: dict[str, Any] | None = None) -> int:
         with self.connect() as conn:
             cur = conn.execute(

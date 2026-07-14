@@ -337,6 +337,7 @@
             <button class="warn" data-action="defer" data-id="${esc(item.id)}" title="Put this off for later without approving or denying it" ${item.available_actions && item.available_actions.defer ? '' : 'disabled'}>Defer</button>
             <button class="secondary" data-action="edit" data-id="${esc(item.id)}" title="Save your changes to the fields above without approving, denying, or deferring" ${item.available_actions && item.available_actions.edit ? '' : 'disabled'}>Save Edit</button>
           </div>
+          ${item.available_actions && (item.available_actions.approve || item.available_actions.deny || item.available_actions.defer || item.available_actions.edit) ? '' : `<div class="notice" style="margin-top:8px;">Already ${esc(prettyLabel(item.status).toLowerCase())} — a request can only be acted on while it&rsquo;s pending. The decision is on the record; queue the action again if you want it reconsidered.</div>`}
           <div class="error" data-error></div>
         </article>
       `;
