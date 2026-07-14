@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 25
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -21,6 +21,9 @@ COLUMN_PATCHES: tuple[tuple[str, str, str], ...] = (
     # v23: conversation -> memory distillation cursor. Tracks which turns have been
     # promoted into searchable memory so promotion is incremental and idempotent.
     ("conversations", "distilled_through_turn_id", "distilled_through_turn_id INTEGER"),
+    # v25: content hash on document-chunk embeddings, so re-embedding (e.g. after
+    # adding retrieval prefixes) can skip unchanged chunks.
+    ("chunk_embeddings", "content_hash", "content_hash TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -825,16 +828,32 @@ class KernelDatabase:
             )
             return chunk_id
 
-    def add_chunk_embedding(self, *, chunk_id: int, model: str, vector: list[float]) -> int:
+    def add_chunk_embedding(self, *, chunk_id: int, model: str, vector: list[float], content_hash: str = "") -> int:
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                INSERT OR REPLACE INTO chunk_embeddings (chunk_id, model, dimensions, vector_json, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO chunk_embeddings (chunk_id, model, dimensions, content_hash, vector_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (chunk_id, model, len(vector), json.dumps(vector), utc_now()),
+                (chunk_id, model, len(vector), content_hash, json.dumps(vector), utc_now()),
             )
             return int(cur.lastrowid)
+
+    def list_all_chunks(self, *, limit: int = 1_000_000) -> list[dict[str, Any]]:
+        """id/text for every document chunk — the source the chunk embedding index
+        is (re)built from."""
+        with self.connect() as conn:
+            rows = conn.execute("SELECT id, text FROM document_chunks ORDER BY id LIMIT ?", (limit,)).fetchall()
+        return [{"id": int(row["id"]), "text": str(row["text"])} for row in rows]
+
+    def list_chunk_embedding_hashes(self, model: str) -> dict[int, str]:
+        """{chunk_id: content_hash} for one embedding model, so a rebuild can skip
+        chunks whose embedded text is unchanged."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, content_hash FROM chunk_embeddings WHERE model = ?", (model,)
+            ).fetchall()
+        return {int(row["chunk_id"]): str(row["content_hash"]) for row in rows}
 
     def document_chunk_count(self, document_id: int) -> int:
         with self.connect() as conn:
@@ -1038,6 +1057,86 @@ class KernelDatabase:
             """,
             params,
         ).fetchall()
+
+    def upsert_memory_embedding(self, *, memory_id: int, model: str, vector: list[float], content_hash: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_embeddings (memory_id, model, dimensions, content_hash, vector_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (memory_id, model, len(vector), content_hash, json.dumps(vector), utc_now()),
+            )
+
+    def list_memory_embedding_hashes(self, model: str) -> dict[int, str]:
+        """{memory_id: content_hash} for one embedding model, so a rebuild can skip
+        memories whose title+content is unchanged."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT memory_id, content_hash FROM memory_embeddings WHERE model = ?",
+                (model,),
+            ).fetchall()
+        return {int(row["memory_id"]): str(row["content_hash"]) for row in rows}
+
+    def list_all_memories(self, *, limit: int = 100_000) -> list[dict[str, Any]]:
+        """id/title/content for every memory, oldest first — the source the memory
+        embedding index is (re)built from."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, title, content FROM memories ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [{"id": int(row["id"]), "title": str(row["title"]), "content": str(row["content"])} for row in rows]
+
+    def semantic_search_memories(self, query_vector: list[float], limit: int = 8) -> list[dict[str, Any]]:
+        """Cosine similarity over embedded memories (brute force, mirroring
+        semantic_search_chunks). Empty when nothing is embedded yet."""
+        if not query_vector:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.kind, m.title, m.content, m.source, m.metadata_json,
+                       e.model AS embedding_model, e.vector_json
+                FROM memory_embeddings e
+                JOIN memories m ON m.id = e.memory_id
+                """
+            ).fetchall()
+        scored = []
+        for row in rows:
+            vector = json.loads(row["vector_json"] or "[]")
+            score = cosine_similarity(query_vector, vector)
+            scored.append(
+                {
+                    "score": score,
+                    "id": int(row["id"]),
+                    "kind": str(row["kind"]),
+                    "title": str(row["title"]),
+                    "content": str(row["content"]),
+                    "source": str(row["source"]),
+                    "metadata": json.loads(row["metadata_json"] or "{}"),
+                    "embedding_model": row["embedding_model"],
+                }
+            )
+        scored.sort(key=lambda item: item["score"], reverse=True)
+        return scored[:limit]
+
+    def get_memory(self, memory_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, created_at, kind, title, content, source, metadata_json FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+        return _memory_row_to_dict(row) if row else None
+
+    def list_memory_rows(self, *, limit: int = 100_000) -> list[dict[str, Any]]:
+        """Full memory rows (oldest first) — the source the memory files mirror."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, created_at, kind, title, content, source, metadata_json FROM memories ORDER BY id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [_memory_row_to_dict(row) for row in rows]
 
     def recent_audit_events(self, limit: int = 25) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -1636,6 +1735,13 @@ class KernelDatabase:
                 (utc_now(), summary, summary_through_turn_id, conversation_id),
             )
 
+    def update_conversation_status(self, conversation_id: int, *, status: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ?, status = ? WHERE id = ?",
+                (utc_now(), status, conversation_id),
+            )
+
     def update_conversation_distilled(
         self,
         conversation_id: int,
@@ -1670,6 +1776,18 @@ def _memory_from_row(row: sqlite3.Row) -> MemoryRecord:
         source=str(row["source"]),
         metadata=json.loads(row["metadata_json"] or "{}"),
     )
+
+
+def _memory_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "created_at": str(row["created_at"]),
+        "kind": str(row["kind"]),
+        "title": str(row["title"]),
+        "content": str(row["content"]),
+        "source": str(row["source"]),
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+    }
 
 
 def _work_item_from_row(row: sqlite3.Row) -> WorkItem:
@@ -2075,9 +2193,23 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings (
   chunk_id INTEGER NOT NULL REFERENCES document_chunks(id) ON DELETE CASCADE,
   model TEXT NOT NULL,
   dimensions INTEGER NOT NULL,
+  content_hash TEXT NOT NULL DEFAULT '',
   vector_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   PRIMARY KEY(chunk_id, model)
+);
+
+-- Derived, rebuildable semantic index over the memory store (Tier 4). One row per
+-- (memory, embedding model); content_hash lets a rebuild skip unchanged memories.
+-- Cascades on memory delete. Never the source of truth — rebuildable from memories.
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+  memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  vector_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(memory_id, model)
 );
 
 CREATE TABLE IF NOT EXISTS skill_registry (

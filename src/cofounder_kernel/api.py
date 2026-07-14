@@ -5,8 +5,10 @@ import logging
 import secrets
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -184,7 +186,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         authority=authority,
         typed_confirmation_phrase=authority.summary()["typed_confirmation_phrase"],
     )
-    conversations = ConversationService(config=cfg, db=db, ollama=ollama)
+    conversations = ConversationService(config=cfg, db=db, ollama=ollama, ingestion=ingestion)
     critic = ContrarianCritic(config=cfg, db=db, ollama=ollama, founder=founder)
     runtime = RuntimeService(
         config=cfg,
@@ -199,6 +201,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         critic=critic,
         trading_bot=trading_bot,
         approvals=approvals,
+        inventory_provider=lambda: _inventory_payload(cfg, authority, tools, db, founder),
     )
     teaching = DeepThoughtTeachingBridge(config=cfg, db=db, founder=founder, ingestion=ingestion)
     experiments = ExperimentService(config=cfg, db=db, founder=founder, ingestion=ingestion)
@@ -240,6 +243,26 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     # queue. Injected here because ResearchService is built after the runtime (it
     # needs the notification bus, which is built later).
     runtime.research = research
+
+    # Tier 4: keep the semantic memory index current. Incremental + best-effort —
+    # a fresh DB or an embedder outage is a harmless no-op, and unchanged memories
+    # are skipped, so steady-state startup makes no embedder calls.
+    try:
+        ingestion.rebuild_memory_embeddings()
+    except Exception:
+        pass
+    # Tier 6: mirror memories to human-editable files (their source of truth).
+    # Idempotent backfill — only writes files that don't exist yet.
+    try:
+        ingestion.export_memories_to_files()
+    except Exception:
+        pass
+    # Document/chunk semantic index with retrieval prefixes. Incremental +
+    # best-effort — unchanged chunks are skipped, so steady-state startup is a no-op.
+    try:
+        ingestion.rebuild_chunk_embeddings()
+    except Exception:
+        pass
 
     app = FastAPI(title=f"{cfg.identity.name} Local AI Co-founder Kernel", version="0.1.0")
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
@@ -301,6 +324,12 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         if request.url.path.startswith("/ui"):
             response.headers["Cache-Control"] = "no-cache"
         return response
+
+    # Added last so CORS wraps the mutation guard: preflight OPTIONS is answered
+    # before the guard runs, and the guard's 401 gets CORS headers stamped — so
+    # the dev browser can read the "token required" hint instead of an opaque
+    # CORS failure. No-op unless [security] cors_dev_origins is configured.
+    _configure_dev_cors(app, cfg)
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -560,6 +589,28 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.post("/memory/reindex")
+    def memory_reindex() -> dict[str, Any]:
+        """Rebuild the derived semantic memory index from the memories table.
+        Incremental (skips unchanged memories); safe to call any time."""
+        return ingestion.rebuild_memory_embeddings()
+
+    @app.post("/memory/export-files")
+    def memory_export_files() -> dict[str, Any]:
+        """Backfill the human-editable memory file store from the DB (idempotent)."""
+        return ingestion.export_memories_to_files()
+
+    @app.post("/memory/rebuild-from-files")
+    def memory_rebuild_from_files() -> dict[str, Any]:
+        """Rebuild the DB index to exactly match the memory files (files are the
+        source of truth). Use after hand-editing or deleting memory files."""
+        return ingestion.rebuild_index_from_files()
+
+    @app.post("/memory/reindex-documents")
+    def memory_reindex_documents() -> dict[str, Any]:
+        """Re-embed ingested document chunks with retrieval prefixes (incremental)."""
+        return ingestion.rebuild_chunk_embeddings()
+
     @app.post("/conversations")
     def create_conversation(payload: ConversationCreate | None = None) -> dict[str, Any]:
         request = payload or ConversationCreate()
@@ -593,6 +644,15 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"result": result or {"status": "nothing_to_distill", "written": [], "count": 0}}
+
+    @app.post("/conversations/{conversation_id}/end")
+    def end_conversation(conversation_id: int) -> dict[str, Any]:
+        """Close a thread: final distill + mark it ended so a later boot starts a
+        fresh session instead of piling onto it."""
+        try:
+            return conversations.end_session(conversation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/surface/attention")
     def surface_attention() -> dict[str, Any]:
@@ -1990,6 +2050,64 @@ def _warn_on_weak_posture(cfg: KernelConfig, token: str) -> None:
         )
     elif not is_loopback:
         log.warning("SECURITY: host %s is not loopback; ensure this is intended and access-controlled.", host)
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    """True only for http(s)://localhost|127.0.0.1|[::1] origins."""
+    parsed = urlparse(origin)
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def _validated_cors_origins(cfg: KernelConfig) -> tuple[str, ...]:
+    """Filter configured dev CORS origins down to the ones we'll actually allow.
+
+    Guardrails, each with a loud SECURITY log so a misconfig is never silent:
+    "*" is refused (it would open reads to every site the user visits), and any
+    non-loopback origin is refused (dev CORS must never widen off-machine reads,
+    since GET endpoints are unauthenticated). Returns () when nothing survives —
+    which leaves CORS disabled entirely.
+    """
+    log = logging.getLogger("cofounder_kernel.security")
+    safe: list[str] = []
+    for origin in cfg.security.cors_dev_origins:
+        if origin == "*":
+            log.warning("SECURITY: wildcard CORS origin '*' refused; list explicit dev origins instead.")
+        elif not _is_loopback_origin(origin):
+            log.warning(
+                "SECURITY: CORS origin %s is not loopback; refused (dev CORS must not widen off-machine reads). "
+                "Remove it or add transport auth.",
+                origin,
+            )
+        else:
+            safe.append(origin)
+    if safe:
+        log.warning(
+            "SECURITY: dev CORS is ENABLED for %s — read endpoints (including /session/token) are readable "
+            "by these origins. This is a dev-only convenience; keep [security] cors_dev_origins empty in production.",
+            ", ".join(safe),
+        )
+    return tuple(safe)
+
+
+def _configure_dev_cors(app: FastAPI, cfg: KernelConfig) -> None:
+    """Attach a tightly-scoped CORS layer when dev origins are configured.
+
+    Credentials mode stays OFF: the kernel authenticates with the X-Zade-Token
+    header (from localStorage), never a cookie, so no ambient credential should
+    ride along cross-origin. X-Zade-Token is allow-listed so token-gated
+    mutations survive the preflight. Starlette answers the OPTIONS preflight.
+    """
+    origins = _validated_cors_origins(cfg)
+    if not origins:
+        return
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(origins),
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["X-Zade-Token", "Content-Type"],
+        max_age=600,
+    )
 
 
 def _tool_error(data: Any) -> str:

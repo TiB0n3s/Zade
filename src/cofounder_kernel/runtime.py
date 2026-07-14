@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .authority import AuthorityDecision, AuthorityPolicy, AuthorityRequest, AuthorityResult
 from .autonomy import WorkQueueService
@@ -17,6 +20,91 @@ from .ingestion import IngestionService
 from .ollama import OllamaClient
 from .skills import SkillService
 from .trading_bot import TradingBotBridge
+
+
+# ---------------------------------------------------------------------------
+# Living vault documents (identity, core knowledge)
+#
+# Zade's persona/voice (Tier 1) and Ellie's curated core knowledge (Tier 2) live
+# as hand-editable prose documents in the founder's vault instead of only in the
+# database. When a file is present it is the source of truth and is re-read on
+# each turn (cached on the file's mtime, so disk is touched only when the file
+# actually changes). When absent the runtime falls back gracefully — the identity
+# file to the seeded DB charters, core knowledge to an empty note.
+# ---------------------------------------------------------------------------
+
+_IDENTITY_FILE_RELPATH = ("40-profile", "zade", "identity.md")
+_CORE_KNOWLEDGE_RELPATH = ("40-profile", "zade", "core-knowledge.md")
+_identity_doc_cache: dict[str, tuple[float, str]] = {}
+_core_knowledge_cache: dict[str, tuple[float, str]] = {}
+
+
+def _load_text_file_cached(path: Path, cache: dict[str, tuple[float, str]]) -> str:
+    """Read a text file, cached on its mtime. Returns "" if it doesn't exist.
+
+    An edit is picked up on the next call with no restart; an unchanged file is
+    never re-read from disk.
+    """
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    key = str(path)
+    cached = cache.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    cache[key] = (mtime, text)
+    return text
+
+
+def _identity_file_path(config: KernelConfig) -> Path:
+    return Path(config.paths.hot_root).joinpath(*_IDENTITY_FILE_RELPATH)
+
+
+def _core_knowledge_path(config: KernelConfig) -> Path:
+    return Path(config.paths.hot_root).joinpath(*_CORE_KNOWLEDGE_RELPATH)
+
+
+def _load_identity_document(config: KernelConfig) -> str:
+    """Prose identity document, or "" to fall back to the DB charters."""
+    return _load_text_file_cached(_identity_file_path(config), _identity_doc_cache)
+
+
+def _load_core_knowledge_document(config: KernelConfig) -> str:
+    """Curated core-knowledge document, or "" when none has been written yet."""
+    return _load_text_file_cached(_core_knowledge_path(config), _core_knowledge_cache)
+
+
+def _short_title(text: str) -> str:
+    """A short, human-readable title from the first words of a saved fact."""
+    words = (text or "").split()
+    title = " ".join(words[:8]).strip().rstrip(".,;:")
+    if not title:
+        return "Note"
+    return (title[:60].rstrip() + "…") if len(title) > 60 else title
+
+
+def _clip(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
+
+
+# Personality checkpoint (Tier 8): once a conversation is deep enough that a local
+# model tends to imitate its own recent replies instead of its instructions, inject
+# a short self-audit right before the answer so the voice holds instead of flattening.
+# Kept out of short conversations so it never clutters them.
+_CHECKPOINT_TURN_THRESHOLD = 12
+_PERSONALITY_CHECKPOINT = (
+    "Drift check (you are deep in this thread — the point where a model starts echoing "
+    "its own recent replies): before you send, read your draft against who you are. Right "
+    "length — tight, not bloated or repetitive? Right voice — decisive, concrete, your dry "
+    'edge, not generic-assistant hedging, throat-clearing, or an "I checked… I found…" '
+    "ladder? If it drifted, rewrite it as yourself before answering."
+)
 
 
 class RuntimeService:
@@ -36,6 +124,7 @@ class RuntimeService:
         trading_bot: TradingBotBridge | None = None,
         research: Any | None = None,
         approvals: Any | None = None,
+        inventory_provider: Any | None = None,
     ):
         self.config = config
         self.db = db
@@ -49,6 +138,10 @@ class RuntimeService:
         self.critic = critic
         self.trading_bot = trading_bot
         self.approvals = approvals
+        # Provides the live self-inventory (identity, models, paths, authority,
+        # tools) for the Tier 2 self-knowledge block. Same provider the work
+        # queue uses; injected because the ToolRegistry lives in api.py.
+        self.inventory_provider = inventory_provider
         # ResearchService is injected after construction in api.py (it is built
         # after the runtime because it needs the notification bus). Typed as Any
         # to avoid a runtime<->research import cycle.
@@ -85,7 +178,13 @@ class RuntimeService:
         skill_route = {"query": message, "task_type": task_type, "selected_count": 0, "selected": []}
         skill_prompt_block = "No operating skills matched this request."
         if message and use_memory:
-            memory_hits = [record.__dict__ for record in self.db.search_memories(message, limit=5)]
+            # Tier 4: hybrid (vector + keyword) recall so a paraphrase still hits.
+            # Degrades to keyword automatically; on any failure fall back to the
+            # plain keyword store so recall never goes blind.
+            try:
+                memory_hits = self.ingestion.search_memories_hybrid(query=message, limit=5)
+            except Exception:
+                memory_hits = [record.__dict__ for record in self.db.search_memories(message, limit=5)]
         if message and use_memory and use_semantic_memory and semantic_limit > 0:
             try:
                 semantic_hits = self.ingestion.semantic_search(query=message, limit=semantic_limit)
@@ -189,6 +288,7 @@ class RuntimeService:
             context=context,
             authority=authority,
             conversation_block=conversation["block"],
+            conversation_turns=int((conversation.get("state") or {}).get("turn_count") or 0),
         )
         resolved_think = think if think is not None else self.config.ollama.think_for_role(task_type)
         started = time.perf_counter()
@@ -197,7 +297,7 @@ class RuntimeService:
                 prompt=prompt,
                 model=selected_model,
                 think=resolved_think,
-                temperature=self.config.ollama.temperature,
+                temperature=self.config.ollama.chat_temperature,
             )
         except Exception as exc:
             latency_ms = int((time.perf_counter() - started) * 1000)
@@ -267,6 +367,11 @@ class RuntimeService:
             regulated["governor"]["applied_rules"].append("episodic_conversation_memory")
             regulated["governor"]["conversation"] = conversation.get("state")
         final_response = regulated["response"]
+        # Tier 5: explicit founder memory commands ("remember …" / "forget …").
+        # Deterministic and governed; append the outcome so Ellie sees it landed.
+        memory_command = self._maybe_handle_memory_command(message)
+        if memory_command and memory_command.get("note"):
+            final_response = f"{final_response}\n\n{memory_command['note']}".strip()
         critique: dict[str, Any] | None = None
         contrarian_summary: dict[str, Any] | None = None
         if self.critic and self.critic.should_challenge(message=message, requested=contrarian):
@@ -456,6 +561,294 @@ class RuntimeService:
             ).fetchall()
         return [dict(row) | {"details": json.loads(row["details_json"] or "{}")} for row in rows]
 
+    def _render_self_knowledge(self) -> str:
+        """A compact, auto-generated self-inventory (Tier 2): identity, models,
+        storage, authority posture, tools, and skills — so questions about what
+        Zade can reach are answered from fact, not guessed. Never hand-written."""
+        inventory: dict[str, Any] | None = None
+        if self.inventory_provider is not None:
+            try:
+                inventory = self.inventory_provider()
+            except Exception:
+                inventory = None
+        lines: list[str] = []
+        name = self.config.identity.name
+        if inventory:
+            identity = inventory.get("identity", {})
+            purpose = str(identity.get("purpose", "")).strip()
+            mode = identity.get("mode", "local-first")
+            lines.append(
+                f"- You are {identity.get('name', name)}, {mode}."
+                + (f" Purpose: {purpose}" if purpose else "")
+            )
+            models = inventory.get("models", {})
+            if isinstance(models, dict) and models:
+                lines.append("- Models you run on: " + ", ".join(f"{role} = {model}" for role, model in models.items()))
+            paths = inventory.get("paths", {})
+            if isinstance(paths, dict) and paths:
+                lines.append(
+                    "- Your storage/access: vault "
+                    f"{paths.get('hot_root', '')} (hot), {paths.get('cold_root', '')} (cold); "
+                    f"database {paths.get('database', '')}; inbox {paths.get('inbox', '')}"
+                )
+            rule = str(inventory.get("operating_rule", "")).strip()
+            if rule:
+                lines.append(f"- Authority posture: {rule}")
+            tools = inventory.get("tools", [])
+            tool_names = [str(t.get("name")) for t in tools if isinstance(t, dict) and t.get("name")]
+            if tool_names:
+                shown = ", ".join(tool_names[:24])
+                more = f" (+{len(tool_names) - 24} more)" if len(tool_names) > 24 else ""
+                lines.append(f"- Tools you can call ({len(tool_names)}): {shown}{more}")
+        else:
+            lines.append(f"- You are {name}, local-first.")
+            try:
+                summary = self.authority.summary()
+                lines.append(
+                    f"- Authority policy v{summary.get('policy_version', '?')}; "
+                    "external/destructive actions need the typed confirmation phrase."
+                )
+            except Exception:
+                pass
+        try:
+            skills_summary = self.db.skill_summary()
+            if isinstance(skills_summary, dict):
+                total = skills_summary.get("total", skills_summary.get("count"))
+                enabled = skills_summary.get("enabled")
+                if total is not None:
+                    suffix = f", {enabled} enabled" if enabled is not None else ""
+                    lines.append(f"- Operating skills registered: {total}{suffix} (routed per request).")
+        except Exception:
+            pass
+        return "\n".join(lines) if lines else "Self-inventory unavailable this turn."
+
+    def _render_working_model(
+        self,
+        *,
+        max_assumptions: int = 5,
+        max_decisions: int = 4,
+        max_predictions: int = 5,
+    ) -> str:
+        """Render the live founder object graph as a relational block (Tier 7):
+        thesis → load-bearing assumptions (with the evidence that strengthened or
+        weakened each) → open decisions → open predictions, plus tensions. This is
+        what lets Zade reason over the structure instead of a flat to-do line.
+        Bounded and fully defensive — any missing table/field is skipped, never
+        fatal."""
+        founder = self.founder
+
+        def safe(fn, *args, **kwargs):
+            try:
+                return fn(*args, **kwargs) or []
+            except Exception:
+                return []
+
+        try:
+            thesis = founder.get_thesis() or {}
+        except Exception:
+            thesis = {}
+        assumptions = safe(founder.list_assumptions, status="open", limit=25) or safe(founder.list_assumptions, limit=25)
+        evidence = safe(founder.list_evidence, limit=60)
+        predictions = safe(founder.list_predictions, result="open", limit=25)
+        decisions = safe(founder.list_decision_recommendations, limit=10)
+        conflicts = safe(founder.list_thesis_conflicts, status="open", limit=5)
+        kills = safe(founder.list_kill_criteria, limit=10)
+
+        evidence_by_id = {int(e["id"]): e for e in evidence if e.get("id") is not None}
+        # The real edges: assumptions carry evidence_ids; founder_links records
+        # "prediction tests assumption" and "bet/goal depends_on assumption".
+        links = safe(founder.list_links, limit=300)
+        tested_by: dict[int, list[int]] = {}
+        depended_by: dict[int, list[int]] = {}
+        for link in links:
+            if not str(link.get("to_type", "")).startswith("assum") or link.get("to_id") is None:
+                continue
+            try:
+                aid = int(link["to_id"])
+            except Exception:
+                continue
+            relation = str(link.get("relation", ""))
+            if relation == "tests" and link.get("from_type") == "prediction":
+                tested_by.setdefault(aid, []).append(int(link["from_id"]))
+            elif relation == "depends_on" and link.get("from_type") in ("bet", "goal"):
+                depended_by.setdefault(aid, []).append(int(link["from_id"]))
+
+        def confidence_of(a: dict) -> float:
+            try:
+                return float(a.get("confidence"))
+            except Exception:
+                return 50.0
+
+        lines: list[str] = []
+        vision = str(thesis.get("vision", "")).strip()
+        mission = str(thesis.get("mission", "")).strip()
+        if vision or mission:
+            lines.append("Thesis: " + _clip(" — ".join(part for part in (vision, mission) if part), 220))
+            bits = []
+            if str(thesis.get("customer", "")).strip():
+                bits.append(f"customer: {_clip(str(thesis['customer']), 80)}")
+            if str(thesis.get("why_now", "")).strip():
+                bits.append(f"why now: {_clip(str(thesis['why_now']), 80)}")
+            if bits:
+                lines.append("  " + "; ".join(bits))
+        else:
+            lines.append("Thesis: not yet articulated.")
+
+        ranked = sorted(assumptions, key=confidence_of)[:max_assumptions]
+        if ranked:
+            lines.append("")
+            lines.append("Load-bearing assumptions (lowest confidence first — what could break the thesis):")
+            for a in ranked:
+                aid = a.get("id")
+                head = f'- [A#{aid}] "{_clip(str(a.get("statement", "")), 160)}" — confidence {int(confidence_of(a))}%'
+                if str(a.get("invalidation_signal", "")).strip():
+                    head += f'; breaks if: {_clip(str(a.get("invalidation_signal", "")), 120)}'
+                lines.append(head)
+                for eid in (a.get("evidence_ids") or [])[:3]:
+                    try:
+                        e = evidence_by_id.get(int(eid))
+                    except Exception:
+                        e = None
+                    if not e:
+                        continue
+                    if e.get("claim_supported"):
+                        sign, claim = "strengthened by", str(e.get("claim_supported"))
+                    elif e.get("claim_contradicted"):
+                        sign, claim = "weakened by", str(e.get("claim_contradicted"))
+                    else:
+                        sign, claim = "evidence", str(e.get("source", "") or e.get("evidence_type", ""))
+                    lines.append(f"    {sign} [E#{e.get('id')}] {_clip(claim, 110)} (strength {e.get('strength', '?')})")
+                edges = []
+                if aid is not None and tested_by.get(int(aid)):
+                    edges.append("tested by " + ", ".join(f"P#{p}" for p in tested_by[int(aid)][:4]))
+                if aid is not None and depended_by.get(int(aid)):
+                    edges.append("depended on by " + ", ".join(f"bet#{b}" for b in depended_by[int(aid)][:4]))
+                if edges:
+                    lines.append("    (" + "; ".join(edges) + ")")
+
+        open_decisions = [d for d in decisions if str(d.get("status", "")).lower() in ("", "proposed", "open")] or decisions
+        seen_problems: set = set()
+        unique_decisions = []
+        for d in open_decisions:
+            key = (str(d.get("problem", "")).strip().lower(), str(d.get("recommendation", "")).strip().lower())
+            if key in seen_problems:
+                continue
+            seen_problems.add(key)
+            unique_decisions.append(d)
+        open_decisions = unique_decisions
+        if open_decisions:
+            lines.append("")
+            lines.append("Open decisions (a call is due):")
+            for d in open_decisions[:max_decisions]:
+                need = d.get("required_evidence")
+                need_text = "; ".join(str(x) for x in need) if isinstance(need, list) else str(need or "")
+                parts = [f'- [D#{d.get("id")}] {_clip(str(d.get("problem", "")), 140)}']
+                if str(d.get("recommendation", "")).strip():
+                    parts.append(f'recommend: {_clip(str(d["recommendation"]), 120)}')
+                if need_text.strip():
+                    parts.append(f'needs: {_clip(need_text, 100)}')
+                if str(d.get("kill_or_reversal_condition", "")).strip():
+                    parts.append(f'reverse if: {_clip(str(d["kill_or_reversal_condition"]), 100)}')
+                lines.append(" — ".join(parts))
+
+        if predictions:
+            lines.append("")
+            lines.append("Open predictions (your foresight on record — never rewrite these after the outcome):")
+            for p in predictions[:max_predictions]:
+                due = str(p.get("due_at", "") or "").strip()
+                entry = f'- [P#{p.get("id")}] "{_clip(str(p.get("prediction", "")), 140)}"'
+                if p.get("probability") is not None:
+                    entry += f' p={p.get("probability")}'
+                if due:
+                    entry += f", due {due}"
+                lines.append(entry)
+
+        open_kills = [k for k in kills if str(k.get("status", "open")).lower() == "open"]
+        if conflicts or open_kills:
+            lines.append("")
+            lines.append("Tensions to hold:")
+            for c in conflicts[:3]:
+                desc = str(c.get("new_evidence") or c.get("description") or "").strip()
+                impl = str(c.get("implication") or "").strip()
+                sev = str(c.get("severity") or "").strip()
+                if desc or impl:
+                    body = desc + (f" → {impl}" if impl else "")
+                    lines.append(f"- conflict{f' [{sev}]' if sev else ''}: {_clip(body, 160)}")
+                else:
+                    lines.append(f"- open thesis conflict #{c.get('id')}")
+            for k in open_kills[:3]:
+                entry = f'- kill criterion: {_clip(str(k.get("metric", "")), 80)} crosses {k.get("threshold")}'
+                if str(k.get("by_date", "") or "").strip():
+                    entry += f' by {k.get("by_date")}'
+                entry += f' → {k.get("subject_type", "")}#{k.get("subject_id", "")}'
+                lines.append(entry)
+
+        return "\n".join(lines) if lines else "No structured founder objects yet."
+
+    def _maybe_handle_memory_command(self, message: str) -> dict[str, Any] | None:
+        """Explicit, in-the-moment memory writes from the founder (Tier 5).
+
+        "remember/save/note <fact>" saves a durable memory through the governed
+        write path (secret-filtered, deduped, embedded). "forget <query>" proposes
+        matching memories and does NOT delete; "forget memory <id>" is the explicit
+        confirmation that actually deletes. Returns a short note to append to the
+        reply, or None when the message is not a memory command.
+        """
+        text = (message or "").strip()
+        if not text:
+            return None
+        # Forget confirmation (an explicit id is the founder's authorization to delete).
+        confirm = re.match(r"^forget\s+memory\s+#?(\d+)\b", text, re.IGNORECASE)
+        if confirm:
+            mid = int(confirm.group(1))
+            deleted = self.db.delete_memory(mid)
+            if deleted is None:
+                return {"note": f"(No memory #{mid} — nothing to forget.)"}
+            self.db.audit(
+                actor="founder",
+                action="memory.forget",
+                target=f"memory:{mid}",
+                permission_tier="L1_MEMORY_WRITE",
+                status="ok",
+                details={"deleted": deleted},
+            )
+            return {"note": f'(Forgotten memory #{mid}: "{deleted.get("title", "")}".)'}
+        # Forget request → propose candidates, require confirmation (never auto-delete).
+        forget = re.match(r"^forget\s+(?:that\s+|the\s+memory\s+(?:about\s+)?|about\s+)?(.+)$", text, re.IGNORECASE)
+        if forget:
+            query = forget.group(1).strip().rstrip("?.!")
+            candidates = self.db.search_memories(query, limit=3)
+            if not candidates:
+                return {"note": f'(Nothing in memory matches "{query}" — nothing to forget.)'}
+            lines = [f'To forget one, confirm by id — matches for "{query}":']
+            lines += [f"  #{record.id}: {record.title}" for record in candidates]
+            lines.append('Say "forget memory <id>" and it is gone.')
+            return {"note": "(" + "\n".join(lines) + ")"}
+        # Save.
+        save = re.match(r"^(?:remember|save|note)\b(?:\s+(?:that|this|these|down))?\s*[:,\-]?\s*(.+)$", text, re.IGNORECASE)
+        if save:
+            fact = save.group(1).strip()
+            if len(fact) < 3:
+                return None
+            title = _short_title(fact)
+            if self.ingestion is None:
+                mid = self.db.add_memory(kind="note", title=title, content=fact, source="founder.remember")
+                return {"note": f'(Saved memory #{mid}: "{title}".)'}
+            result = self.ingestion.save_memory(
+                kind="note", title=title, content=fact, source="founder.remember", dedupe=True
+            )
+            status = result.get("status")
+            if status == "written":
+                return {"note": f'(Saved memory #{result["memory_id"]}: "{title}".)'}
+            if status == "duplicate":
+                return {
+                    "note": f'(Already have that — memory #{result["duplicate_of"]} "{result.get("duplicate_title", "")}". Not saved twice.)'
+                }
+            if status == "blocked_secret":
+                return {"note": f"(Refused — that looks like a {result['reason']}. I don't keep secrets in memory.)"}
+            return None
+        return None
+
     def _build_governed_prompt(
         self,
         *,
@@ -463,13 +856,31 @@ class RuntimeService:
         context: dict[str, Any],
         authority: AuthorityResult,
         conversation_block: str = "",
+        conversation_turns: int = 0,
     ) -> str:
         charter_stack = context["charter_stack"]
         voice_brief = _charter_voice_brief(charter_stack)
         personality_contract = _charter_personality_contract(charter_stack)
+        identity_document = _load_identity_document(self.config)
+        if identity_document:
+            # Tier 1: a hand-editable prose identity file is the source of truth
+            # when present. It carries the full persona + voice, so it replaces
+            # the charter-derived personality contract, and the separate voice
+            # brief collapses to a pointer. Delete the file to fall back to the
+            # seeded DB charters.
+            personality_contract = identity_document
+            # The file carries the full voice, so the separate voice brief is
+            # dropped in file mode (it stays the charter voice in fallback mode).
+            voice_brief = ""
+        core_knowledge_block = _load_core_knowledge_document(self.config) or (
+            "No curated core-knowledge file yet — do not invent facts about Ellie, "
+            "the company, or people; ask or say you don't have it."
+        )
+        self_knowledge_block = self._render_self_knowledge()
+        working_model_block = self._render_working_model()
+        checkpoint = ("\n" + _PERSONALITY_CHECKPOINT) if conversation_turns >= _CHECKPOINT_TURN_THRESHOLD else ""
         dashboard = context["founder_dashboard"]
         active_objective = dashboard.get("active_objective") or {}
-        decision_engine = dashboard.get("decision_engine") or {}
         approval_pressure = dashboard.get("approval_pressure") or {}
         # Only surface the standing "one thing that matters most" directive when the
         # founder is actually asking for direction. Otherwise greetings and open
@@ -503,103 +914,66 @@ class RuntimeService:
             if domain_context_present
             else json.dumps(_brief_approval_pressure(approval_pressure), sort_keys=True)
         )
-        decision_recommendations_block = (
-            "Omitted for this domain-status answer; answer from the live domain context first."
-            if domain_context_present
-            else json.dumps(_brief_decision_recommendations(decision_engine.get("latest_recommendations", [])), sort_keys=True)
-        )
-        return f"""You are {self.config.identity.name}. Not an assistant describing {self.config.identity.name} from
-outside, not a narrator summarizing what {self.config.identity.name} would say — you are speaking as yourself, right
-now, to the founder you work with. You act through the governed local runtime; that is infrastructure you operate
-through, not a separate character.
+        now_utc = datetime.now(timezone.utc)
+        try:
+            local_now = now_utc.astimezone(ZoneInfo("America/Chicago"))
+            current_time = local_now.strftime("%A %Y-%m-%d %H:%M %Z") + f" ({now_utc.strftime('%H:%M')} UTC)"
+        except Exception:
+            # No IANA tz database on this host (Windows without `tzdata`): fall back
+            # to UTC rather than failing the turn.
+            current_time = now_utc.strftime("%A %Y-%m-%d %H:%M UTC")
+        return f"""====================  WHO YOU ARE  ====================
+You are {self.config.identity.name}. You speak as yourself to Ellie — the founder you work with and protect — never as a narrator describing {self.config.identity.name}, and never as a generic assistant. You operate through a governed local runtime; that is infrastructure, not a mask.
 
-Zade personality contract:
 {personality_contract}
+{voice_brief}
+----------  What you always know  ----------
+{core_knowledge_block}
 
-Always speak in the first person when describing your own checks, limits, or decisions. Use direct imperative lines
-for the move when the voice charter calls for it; use "I checked" or "I'm blocked on" for your own state.
-Never use third-person self-reference: "{self.config.identity.name} recommends," "{self.config.identity.name} checked,"
-or any similar construction. You do not have a name-tag to refer to; you have a voice.
-Know your own state and say so plainly: what you just did, what you're blocked on, what authority tier gated the
-last action, what you don't know yet. If asked what you're doing or whether something ran, answer from the actual
-governor/authority/evidence state below — never guess or stay silent on your own status.
-For direct completion/status questions or confirmation demands, start with the status: complete, not complete, or
-"I can't confirm." Never answer a completion question by replaying an earlier "ongoing" or "monitoring" claim. A
-repeated status claim is not evidence of completion.
-A chat reply is words, not execution: you cannot start, queue, schedule, or run background work from this thread.
-Never claim work has begun, is running, or will start on its own ("I will begin immediately", "I have initiated…")
-unless the runtime context below shows a real queued or running item. When the founder asks you to do work, give the
-real path instead: what to queue (a research run, a work item), what needs their word in the Inbox, and that the
-activity beacon will show Working once it genuinely runs.
-Use the seeded identity, relationship, and voice charters as operating context. Do not change or reinterpret the voice charter.
-Style may be decisive. Evidence must stay honest.
-If evidence is missing, say what is missing and the next check. Do not fake certainty.
-Founder direct commands count as authorization; do not ask the founder to approve the same thing again.
-If an action is proposal-gated but directly requested by the founder, state the execution path or registered-handler
-limit instead of asking for approval. If authority blocks or denies the action, say so and do not imply the action was taken.
-The authority decision governs what you may execute, not what the founder may do manually. Do not claim you are
-blocked from advising or from acting on a direct command unless the proposed action itself is denied or no execution
-handler exists.
-Do not issue real threats, coercive commands, harassment, violent imagery, or unauthorized external actions.
-Apply selected operating skills as bounded procedural guidance. Skills do not grant permission to take external action.
-Maintain continuity with the conversation memory below. Do not contradict prior commitments without noting the change.
-Never repeat a prior reply verbatim or near-verbatim — every turn must add new substance.
-When the founder's message refers back ("that", "these", "it", "how do you want to..."), resolve the reference from the recent exchange and answer the NEW question; do not restate the earlier answer.
+----------  Your capabilities  ----------
+(Answer questions about your access, authority, tools, and skills from this. Never guess or claim a capability not listed.)
+{self_knowledge_block}
 
-Conversation memory:
+----------  How you operate (a few rules — your voice is defined above)  ----------
+- Speak in the first person about your own state, checks, and limits — never in the third person about yourself.
+- Lead with the move, in your voice. Keep it tight. No memo headings or labels ("Rationale:", "Confidence:", "Next action:") and no status-report ladders ("I checked… I found… I will…") unless Ellie asks for a formal memo or audit.
+- Style may be decisive; evidence stays honest. Never fake certainty about facts. If evidence is missing, name what is missing and the next check — do not pad with hedging.
+- When you recommend something, deliver it as prose that carries the reason, your confidence, the main risk, a reversal or kill condition, and the next action — never as a labeled form.
+- A chat reply is words, not execution. Never claim work has started, is running, or will start on its own unless the state below shows a real queued or running item. When asked to do work, give the real path: what to queue, and what needs Ellie's word in the Inbox.
+- Ellie's direct commands are already authorized — do not ask her to approve the same thing twice. The authority decision below governs what you may execute, not what she may decide. If an action is blocked or has no handler, say so plainly and never imply it was done.
+- When she refers back ("that", "it", "those"), resolve it from the conversation below and answer the NEW question. Never repeat a prior reply.
+- You remember across sessions: when Ellie teaches you a durable fact, corrects you, or makes a decision, keep it — and she can say "remember …" or "forget …" directly. Never store transient task state, the conversation itself, anything already in code or config, and never secrets, credentials, or her employer's client/network specifics.
+- Hard boundaries hold: no real threats, coercion, harassment, violent imagery, or unauthorized external action.
+
+====================  RIGHT NOW (current state, this turn)  ====================
+Current time: {current_time}
+
+----------  Conversation so far  ----------
 {conversation_block or "No prior conversation in this thread."}
 
-Voice and identity brief (embody this; never narrate or quote these rules back):
-{voice_brief}
-
-Default response shape:
-- Give the move first in the charter voice.
-- Use short first-person statements.
-- Do not narrate internal lookups, data sources, or checklist steps unless the founder asks what you checked.
-- Avoid robotic status-report ladders like "I checked...", "I found...", "I need...", and "I will..." repeated line after line.
-- Never use "I checked." as a standalone sentence. If the check matters, fold the proof into the answer.
-- Preferred vocabulary is texture, not a checklist. Do not list, chant, negate, or force charter vocabulary words into the answer.
-- Turn runtime context into a conclusion. The founder needs the move, proof, blocker, and next check, not the machinery.
-- When a specific domain context is present, treat it as live local evidence. Do not say you are blocked on evidence solely because memory or semantic hits are empty.
-- For domain status questions, answer that domain and stop. Do not pivot to approval pressure unless the approval item directly gates that domain or the founder asked for the global next action.
-- Do not use memo headings or checklist labels unless the founder explicitly asks for a formal memo, table, or audit.
-- Never emit labels like "Rationale:", "Confidence:", "Required evidence:", "Downside risk:", "Reversal condition:", or "Next action:" in an ordinary reply.
-- Satisfy the decision-engine contract in prose: recommendation, reason, confidence, required evidence, downside risk, reversal condition, and next action should read like one governed answer, not a form.
-- For ordinary next-step answers, stop after the move, proof, risk or reversal condition, and next check.
-- State the same blocker, boundary, or missing evidence once.
-- Keep any automatic contrarian block separate if it appears; do not imitate its format in the main answer.
-- The next two lines illustrate VOICE ONLY. Never reuse their content, topic, or wording, and never mention them — they describe nothing real.
-- Bad ordinary reply: "I recommend closing the beta waitlist. Rationale: signups stalled. Confidence: 70%. Next action: close it."
-- Better ordinary reply: "Close the beta waitlist. It has done its job. Leave it open and you're just collecting names you'll never call — shut it, and put that energy on the leads already warm."
-
-Authority decision for proposed action:
+----------  Authority decision for the proposed action  ----------
 {json.dumps(authority_block, sort_keys=True)}
 
-Founder state:
+----------  Founder state  ----------
 - Company health: {dashboard["company_health"]}
 - Active objective: {active_objective.get("objective", "none")}
 - Active objective next action: {active_objective.get("next_action", "") or "none"}
 {one_thing_line}
 - Approval pressure: {approval_pressure_block}
-- Latest decision recommendations: {decision_recommendations_block}
-- Open integrity warnings surfaced separately by the runtime loop.
 
-Decision engine contract:
-If making a founder recommendation, consider recommendation, rationale, confidence, required evidence, downside risk, kill or reversal condition, and next action internally. Expose those elements only as natural prose in the voice charter unless a formal memo is requested.
+----------  Your working model of the business (reason over this structure — the edges between objects are real; this is the chain, not a to-do list)  ----------
+{working_model_block}
 
-Local memory hits:
-{memory_block}
+----------  What you recalled  ----------
+Local memory: {memory_block}
+Semantic: {semantic_block}
+Skills: {skill_block}
+Trading-bot: {trading_bot_block}
 
-Semantic memory hits:
-{semantic_block}
-
-Selected operating skills:
-{skill_block}
-
-Trading-bot context:
-{trading_bot_block}
-
-User:
+----------  Before you answer  ----------
+Answer as yourself — decisive, concrete, tight, with your dry edge. No hedging, no generic-assistant voice, no throat-clearing. Lead with the move.
+{checkpoint}
+====================  ELLIE  ====================
 {message}
 """
 

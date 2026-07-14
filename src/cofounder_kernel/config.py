@@ -58,6 +58,11 @@ class OllamaConfig:
     embedding_model: str = "nomic-embed-text"
     think: bool = False
     temperature: float = 0.2
+    # Warmer temperature for the conversational persona turn only (Zade's chat
+    # voice). Summarization, distillation, extraction, and the critic keep the
+    # low `temperature` above for determinism. Raising this unsticks the voice
+    # from flat/generic phrasing that a low temperature tends to produce.
+    chat_temperature: float = 0.65
 
     def think_for_role(self, role: ModelRole) -> bool:
         return role == "reasoning"
@@ -87,6 +92,10 @@ ModelRole = Literal["general", "reasoning", "coding", "embedding"]
 class SecurityConfig:
     local_token: str = ""
     protect_mutations: bool = True
+    # Dev-only: browser origins allowed to call the kernel cross-origin (CORS).
+    # Empty = disabled (the shipping no-CORS loopback posture). Non-loopback
+    # origins and "*" are refused at startup; see api._validated_cors_origins.
+    cors_dev_origins: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -265,6 +274,22 @@ def _path(value: str | os.PathLike[str] | None, fallback: Path) -> Path:
     return Path(value).expanduser() if value else fallback
 
 
+def _csv_origins(env_value: str | None, raw: Any) -> tuple[str, ...]:
+    """Parse dev CORS origins from an env CSV or a TOML list into a tuple.
+
+    Env wins over the TOML value (matches every other override in this loader).
+    Trailing slashes are stripped so "http://localhost:5173/" and the bare form
+    compare equal to a browser Origin header, which never carries a path.
+    """
+    if env_value is not None:
+        items: list[str] = env_value.split(",")
+    elif isinstance(raw, (list, tuple)):
+        items = [str(item) for item in raw]
+    else:
+        items = []
+    return tuple(item.strip().rstrip("/") for item in items if item and item.strip())
+
+
 def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConfig:
     path = Path(config_path) if config_path else Path.cwd() / "config.toml"
     raw = _read_toml(path)
@@ -300,10 +325,12 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         embedding_model=os.getenv("COFOUNDER_EMBEDDING_MODEL", ollama_raw.get("embedding_model", "nomic-embed-text")),
         think=_bool(os.getenv("COFOUNDER_THINK", ollama_raw.get("think", False))),
         temperature=float(os.getenv("COFOUNDER_TEMPERATURE", ollama_raw.get("temperature", 0.2))),
+        chat_temperature=float(os.getenv("COFOUNDER_CHAT_TEMPERATURE", ollama_raw.get("chat_temperature", 0.65))),
     )
     security = SecurityConfig(
         local_token=str(os.getenv("COFOUNDER_LOCAL_TOKEN", security_raw.get("local_token", "")) or ""),
         protect_mutations=_bool(os.getenv("COFOUNDER_PROTECT_MUTATIONS", security_raw.get("protect_mutations", True))),
+        cors_dev_origins=_csv_origins(os.getenv("COFOUNDER_CORS_DEV_ORIGINS"), security_raw.get("cors_dev_origins")),
     )
     skills = SkillConfig(
         source_dir=_path(os.getenv("COFOUNDER_SKILLS_DIR", skills_raw.get("source_dir")), DEFAULT_SKILLS_DIR),

@@ -27,10 +27,13 @@ class ConversationService:
     DISTILL_TURN_CAP = 40          # cap turns fed to one extraction call
     DISTILL_KINDS = ("decision", "commitment", "preference", "fact", "lesson")
 
-    def __init__(self, *, config: KernelConfig, db: KernelDatabase, ollama: OllamaClient):
+    def __init__(self, *, config: KernelConfig, db: KernelDatabase, ollama: OllamaClient, ingestion: Any | None = None):
         self.config = config
         self.db = db
         self.ollama = ollama
+        # Governed memory write path (secret filter + semantic dedupe + embedding).
+        # When present, distillation writes through it instead of db.add_memory.
+        self.ingestion = ingestion
 
     def create(self, *, title: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         conversation_id = self.db.create_conversation(title=title, metadata=metadata)
@@ -43,6 +46,28 @@ class ConversationService:
             details={"title": title},
         )
         return self.get(conversation_id)
+
+    def end_session(self, conversation_id: int) -> dict[str, Any]:
+        """Close a thread (Tier 8): run a final distillation of everything not yet
+        promoted, then mark it 'ended' so a later boot starts a fresh session
+        instead of piling onto it. Best-effort on the distill; idempotent."""
+        conversation = self.db.get_conversation(conversation_id)
+        if not conversation:
+            raise ValueError(f"Conversation not found: {conversation_id}")
+        try:
+            distilled = self.distill(conversation_id, min_turns=1, only_aged_out=False)
+        except Exception:
+            distilled = None
+        self.db.update_conversation_status(conversation_id, status="ended")
+        self.db.audit(
+            actor="conversation",
+            action="conversation.end",
+            target=f"conversation:{conversation_id}",
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={"distilled": distilled or {"status": "nothing_to_distill"}},
+        )
+        return {"ended": conversation_id, "distilled": distilled or {"status": "nothing_to_distill", "count": 0}}
 
     def get(self, conversation_id: int, *, turn_limit: int = 50) -> dict[str, Any]:
         conversation = self.db.get_conversation(conversation_id)
@@ -261,23 +286,37 @@ class ConversationService:
         source = f"conversation:{conversation_id}"
         existing_titles = {record.title.strip().lower() for record in self.db.list_memories_by_source(source)}
         written: list[dict[str, Any]] = []
+        skipped_duplicate = 0
         turn_range = [batch[0]["id"], batch[-1]["id"]]
         for item in items:
             title = item["title"]
             if title.strip().lower() in existing_titles:
                 continue
-            memory_id = self.db.add_memory(
-                kind=f"chat_{item['kind']}",
-                title=title,
-                content=item["content"],
-                source=source,
-                metadata={
-                    "conversation_id": conversation_id,
-                    "category": item["kind"],
-                    "distilled_from_turns": turn_range,
-                    "distilled_at": utc_now(),
-                },
-            )
+            meta = {
+                "conversation_id": conversation_id,
+                "category": item["kind"],
+                "distilled_from_turns": turn_range,
+                "distilled_at": utc_now(),
+            }
+            if self.ingestion is not None:
+                # Governed write: semantic dedupe + secret filter + embedding.
+                result = self.ingestion.save_memory(
+                    kind=f"chat_{item['kind']}",
+                    title=title,
+                    content=item["content"],
+                    source=source,
+                    metadata=meta,
+                    dedupe=True,
+                )
+                if result.get("status") != "written":
+                    if result.get("status") == "duplicate":
+                        skipped_duplicate += 1
+                    continue
+                memory_id = result["memory_id"]
+            else:
+                memory_id = self.db.add_memory(
+                    kind=f"chat_{item['kind']}", title=title, content=item["content"], source=source, metadata=meta
+                )
             existing_titles.add(title.strip().lower())
             written.append({"memory_id": memory_id, "kind": f"chat_{item['kind']}", "title": title})
         last_turn_id = batch[-1]["id"]
@@ -294,6 +333,7 @@ class ConversationService:
             "status": "ok",
             "written": written,
             "count": len(written),
+            "skipped_duplicate": skipped_duplicate,
             "candidates": len(batch),
             "distilled_through_turn_id": last_turn_id,
         }
@@ -319,7 +359,8 @@ class ConversationService:
             "preference: a stated like/dislike or working style; fact: a durable fact about the business, product, "
             "market, or people; lesson: an insight or principle learned.\n"
             "Only include things still worth remembering weeks from now. Skip greetings, small talk, transient "
-            "status, and anything already covered by the existing summary. Do not invent anything not supported by "
+            "status, and anything already covered by the existing summary. Never extract secrets, credentials, API "
+            "keys, tokens, or Ellie's employer's client or network specifics. Do not invent anything not supported by "
             "the transcript. If nothing durable was said, return [].\n\n"
             f"Existing long-term summary (do not repeat):\n{existing_summary or 'None yet.'}\n\n"
             f"Transcript:\n{transcript}\n\n"
