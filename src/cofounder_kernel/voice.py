@@ -185,8 +185,12 @@ class VoiceService:
         use_semantic_memory: bool = True,
         speak_response: bool = True,
         speak_full: bool = False,
+        client_timing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        server_started = time.perf_counter()
         transcription = self.transcribe(audio_base64=audio_base64, audio_mime=audio_mime)
+        transcript_final_ms = _elapsed_ms(server_started)
+        runtime_started = time.perf_counter()
         response = self.runtime.respond(
             message=transcription["text"],
             task_type=task_type,  # type: ignore[arg-type]
@@ -194,16 +198,36 @@ class VoiceService:
             contrarian=contrarian,
             use_semantic_memory=use_semantic_memory,
         )
+        runtime_latency_ms = _elapsed_ms(runtime_started)
+        model_response_complete_ms = _elapsed_ms(server_started)
         spoken_text = response["response"] if speak_full else _strip_contrarian_block(response["response"])
         speech: dict[str, Any] | None = None
         speech_error = ""
+        speech_synthesis_ms: int | None = None
+        audio_ready_ms: int | None = None
         if speak_response:
+            speech_started = time.perf_counter()
             try:
                 speech = self.speak(text=spoken_text)
+                speech_synthesis_ms = int(speech["latency_ms"])
+                audio_ready_ms = _elapsed_ms(server_started)
             except VoiceNotConfigured as exc:
+                speech_synthesis_ms = _elapsed_ms(speech_started)
                 speech_error = str(exc)
             except ValueError as exc:
+                speech_synthesis_ms = _elapsed_ms(speech_started)
                 speech_error = str(exc)
+        server_response_ready_ms = _elapsed_ms(server_started)
+        timing = _converse_timing(
+            client_timing=client_timing,
+            transcription_ms=int(transcription["latency_ms"]),
+            transcript_final_ms=transcript_final_ms,
+            runtime_response_ms=runtime_latency_ms,
+            model_response_complete_ms=model_response_complete_ms,
+            speech_synthesis_ms=speech_synthesis_ms,
+            audio_ready_ms=audio_ready_ms,
+            server_response_ready_ms=server_response_ready_ms,
+        )
         self.db.audit(
             actor="voice",
             action="voice.converse",
@@ -215,6 +239,7 @@ class VoiceService:
                 "transcript_chars": len(transcription["text"]),
                 "spoke": speech is not None,
                 "speech_error": speech_error,
+                "timing": timing,
             },
         )
         return {
@@ -230,6 +255,7 @@ class VoiceService:
             "governor": response["governor"],
             "conversation": response.get("conversation"),
             "contrarian": response.get("contrarian"),
+            "timing": timing,
         }
 
     def _transcribe_deepgram(self, audio_bytes: bytes, *, mime: str = "audio/wav") -> str:
@@ -358,6 +384,49 @@ def _binary_found(command: tuple[str, ...]) -> bool:
 
 def _stamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)
+
+
+def _converse_timing(
+    *,
+    client_timing: dict[str, Any] | None,
+    transcription_ms: int,
+    transcript_final_ms: int,
+    runtime_response_ms: int,
+    model_response_complete_ms: int,
+    speech_synthesis_ms: int | None,
+    audio_ready_ms: int | None,
+    server_response_ready_ms: int,
+) -> dict[str, Any]:
+    return {
+        "pipeline": "batch_non_streaming",
+        "client_reported": dict(client_timing or {}),
+        "streaming": {"stt": False, "model": False, "tts": False, "playback": False},
+        "segments_ms": {
+            "transcription": transcription_ms,
+            "runtime_response": runtime_response_ms,
+            "speech_synthesis": speech_synthesis_ms,
+            "server_total": server_response_ready_ms,
+        },
+        "milestones_ms": {
+            "server_received": 0,
+            "transcript_final": transcript_final_ms,
+            "model_first_token": None,
+            "model_response_complete": model_response_complete_ms,
+            "first_audio_byte": None,
+            "audio_ready": audio_ready_ms,
+            "server_response_ready": server_response_ready_ms,
+            "playback_started": None,
+        },
+        "unavailable": {
+            "model_first_token": "Ollama is called with stream=false, so the first token is not observable yet.",
+            "first_audio_byte": "TTS audio is read as a complete response before the server returns it.",
+            "playback_started": "Playback starts in the browser and is filled by the UI when audio begins.",
+        },
+    }
 
 
 _MIME_EXT = {

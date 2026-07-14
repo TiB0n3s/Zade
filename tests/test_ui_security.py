@@ -100,3 +100,55 @@ def test_mutation_gate_and_401_also_carries_headers(tmp_path: Path, monkeypatch)
     assert blocked.status_code == 401
     assert "content-security-policy" in {k.lower() for k in blocked.headers}  # 401 is hardened too
     assert allowed.status_code == 200
+
+
+def test_cors_disabled_by_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    client = TestClient(create_app(_config(tmp_path)))  # no cors_dev_origins
+
+    resp = client.get("/health", headers={"Origin": "http://localhost:5173"})
+    assert resp.status_code == 200
+    # No allowlist → no CORS header is echoed, so the browser blocks the read.
+    assert "access-control-allow-origin" not in {k.lower() for k in resp.headers}
+
+
+def test_cors_allows_configured_dev_origin(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    client = TestClient(
+        create_app(_config(tmp_path, local_token="secret", cors_dev_origins=("http://localhost:5173",)))
+    )
+
+    # Preflight for a token-gated mutation: the custom header must be permitted.
+    preflight = client.options(
+        "/memory",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "x-zade-token",
+        },
+    )
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "x-zade-token" in preflight.headers["access-control-allow-headers"].lower()
+
+    # An allowed cross-origin read echoes the specific origin (never "*").
+    read = client.get("/session/token", headers={"Origin": "http://localhost:5173"})
+    assert read.status_code == 200
+    assert read.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+    # A different origin is not on the allowlist → no CORS header, browser blocks.
+    other = client.get("/session/token", headers={"Origin": "http://evil.example"})
+    assert other.headers.get("access-control-allow-origin") != "http://evil.example"
+
+
+def test_cors_refuses_wildcard_and_non_loopback(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    # Both a wildcard and an off-machine origin are dropped by the validator, so
+    # no CORS layer is attached at all — the request behaves as same-origin only.
+    client = TestClient(
+        create_app(_config(tmp_path, cors_dev_origins=("*", "https://app.example.com")))
+    )
+
+    resp = client.get("/health", headers={"Origin": "https://app.example.com"})
+    assert resp.status_code == 200
+    assert "access-control-allow-origin" not in {k.lower() for k in resp.headers}

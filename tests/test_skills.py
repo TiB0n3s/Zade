@@ -20,7 +20,7 @@ def fake_generate(
     temperature: float | None = None,
     num_predict: int = 512,
 ) -> GenerateResult:
-    assert "Selected operating skills:" in prompt
+    assert "Skill: systematic-debugging" in prompt
     return GenerateResult(response="Use the selected operating procedure.", model=model or "qwen3:14b", raw={})
 
 

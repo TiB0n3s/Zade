@@ -73,7 +73,7 @@ def test_governed_respond_persists_and_recalls_conversation(tmp_path: Path, monk
 
     # Turn 1 has no prior context; turn 2 must recall the first full exchange.
     assert "No recorded turns yet." in prompts[0]
-    assert "Conversation memory:" in prompts[1]
+    assert "Recent exchange:" in prompts[1]
     assert "$99 per month" in prompts[1]  # prior user turn recalled
     assert "Reply 1." in prompts[1]  # prior assistant turn recalled
     assert "Remind me what price we landed on." in prompts[1]  # current message

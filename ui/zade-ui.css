@@ -115,6 +115,15 @@
   --z-radius-sm: 2px;
 
   --z-sidebar-w: 246px;
+
+  /* motion identity — one signature curve for the whole universe.
+     --z-ease is the same curve the page-entrance (zrise) already uses;
+     naming it makes every summoned surface move like it belongs here. */
+  --z-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --z-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --z-dur-fast: 0.16s;
+  --z-dur: 0.28s;
+  --z-dur-slow: 0.55s;
 }
 
 /* ---------- 3 · Base ---------- */
@@ -848,7 +857,9 @@ body .zade-page-sub {
   background: rgba(5, 5, 6, 0.72); backdrop-filter: blur(2px);
   align-items: flex-start; justify-content: center; padding-top: 14vh;
 }
-.zade-palette-overlay.open { display: flex; }
+/* Zade's signature entrance: the scrim fades, the panel rises into place. */
+.zade-palette-overlay.open { display: flex; animation: z-scrim var(--z-dur-fast) var(--z-ease) both; }
+.zade-palette-overlay.open .zade-palette { animation: z-summon var(--z-dur) var(--z-ease) both; }
 .zade-palette {
   width: min(560px, calc(100vw - 40px));
   background: var(--z-panel); border: 1px solid var(--z-line-strong, rgba(255,255,255,0.1));
@@ -872,4 +883,93 @@ body .zade-page-sub {
 .zade-palette-foot {
   padding: 8px 14px; border-top: 1px solid var(--z-line);
   font-size: 10.5px; letter-spacing: 0.08em; color: var(--z-faint); text-transform: uppercase;
+}
+
+/* ---------- Notification center (bell + cards) — injected by zade-ui.js ---------- */
+.zade-sidebar-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border-bottom: 1px solid var(--z-line); margin-bottom: 16px;
+}
+.zade-sidebar-header .zade-sidebar-logo { border-bottom: 0; margin-bottom: 0; flex: 1; }
+.zade-notif-bell {
+  position: relative; flex: none; background: transparent; border: 0;
+  min-height: 0; padding: 6px; margin-right: 4px; cursor: pointer;
+  color: var(--z-faint); display: flex; align-items: center; justify-content: center;
+  border-radius: var(--z-radius-sm); transition: color .18s, background .18s;
+}
+.zade-notif-bell:hover { color: var(--z-accent-2); background: rgba(255,255,255,0.04); }
+.zade-notif-badge {
+  position: absolute; top: 0; right: 0; min-width: 15px; height: 15px; padding: 0 4px;
+  border-radius: 999px; background: var(--z-accent); color: #fff;
+  font-size: 9.5px; font-weight: 600; line-height: 15px; text-align: center;
+  font-family: var(--z-sans);
+}
+.zade-notif-bell-strip { margin-left: auto; }
+
+.zade-notif-overlay { display: none; position: fixed; inset: 0; z-index: 310; }
+/* Drops down from the bell with the same signature curve as the palette. */
+.zade-notif-overlay.open { display: block; }
+.zade-notif-overlay.open .zade-notif-panel { animation: z-drop var(--z-dur) var(--z-ease) both; }
+.zade-notif-overlay.open .zade-notif-list { animation: z-scrim var(--z-dur) var(--z-ease) both; }
+.zade-notif-panel {
+  position: fixed; top: 58px; right: 20px; width: min(380px, calc(100vw - 40px));
+  max-height: min(70vh, 640px); display: flex; flex-direction: column;
+  background: var(--z-panel); border: 1px solid var(--z-line-strong, rgba(255,255,255,0.1));
+  border-radius: 10px; box-shadow: 0 24px 80px rgba(0,0,0,0.55); overflow: hidden;
+}
+.zade-notif-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 16px; border-bottom: 1px solid var(--z-line);
+  font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--z-ink-hi);
+}
+.zade-notif-allread {
+  background: transparent; border: 0; min-height: 0; padding: 2px 4px; cursor: pointer;
+  font-size: 11px; letter-spacing: 0.02em; text-transform: none; color: var(--z-faint);
+}
+.zade-notif-allread:hover { color: var(--z-accent-2); background: transparent; }
+.zade-notif-allread:disabled { color: var(--z-ghost); cursor: default; }
+.zade-notif-list { overflow-y: auto; padding: 6px; }
+.zade-notif-card {
+  position: relative; display: flex; gap: 10px; align-items: flex-start;
+  padding: 11px 12px 11px 14px; border-radius: 7px;
+}
+.zade-notif-card + .zade-notif-card { border-top: 1px solid var(--z-line-soft); }
+.zade-notif-card.unread { background: rgba(176,71,63,0.06); }
+.zade-notif-stripe {
+  position: absolute; left: 4px; top: 12px; bottom: 12px; width: 2px; border-radius: 2px;
+  background: transparent;
+}
+.zade-notif-card.unread .zade-notif-stripe { background: var(--z-info); }
+.zade-notif-card.sev-warning.unread .zade-notif-stripe { background: var(--z-warn); }
+.zade-notif-card.sev-critical.unread .zade-notif-stripe { background: var(--z-bad); }
+.zade-notif-copy { flex: 1; min-width: 0; }
+.zade-notif-title { font-size: 13px; color: var(--z-ink-hi); line-height: 1.35; }
+.zade-notif-card.unread .zade-notif-title { color: var(--z-text); }
+.zade-notif-text { font-size: 12px; color: var(--z-muted); line-height: 1.45; margin-top: 3px; }
+.zade-notif-meta { font-size: 10.5px; color: var(--z-faint); margin-top: 5px; letter-spacing: 0.02em; }
+.zade-notif-mark {
+  flex: none; background: transparent; border: 1px solid var(--z-line-strong, rgba(255,255,255,0.1));
+  color: var(--z-faint); width: 24px; height: 24px; min-height: 0; padding: 0; border-radius: 6px;
+  cursor: pointer; font-size: 12px; line-height: 1;
+}
+.zade-notif-mark:hover { border-color: var(--z-accent); color: var(--z-accent-2); background: transparent; }
+.zade-notif-empty { padding: 22px 14px; font-size: 12.5px; color: var(--z-faint); line-height: 1.5; text-align: center; }
+.zade-notif-foot {
+  padding: 11px 16px; border-top: 1px solid var(--z-line);
+  font-size: 11.5px; color: var(--z-faint); text-decoration: none;
+}
+.zade-notif-foot:hover { color: var(--z-accent-2); }
+
+/* ---------- Motion identity — signature entrances for summoned surfaces ---------- */
+/* Reused by the command palette and notification center so every surface Zade
+   brings up moves with the same hand. The global prefers-reduced-motion block
+   above neutralizes these automatically. */
+@keyframes z-scrim { from { opacity: 0; } to { opacity: 1; } }
+@keyframes z-summon {
+  from { opacity: 0; transform: translateY(-10px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes z-drop {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: none; }
 }

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zade — Brief</title>
+  <style>
+    /* Page-specific layout only; colors/type/components from /ui/zade-ui.css.
+       The digest is a reading surface, not an admin panel — calm, wide measure,
+       Zade's voice. All loads are GETs (ambient-safe); the only POST is the
+       explicit "Save this brief", which writes a memory + notification. */
+    * { box-sizing: border-box; }
+    h1 { margin: 0; font-size: 40px; line-height: 1.05; font-weight: 500; }
+    body[data-zade-type="sans"] main { max-width: none; margin: 0; padding: 0; }
+    .page { padding: 46px 48px 96px; max-width: 780px; }
+    .kicker { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--z-faint); margin-bottom: 12px; }
+    .greet-sub { font-family: var(--z-serif); font-style: italic; font-size: 19px; line-height: 1.45; color: #cfccc6; margin-top: 12px; max-width: 60ch; }
+
+    /* The one thing that matters — the digest's headline. */
+    .one-thing { margin-top: 34px; padding: 20px 22px; border-left: 2px solid var(--z-accent); background: var(--z-accent-wash, rgba(176,71,63,0.1)); border-radius: 0 6px 6px 0; }
+    .one-thing .label { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--z-accent-2); margin-bottom: 7px; }
+    .one-thing .text { font-size: 17px; color: var(--z-text); line-height: 1.5; }
+    .one-thing .also { font-size: 12.5px; color: var(--z-muted); margin-top: 10px; }
+
+    .counts { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 22px; }
+    .count { min-width: 92px; }
+    .count strong { display: block; font-size: 22px; color: var(--z-ink-hi); font-variant-numeric: tabular-nums; }
+    .count.red strong { color: var(--z-bad-text); }
+    .count.orange strong { color: var(--z-warn-text); }
+    .count span { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--z-faint); }
+
+    .brief-block { margin-top: 40px; }
+    .brief-block h2 { font-family: var(--z-serif); font-size: 24px; font-weight: 500; margin: 0 0 12px; color: var(--z-text); }
+    .brief-body { font-size: 13.5px; line-height: 1.7; color: var(--z-ink); white-space: pre-wrap; }
+    .brief-body.loading { color: var(--z-faint); font-style: italic; white-space: normal; }
+
+    .save { margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--z-line); }
+    .save-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    .save-head h2 { font-family: var(--z-serif); font-size: 20px; font-weight: 500; margin: 0; color: var(--z-text); }
+    .save-desc { font-size: 12px; color: var(--z-muted); margin: 8px 0 14px; max-width: 60ch; }
+    .save-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .save-controls label { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--z-muted); }
+    .save-controls input[type=checkbox] { width: auto; margin: 0; }
+    .note { font-size: 11.5px; margin-top: 10px; min-height: 14px; }
+    .note.good { color: var(--z-ok-text); }
+    .note.err { color: var(--z-bad-text); }
+    .saved-brief { margin-top: 14px; padding: 14px 16px; border-left: 2px solid var(--z-accent-dim, rgba(176,71,63,0.4)); background: var(--z-well); border-radius: 0 6px 6px 0; font-size: 12.5px; line-height: 1.6; color: var(--z-muted); white-space: pre-wrap; }
+    @media (max-width: 720px) { .page { padding: 30px 20px 64px; } h1 { font-size: 30px; } }
+  </style>
+  <link rel="stylesheet" href="/ui/zade-ui.css">
+</head>
+<body data-zade-type="sans">
+  <main>
+    <div class="page">
+      <div class="kicker">The brief</div>
+      <h1 id="greetH1">&nbsp;</h1>
+      <div class="greet-sub" id="greetSub">Reading the house…</div>
+
+      <div class="one-thing" id="oneThingBox" hidden>
+        <div class="label">The one thing that matters</div>
+        <div class="text" id="oneThingText"></div>
+        <div class="also" id="alsoText"></div>
+      </div>
+
+      <div class="counts" id="counts"></div>
+
+      <div class="brief-block">
+        <h2>Where things stand</h2>
+        <div class="brief-body loading" id="dailyBrief">Assembling…</div>
+      </div>
+
+      <div class="brief-block">
+        <h2>The founder view</h2>
+        <div class="brief-body loading" id="founderBrief">Assembling…</div>
+      </div>
+
+      <div class="save">
+        <div class="save-head"><h2>Keep this brief</h2></div>
+        <div class="save-desc">Everything above is read live and changes nothing. Saving files this moment as a durable memory and sends you a notification — a deliberate act, not an ambient one.</div>
+        <div class="save-controls">
+          <button id="saveBtn">Save this brief</button>
+          <label title="Have Zade rewrite it as a few plain-English sentences"><input type="checkbox" id="narrate"> Add a plain-English summary</label>
+          <label title="Save even if nothing new has happened since the last brief"><input type="checkbox" id="force"> Save even if quiet</label>
+        </div>
+        <div class="note" id="saveNote"></div>
+        <div class="saved-brief" id="savedBrief" hidden></div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const token = () => localStorage.getItem('zadeKernelToken') || '';
+    (async () => { if (token()) return; try { const r = await fetch('/session/token'); if (r.ok) { const d = await r.json(); if (d.token) localStorage.setItem('zadeKernelToken', d.token); } } catch (e) {} })();
+    const headers = () => token() ? { 'Content-Type': 'application/json', 'X-Zade-Token': token() } : { 'Content-Type': 'application/json' };
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const api = async (path, opts = {}) => {
+      const response = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    };
+    async function withBusy(btn, label, fn) {
+      const original = btn.textContent; btn.disabled = true; btn.textContent = label;
+      try { return await fn(); } finally { btn.disabled = false; btn.textContent = original; }
+    }
+
+    // ---- Greeting — time-aware, in Zade's voice, addressed to Ellie ----
+    function greeting(hour) {
+      if (hour < 5) return { h1: 'Still up, Ellie?', sub: 'The house is quiet and I’ve been watching it. Here’s where everything stands.' };
+      if (hour < 12) return { h1: 'Good morning, Ellie.', sub: 'You slept — good. I didn’t. I went through all of it while the house was dark. Here’s what I found.' };
+      if (hour < 17) return { h1: 'Good afternoon, Ellie.', sub: 'Midday check. Here’s where things stand and what I’ve been turning over.' };
+      if (hour < 22) return { h1: 'Evening, Ellie.', sub: 'Winding down. Here’s the day as I read it, and what carries into tomorrow.' };
+      return { h1: 'Late, Ellie.', sub: 'The house is settling. Here’s the state of things before you go.' };
+    }
+
+    // ---- Ambient assembly (all GETs — nothing written) ----
+    async function loadOneThing() {
+      try {
+        const scan = await api('/surface/attention');
+        if (scan.one_thing) {
+          byId('oneThingText').textContent = scan.one_thing;
+          byId('alsoText').textContent = scan.underweighted ? 'Also worth watching: ' + scan.underweighted : '';
+          byId('oneThingBox').hidden = false;
+        }
+        const items = scan.items || [];
+        const bySev = items.reduce((acc, i) => { acc[i.severity] = (acc[i.severity] || 0) + 1; return acc; }, {});
+        byId('counts').innerHTML = [
+          ['', items.length, 'On the board'],
+          ['red', bySev.red || 0, 'Urgent'],
+          ['orange', bySev.orange || 0, 'Important'],
+          ['', bySev.yellow || 0, 'Worth a look'],
+        ].map(([cls, n, label]) => `<div class="count ${cls}"><strong>${esc(n)}</strong><span>${esc(label)}</span></div>`).join('');
+      } catch (err) {
+        byId('oneThingText').textContent = 'Could not read the attention queue — ' + err.message;
+        byId('oneThingBox').hidden = false;
+      }
+    }
+    async function loadDailyBrief() {
+      const box = byId('dailyBrief');
+      try { const r = await api('/brief/daily'); box.textContent = r.brief || 'Nothing to report yet.'; box.className = 'brief-body'; }
+      catch (err) { box.textContent = 'Could not load — ' + err.message; box.className = 'brief-body'; }
+    }
+    async function loadFounderBrief() {
+      const box = byId('founderBrief');
+      try { const r = await api('/founder/brief'); box.textContent = r.brief || 'Nothing to report yet.'; box.className = 'brief-body'; }
+      catch (err) { box.textContent = 'Could not load — ' + err.message; box.className = 'brief-body'; }
+    }
+
+    // ---- Explicit save (the only POST — writes memory + notification) ----
+    async function saveBrief() {
+      const note = byId('saveNote'); note.textContent = ''; note.className = 'note';
+      const out = byId('savedBrief'); out.hidden = true;
+      try {
+        const result = await api('/surface/brief', { method: 'POST', body: JSON.stringify({ narrate: byId('narrate').checked, force: byId('force').checked }) });
+        const meta = [
+          result.quiet ? 'Nothing new since the last brief (not saved unless "Save even if quiet" is on)' : 'Saved',
+          result.memory_id ? 'memory #' + result.memory_id : '',
+          result.notification_id ? 'notification #' + result.notification_id : '',
+        ].filter(Boolean).join(' · ');
+        note.textContent = meta; note.className = 'note good';
+        if (result.brief) {
+          out.hidden = false;
+          out.textContent = result.brief + (result.narrative ? '\n\n' + result.narrative : '');
+        }
+      } catch (err) { note.textContent = 'Save failed: ' + err.message; note.className = 'note err'; }
+    }
+
+    const now = new Date();
+    const g = greeting(now.getHours());
+    byId('greetH1').textContent = g.h1;
+    byId('greetSub').textContent = g.sub;
+    byId('saveBtn').addEventListener('click', () => withBusy(byId('saveBtn'), 'Saving…', saveBrief));
+
+    loadOneThing();
+    loadDailyBrief();
+    loadFounderBrief();
+  </script>
+  <script src="/ui/zade-ui.js"></script>
+</body>
+</html>

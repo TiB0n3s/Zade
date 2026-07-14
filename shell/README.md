@@ -5,8 +5,9 @@ loopback service (FastAPI, `127.0.0.1:8787`); the shell spawns and supervises it
 as a sidecar, then frames the kernel-served web UI (`/ui`). See
 `../DESKTOP-UNIVERSE-DESIGN.md` for the full design and ambition ladder.
 
-## What Phase 1 gives you
+## What the shell gives you
 
+**Phase 1 — the frame**
 - **Resident window** — closing the window hides it to the tray; Zade stays running.
   Real exit is the tray's *Quit shell* (which still leaves the **kernel** running).
 - **Kernel sidecar supervision** — on boot and every 20s the shell checks
@@ -19,6 +20,23 @@ as a sidecar, then frames the kernel-served web UI (`/ui`). See
 - **Splash → universe** — a local splash probes the kernel (opaque `no-cors`
   fetch; the kernel keeps its no-CORS loopback posture) and hands off to
   `http://127.0.0.1:8787/ui/index.html` once it answers.
+
+**Phase 3 — the product layer**
+- **Autostart (resident)** — boots with Windows via `tauri-plugin-autostart`.
+  Enabled once on first run (a `.autostart-initialized` marker in the app config
+  dir means we never re-enable after you turn it off). Toggle from the tray's
+  *Start with Windows*. A login-boot passes `--start-hidden`, so Zade comes up
+  quietly in the tray, not with the window in your face.
+- **L2 immersive mode** — `Ctrl+Alt+F` (or the tray's *Immersive mode*) toggles
+  full-screen; the OS strips the chrome and you're inside the world.
+- **Ollama-aware tray tooltip** — a status thread reads `/health` every 15s and
+  keeps the tooltip honest: *online* / *brain offline · start Ollama* /
+  *waking the kernel…*. Because the kernel is no-CORS loopback, only a native
+  client can read that body — which is why the prerequisite surfaces here.
+
+Deferred by decision (2026-07-14): **code signing** (ships unsigned — SmartScreen
+shows an "unknown publisher" prompt) and **auto-update** (rebuild/reinstall
+manually for now).
 
 ## Layout
 

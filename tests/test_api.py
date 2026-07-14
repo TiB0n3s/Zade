@@ -407,8 +407,8 @@ def test_runtime_respond_prompt_carries_full_charter_content_not_just_booleans(
     # ...and the old bare boolean-only leak is gone.
     assert '"voice_seeded": true' not in prompt.lower().replace(" ", "")
     # The prompt itself instructs first-person self-reference, never third.
-    assert "Always speak in the first person" in prompt
-    assert "third-person self-reference" in prompt
+    assert "Speak in the first person about your own state" in prompt
+    assert "never in the third person about yourself" in prompt
 
 
 def test_runtime_respond_prompt_translates_voice_charter_into_response_shape(
@@ -482,21 +482,20 @@ def test_runtime_respond_prompt_translates_voice_charter_into_response_shape(
     assert "Linguistic fingerprint: Short, physical, decisive lines." in prompt
     assert "Internal monologue: He doesn't rationalize much--he declares." in prompt
     assert "I recommend reviewing approval #19. -> Review approval #19. That is the move." in prompt
-    assert "Default response shape:" in prompt
-    assert "Do not use memo headings or checklist labels" in prompt
-    assert "Satisfy the decision-engine contract in prose" in prompt
-    assert "State the same blocker, boundary, or missing evidence once." in prompt
-    assert "Use direct imperative lines" in prompt
-    assert "Do not narrate internal lookups" in prompt
-    assert "Avoid robotic status-report ladders" in prompt
-    assert "Never use \"I checked.\" as a standalone sentence." in prompt
-    assert "Preferred vocabulary is texture, not a checklist." in prompt
-    assert "Never emit labels like \"Rationale:\"" in prompt
-    assert "consider recommendation, rationale, confidence" in prompt
-    assert "Expose those elements only as natural prose" in prompt
-    assert "The authority decision governs what you may execute" in prompt
-    assert "Founder direct commands count as authorization" in prompt
-    assert "Better ordinary reply: \"Close the beta waitlist." in prompt
+    # The per-field response-shape translation block was replaced by the
+    # "How you operate" rules section, which carries the same bridge: it tells
+    # the model to answer in-voice (no memo labels, no status ladders) and to
+    # deliver decision-engine content — recommendation, confidence, risk,
+    # reversal, next action — as natural prose rather than a labeled form.
+    assert "No memo headings or labels" in prompt
+    assert "no status-report ladders" in prompt
+    assert (
+        "deliver it as prose that carries the reason, your confidence, the main "
+        "risk, a reversal or kill condition, and the next action"
+    ) in prompt
+    assert "Preferred vocabulary texture:" in prompt
+    assert "The authority decision below governs what you may execute, not what she may decide." in prompt
+    assert "Ellie's direct commands are already authorized" in prompt
 
 
 def test_personality_contract_is_shared_by_chat_and_runtime_prompts(
@@ -550,8 +549,10 @@ def test_personality_contract_is_shared_by_chat_and_runtime_prompts(
         voice_charter=stack["voice"],
     )
 
+    # The governed runtime prompt embeds the contract under the "WHO YOU ARE"
+    # banner (no "Zade personality contract:" header); the legacy chat prompt
+    # keeps that header. What must be *shared* is the contract body itself.
     for prompt in (runtime_prompt, chat_prompt):
-        assert "Zade personality contract:" in prompt
         assert "The identity charter defines who you are, not a style overlay." in prompt
         assert "If generic assistant habits conflict with the charter, the charter wins within authority and safety boundaries." in prompt
         assert "Translate intensity into lawful operational presence without flattening it." in prompt
@@ -623,14 +624,17 @@ def test_runtime_respond_prompt_includes_trading_bot_context_for_trading_questio
 
     assert context["evidence_state"]["trading_bot_context_present"] is True
     assert context["evidence_state"]["local_evidence_present"] is True
-    assert "Trading-bot context:" in prompt
+    assert "Trading-bot:" in prompt
+    assert "Replacement seams: active=6" in prompt
     assert "No local memory hits." in prompt
     assert "No semantic document hits." in prompt
     assert "No local evidence found." not in prompt
-    assert "When a specific domain context is present, treat it as live local evidence." in prompt
-    assert "For domain status questions, answer that domain and stop." in prompt
+    # Domain-status focus now shows up as the approval-pressure block being
+    # deliberately omitted in favor of the live domain context. (The old flat
+    # "Latest decision recommendations" line was replaced by the working-model
+    # section, so it is no longer rendered or asserted here.)
+    assert "do not pivot to approval pressure unless the approval directly gates this domain." in prompt
     assert "Approval pressure: Omitted for this domain-status answer" in prompt
-    assert "Latest decision recommendations: Omitted for this domain-status answer" in prompt
     assert "Bridge status: ok; enabled=True" in prompt
     assert "Ubuntu-TradingBot-C:/home/tradingbot/trading-bot; reachable=True" in prompt
     assert "Replacement seams: active=6; planned=0" in prompt
@@ -1416,7 +1420,7 @@ def test_legacy_chat_uses_governed_runtime_personality_repair(
     assert response.status_code == 200
     payload = response.json()
     assert len(prompts) == 2
-    assert "Zade personality contract:" in prompts[0]
+    assert "====================  WHO YOU ARE  ====================" in prompts[0]
     assert "The previous draft failed" in prompts[1]
     assert payload["response"].startswith("I am Zade:")
     assert "I do not drift" not in payload["response"]

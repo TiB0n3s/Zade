@@ -336,6 +336,7 @@ class VoiceConverseRequest(BaseModel):
     use_semantic_memory: bool = True
     speak_response: bool = True
     speak_full: bool = False
+    client_timing: dict[str, Any] = Field(default_factory=dict)
 
 
 class EvalRunRequest(BaseModel):

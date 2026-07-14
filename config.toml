@@ -1,6 +1,13 @@
 # Zade local overrides. Only sections present here override built-in defaults;
 # see config.example.toml for everything that can be configured.
 
+[security]
+# Dev-only: browser origins allowed to call the kernel cross-origin. Needed only
+# when the UI is served from a separate dev server (e.g. Vite) instead of the
+# kernel's own /ui mount. Non-loopback origins and "*" are refused at startup.
+# Remove this line for the default same-origin (no-CORS) posture.
+cors_dev_origins = ["http://localhost:5173"]
+
 [ollama]
 # Chat/voice sampling temperature. Default is 0.2 (deterministic, flat). Raised so
 # the charter voice has room for texture and doesn't repeat the same phrasing.

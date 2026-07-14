@@ -138,6 +138,58 @@ def test_converse_runs_governed_loop_with_memory_and_contrarian(tmp_path: Path, 
     assert turn_list[0]["content"] == "what should we prioritize next"
 
 
+def test_converse_returns_tier1_latency_timing_breakdown(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    client = TestClient(create_app(_config(tmp_path, _voice_config())))
+
+    converse = client.post(
+        "/voice/converse",
+        json={
+            "audio_base64": FAKE_AUDIO,
+            "use_semantic_memory": False,
+            "client_timing": {"speech_stopped_at_ms": 10.0, "request_started_at_ms": 25.0},
+        },
+    )
+
+    assert converse.status_code == 200
+    payload = converse.json()
+    timing = payload["timing"]
+
+    assert timing["pipeline"] == "batch_non_streaming"
+    assert timing["streaming"] == {"stt": False, "model": False, "tts": False, "playback": False}
+    assert timing["client_reported"] == {"speech_stopped_at_ms": 10.0, "request_started_at_ms": 25.0}
+    assert timing["segments_ms"]["transcription"] == payload["transcription"]["latency_ms"]
+    assert timing["segments_ms"]["runtime_response"] >= 0
+    assert timing["segments_ms"]["speech_synthesis"] == payload["speech"]["latency_ms"]
+    assert timing["segments_ms"]["server_total"] >= timing["segments_ms"]["transcription"]
+    assert timing["milestones_ms"]["server_received"] == 0
+    assert timing["milestones_ms"]["transcript_final"] >= timing["segments_ms"]["transcription"]
+    assert timing["milestones_ms"]["model_first_token"] is None
+    assert timing["milestones_ms"]["model_response_complete"] >= timing["milestones_ms"]["transcript_final"]
+    assert timing["milestones_ms"]["first_audio_byte"] is None
+    assert timing["milestones_ms"]["audio_ready"] >= timing["milestones_ms"]["model_response_complete"]
+    assert timing["milestones_ms"]["server_response_ready"] >= timing["milestones_ms"]["audio_ready"]
+    assert timing["milestones_ms"]["playback_started"] is None
+    assert "model_first_token" in timing["unavailable"]
+    assert "first_audio_byte" in timing["unavailable"]
+    assert "playback_started" in timing["unavailable"]
+
+
+def test_voice_surfaces_send_and_render_latency_timing() -> None:
+    standalone = Path("ui/voice.html").read_text(encoding="utf-8")
+    dashboard = Path("ui/index.html").read_text(encoding="utf-8")
+
+    for html in (standalone, dashboard):
+        assert "client_timing" in html
+        assert "speech_stopped_at_ms" in html
+        assert "request_started_at_ms" in html
+        assert "First sound" in html
+
+    assert "renderTiming" in standalone
+    assert "timing.segments_ms" in dashboard
+
+
 def test_converse_prompt_carries_personality_contract(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     prompts: list[str] = []
@@ -172,7 +224,7 @@ def test_converse_prompt_carries_personality_contract(tmp_path: Path, monkeypatc
 
     assert converse.status_code == 200
     assert prompts
-    assert "Zade personality contract:" in prompts[0]
+    assert "====================  WHO YOU ARE  ====================" in prompts[0]
     assert "The identity charter defines who you are, not a style overlay." in prompts[0]
     assert "Relentless purpose. No drifting." in prompts[0]
     assert "He does not negotiate. He states." in prompts[0]

@@ -23,6 +23,12 @@ temperature = 0.2
 [security]
 local_token = ""
 protect_mutations = true
+# Dev-only cross-origin allowlist. Empty (default) keeps the same-origin,
+# no-CORS loopback posture. Set this ONLY when serving the UI from a separate
+# dev server (e.g. Vite on http://localhost:5173) that must call the kernel.
+# Guardrails: "*" and any non-loopback origin are refused at startup with a
+# loud SECURITY warning. Env override: COFOUNDER_CORS_DEV_ORIGINS (comma-sep).
+# cors_dev_origins = ["http://localhost:5173"]
 
 [skills]
 source_dir = "C:\\LocalAICofounder\\.agents\\skills"

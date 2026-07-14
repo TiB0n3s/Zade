@@ -26,7 +26,9 @@
     system: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
     browser: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
     vault: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4"/><path d="M12 8v1M12 15v1M8 12h1M15 12h1"/>',
-    research: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><path d="M11 8v3l2 2"/>'
+    research: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><path d="M11 8v3l2 2"/>',
+    brief: '<path d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 4v5h5"/><path d="M8 13h7M8 17h7"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>'
   };
 
   // Redesign: 10 destinations folded into 6. No group labels at this count.
@@ -53,6 +55,7 @@
     {
       label: "Ops",
       pages: [
+        ["Brief", "digest", I.brief],
         ["Browser", "browser", I.browser],
         ["Vault", "vault", I.vault],
         ["Research", "research", I.research]
@@ -63,7 +66,7 @@
   // Every reachable page, for the command palette. The sidebar shows the
   // folded 6 + Ops; the palette also reaches the standalone consoles.
   const ALL_PAGES = [
-    ["Home", "index"], ["Inbox", "inbox"], ["Strategy", "strategy"], ["Memory", "memory"],
+    ["Home", "index"], ["The brief", "digest"], ["Inbox", "inbox"], ["Strategy", "strategy"], ["Memory", "memory"],
     ["Trading", "trading"], ["Settings", "settings"], ["Browser", "browser"], ["Vault", "vault"],
     ["Research", "research"], ["Approvals console", "approvals"], ["Founder ops", "founder"],
     ["Operating ledger", "ledger"], ["Commitments", "commitments"], ["Attention & notifications", "surfacing"],
@@ -406,14 +409,21 @@
   // hidden so a backgrounded page isn't hammering loopback.
   const startActivityPoller = () => {
     if (pollTimer) return;
+    let notifTick = 0;
     const loop = async () => {
       pollTimer = null;
-      if (!document.hidden) await tickActivity();
+      if (!document.hidden) {
+        await tickActivity();
+        // Refresh the unread badge on boot and then roughly every 15s, not every
+        // activity tick — the count moves far slower than the work queue.
+        if (notifTick % 3 === 0) refreshNotifBadge();
+        notifTick += 1;
+      }
       const delay = document.hidden ? 2000 : offlineStreak > 2 ? 20000 : 5000;
       pollTimer = window.setTimeout(loop, delay);
     };
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) tickActivity();
+      if (!document.hidden) { tickActivity(); refreshNotifBadge(); }
     });
     loop();
   };
@@ -424,12 +434,15 @@
     const aside = el("aside", "zade-sidebar");
     aside.setAttribute("aria-label", "Zade workspace");
 
+    const header = el("div", "zade-sidebar-header");
     const logo = el("a", "zade-sidebar-logo");
     logo.href = href("index");
     logo.innerHTML =
       '<div class="zade-mark">Z</div>' +
       '<div><div class="zade-name">Zade</div><div class="zade-tag">Local AI Co-founder</div></div>';
-    aside.appendChild(logo);
+    header.appendChild(logo);
+    header.appendChild(makeBell());
+    aside.appendChild(header);
 
     // Zade's heartbeat: the rotating first-person presence line.
     injectPresence(aside);
@@ -499,6 +512,9 @@
       });
     });
     injectStripBeacon(nav);
+    const bell = makeBell();
+    bell.classList.add("zade-notif-bell-strip");
+    nav.appendChild(bell);
     document.body.insertBefore(nav, document.body.firstChild);
   };
 
@@ -570,6 +586,164 @@
     } catch {
       // File previews and non-loopback sessions can run without mutation bootstrap.
     }
+  };
+
+  // ============================================================
+  //  Notification center — notifications as first-class citizens
+  //  of the universe. A bell + live unread badge in the sidebar
+  //  (and compact strip) on every page; clicking opens a panel of
+  //  actionable cards. Badge polls the tray state (cheap); the
+  //  panel pulls the full recent list on open. Mark-read is the
+  //  same POST /notifications/{id}/read the surfacing page uses.
+  // ============================================================
+  let notifRefs = null;
+  let notifItems = [];
+
+  const notifHeaders = () => {
+    const t = localStorage.getItem("zadeKernelToken") || "";
+    const h = { "Content-Type": "application/json" };
+    if (t) h["X-Zade-Token"] = t;
+    return h;
+  };
+
+  const makeBell = () => {
+    const btn = el("button", "zade-notif-bell");
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Notifications");
+    btn.title = "Notifications";
+    btn.innerHTML = svgIcon(I.bell) + '<span class="zade-notif-badge" data-notif-badge hidden></span>';
+    btn.addEventListener("click", (event) => { event.preventDefault(); toggleNotifications(); });
+    return btn;
+  };
+
+  const setNotifBadge = (count) => {
+    document.querySelectorAll("[data-notif-badge]").forEach((badge) => {
+      if (count > 0) {
+        badge.textContent = count > 99 ? "99+" : String(count);
+        badge.hidden = false;
+      } else {
+        badge.hidden = true;
+      }
+    });
+  };
+
+  const refreshNotifBadge = async () => {
+    try {
+      const state = await fetchJSON("/tray/state");
+      setNotifBadge(Number(state.unread_notifications || 0));
+    } catch { /* kernel offline — leave the badge as-is */ }
+  };
+
+  const renderNotifCards = () => {
+    if (!notifRefs) return;
+    if (!notifItems.length) {
+      notifRefs.list.innerHTML = '<div class="zade-notif-empty">Nothing to hear about. I keep the noise off your desk on purpose.</div>';
+      return;
+    }
+    notifRefs.list.innerHTML = notifItems
+      .map((n) => {
+        const unread = !n.read_at;
+        const sev = ["info", "warning", "critical"].includes(n.severity) ? n.severity : "info";
+        const meta = [esc(n.topic || n.source || ""), esc(relTime(n.created_at))].filter(Boolean).join(" · ");
+        return (
+          '<div class="zade-notif-card sev-' + sev + (unread ? " unread" : "") + '" data-id="' + esc(n.id) + '">' +
+          '<span class="zade-notif-stripe"></span>' +
+          '<div class="zade-notif-copy">' +
+          '<div class="zade-notif-title">' + esc(n.title || "(untitled)") + "</div>" +
+          (n.body ? '<div class="zade-notif-text">' + esc(n.body) + "</div>" : "") +
+          '<div class="zade-notif-meta">' + meta + "</div>" +
+          "</div>" +
+          (unread ? '<button type="button" class="zade-notif-mark" data-read="' + esc(n.id) + '" title="Mark read" aria-label="Mark read">✓</button>' : "") +
+          "</div>"
+        );
+      })
+      .join("");
+  };
+
+  const loadNotifCards = async () => {
+    if (!notifRefs) return;
+    try {
+      const data = await fetchJSON("/notifications?limit=25");
+      const items = data.items || data.notifications || [];
+      // Unread first, then most recent — the panel leads with what still wants you.
+      notifItems = items.sort((a, b) => {
+        const au = a.read_at ? 1 : 0;
+        const bu = b.read_at ? 1 : 0;
+        if (au !== bu) return au - bu;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+      renderNotifCards();
+    } catch (err) {
+      notifRefs.list.innerHTML = '<div class="zade-notif-empty">Could not load — ' + esc(formatKernelError(err.message)) + "</div>";
+    }
+  };
+
+  const markNotifRead = async (id) => {
+    try {
+      await fetch("/notifications/" + encodeURIComponent(id) + "/read", { method: "POST", headers: notifHeaders(), body: "{}" });
+      const item = notifItems.find((n) => String(n.id) === String(id));
+      if (item) item.read_at = new Date().toISOString();
+      renderNotifCards();
+      refreshNotifBadge();
+    } catch { /* leave it unread; the badge will resync on next poll */ }
+  };
+
+  const markAllNotifRead = async () => {
+    const unread = notifItems.filter((n) => !n.read_at);
+    if (!unread.length) return;
+    notifRefs.markAll.disabled = true;
+    await Promise.all(
+      unread.map((n) =>
+        fetch("/notifications/" + encodeURIComponent(n.id) + "/read", { method: "POST", headers: notifHeaders(), body: "{}" })
+          .then(() => { n.read_at = new Date().toISOString(); })
+          .catch(() => {})
+      )
+    );
+    notifRefs.markAll.disabled = false;
+    renderNotifCards();
+    refreshNotifBadge();
+  };
+
+  const closeNotifications = () => {
+    if (notifRefs) notifRefs.overlay.classList.remove("open");
+  };
+
+  const openNotifications = () => {
+    if (!notifRefs) injectNotifCenter();
+    notifRefs.overlay.classList.add("open");
+    loadNotifCards();
+  };
+
+  const toggleNotifications = () => {
+    if (notifRefs && notifRefs.overlay.classList.contains("open")) closeNotifications();
+    else openNotifications();
+  };
+
+  const injectNotifCenter = () => {
+    if (notifRefs) return;
+    const overlay = el("div", "zade-notif-overlay");
+    overlay.innerHTML =
+      '<div class="zade-notif-panel" role="dialog" aria-label="Notifications">' +
+      '<div class="zade-notif-head"><span>Notifications</span>' +
+      '<button type="button" class="zade-notif-allread" data-mark-all>Mark all read</button></div>' +
+      '<div class="zade-notif-list"></div>' +
+      '<a class="zade-notif-foot" href="' + href("surfacing") + '">Open the full history →</a>' +
+      "</div>";
+    document.body.appendChild(overlay);
+    notifRefs = {
+      overlay,
+      list: overlay.querySelector(".zade-notif-list"),
+      markAll: overlay.querySelector("[data-mark-all]")
+    };
+    overlay.addEventListener("mousedown", (event) => { if (event.target === overlay) closeNotifications(); });
+    notifRefs.markAll.addEventListener("click", markAllNotifRead);
+    notifRefs.list.addEventListener("click", (event) => {
+      const markBtn = event.target.closest("button[data-read]");
+      if (markBtn) { markNotifRead(markBtn.dataset.read); return; }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && overlay.classList.contains("open")) closeNotifications();
+    });
   };
 
   // ============================================================
@@ -727,6 +901,9 @@
     bootstrapToken();
     startActivityPoller();
     bindPaletteHotkey();
+    // Show the unread badge immediately on load, without waiting for the first
+    // visibility-gated poll tick.
+    refreshNotifBadge();
   };
 
   if (document.readyState === "loading") {
