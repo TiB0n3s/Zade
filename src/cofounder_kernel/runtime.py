@@ -39,6 +39,30 @@ _identity_doc_cache: dict[str, tuple[float, str]] = {}
 _core_knowledge_cache: dict[str, tuple[float, str]] = {}
 
 
+# The trading-bot status payload is a wall of "no_broker_order_authority" /
+# "*_mutation: false" labels. Those describe ZADE'S access ceiling, not the bot's
+# capabilities. This block travels with the status so the model cannot collapse the
+# two: Zade is read-and-advise-only; the bot places and fills its own orders.
+_TRADING_BOT_INTERPRETATION = {
+    "zade_authority_over_bot": "read_and_advise_only__no_broker_or_order_authority",
+    "bot_runtime_authority": "full__bot_places_and_fills_its_own_orders",
+    "do_not_conflate": (
+        "The 'no_broker_order_authority' / 'no_trade_authority' / '*_mutation: false' "
+        "labels in status describe ZADE'S access ceiling, NOT the bot's capabilities. "
+        "The bot is a live-capable automated trader with an Alpaca/Binance order+fill "
+        "pipeline (see trades.db). It is not observe-only; observe-vs-live is its own "
+        "config toggle."
+    ),
+    "answering_rule": (
+        "If asked whether the bot can trade, has order authority, or is observe-only "
+        "-- or if a prior claim about the bot is challenged -- answer ONLY from a fresh "
+        "bridge read (status, sqlite/query on trades.db, events/recent), never from "
+        "memory or from these labels. If you have not just read the evidence, say so "
+        "and read it before asserting. Never defend a prior claim by repetition."
+    ),
+}
+
+
 def _load_text_file_cached(path: Path, cache: dict[str, tuple[float, str]]) -> str:
     """Read a text file, cached on its mtime. Returns "" if it doesn't exist.
 
@@ -172,6 +196,7 @@ class RuntimeService:
         use_skills: bool = True,
         skill_limit: int = 3,
         task_type: ModelRole = "general",
+        conversation_id: int | None = None,
     ) -> dict[str, Any]:
         memory_hits: list[dict[str, Any]] = []
         semantic_hits: list[dict[str, Any]] = []
@@ -194,7 +219,7 @@ class RuntimeService:
             routed = self.skills.route(query=message, task_type=task_type, limit=skill_limit)
             skill_route = routed.summary()
             skill_prompt_block = self.skills.prompt_block(routed)
-        trading_bot_context = self._trading_bot_context(message)
+        trading_bot_context = self._trading_bot_context(message, conversation_id=conversation_id)
         dashboard = self.founder.dashboard()
         brief = self.founder.brief()
         return {
@@ -225,14 +250,26 @@ class RuntimeService:
             },
         }
 
-    def _trading_bot_context(self, message: str) -> dict[str, Any]:
-        if not self.trading_bot or not _mentions_trading_bot(message):
+    def _trading_bot_context(self, message: str, *, conversation_id: int | None = None) -> dict[str, Any]:
+        if not self.trading_bot:
+            return {"present": False}
+        in_scope = _mentions_trading_bot(message)
+        if not in_scope and conversation_id:
+            # Sticky: once a thread is about the bot, keep re-injecting live evidence
+            # so a bare rebuttal ("no, you're wrong") is still answered from a fresh
+            # read instead of from the prior (possibly wrong) assertion.
+            try:
+                recent = self.db.recent_conversation_turns(conversation_id, window=6)
+                in_scope = any(_mentions_trading_bot(str(turn.get("content", ""))) for turn in recent)
+            except Exception:
+                in_scope = False
+        if not in_scope:
             return {"present": False}
         try:
             status = self.trading_bot.status()
         except Exception as exc:
-            return {"present": True, "error": str(exc)}
-        return {"present": True, "status": status}
+            return {"present": True, "error": str(exc), "interpretation": _TRADING_BOT_INTERPRETATION}
+        return {"present": True, "status": status, "interpretation": _TRADING_BOT_INTERPRETATION}
 
     def respond(
         self,
@@ -260,6 +297,7 @@ class RuntimeService:
             use_skills=use_skills,
             skill_limit=skill_limit,
             task_type=task_type,
+            conversation_id=conversation_id,
         )
         conversation = (
             self.conversations.prompt_context(conversation_id)
@@ -2533,6 +2571,13 @@ def _mentions_trading_bot(message: str) -> bool:
         "paper-live",
         "wealth engine",
         "bot replacement",
+        # Claim/challenge vocabulary: a dispute about what the bot can do is still
+        # about the bot, even when the rebuttal drops the "trading" noun.
+        "observe-only",
+        "observe only",
+        "order authority",
+        "broker",
+        "place order",
     )
     return any(signal in lowered for signal in signals)
 
@@ -2549,7 +2594,12 @@ def _brief_trading_bot_context(context: dict[str, Any]) -> str:
         f"- Bridge status: {'ok' if status.get('ok') else 'not ok'}; enabled={status.get('enabled')}; runtime_effect={status.get('runtime_effect', 'unknown')}",
         f"- WSL repo: {status.get('wsl_distro', 'unknown')}:{status.get('repo_path', 'unknown')}; reachable={status.get('repo_reachable')}; advisory_lane_present={status.get('advisory_lane_present')}",
         f"- Replacement seams: active={replacement.get('active_count', 0)}; planned={replacement.get('planned_count', 0)}",
-        f"- Authority boundary: writes={boundary.get('writes', 'unknown')}; runtime_read_path={boundary.get('runtime_read_path')}; broker_order_sizing_gate_mutation={boundary.get('broker_order_sizing_gate_mutation')}",
+        f"- Authority boundary (ZADE's limits, NOT the bot's): writes={boundary.get('writes', 'unknown')}; "
+        f"runtime_read_path={boundary.get('runtime_read_path')}; "
+        f"zade_bridge_broker_order_mutation={boundary.get('broker_order_sizing_gate_mutation')}; "
+        f"the bot itself retains full broker/order authority",
+        "- Reality check: the bot places & fills its own orders (trades.db). 'observe-only' is a bot "
+        "config state, not a capability fact. If challenged, re-read status/trades.db before asserting.",
     ]
     seams = replacement.get("seams") or []
     rendered = []

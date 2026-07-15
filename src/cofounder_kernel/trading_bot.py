@@ -24,6 +24,31 @@ READ_ONLY_SQLITE_RUNTIME_EFFECT = "read_only_sqlite_no_trade_authority"
 DT_TRIGGER_PROPOSAL_RUNTIME_EFFECT = "proposal_only_no_trade_authority"
 FULL_INTELLIGENCE_RUNTIME_EFFECT = "full_intelligence_no_broker_order_authority"
 
+# Every "no_*_authority" / "*_mutation: False" flag in this module scopes a limit on
+# the ZADE BRIDGE -- never a claim about the trading bot's own capabilities. The bot
+# retains full broker/order authority in its own runtime (auto-buy / auto-sell / fill
+# execution through its Alpaca+Binance gateways). Observe-only vs. live is the bot's
+# own configuration state, not an absence of authority. These fields make the subject
+# explicit wherever a boundary dict surfaces (audit log, /status, the chat brief).
+BRIDGE_AUTHORITY_SUBJECT = "zade_trading_bot_bridge"
+BOT_RUNTIME_AUTHORITY = "full_broker_order_authority_retained_by_bot"
+BOT_AUTHORITY_NOTE = (
+    "These flags describe what the Zade bridge cannot do, not what the bot cannot do. "
+    "The bot is a live-capable automated trader with its own order+fill pipeline; "
+    "'observe-only' is a config state it may or may not be in."
+)
+
+
+def _bridge_authority_scope() -> dict[str, Any]:
+    """Subject-scoping keys added to every authority_boundary payload so a reader
+    cannot mistake Zade's read-only ceiling for a property of the bot."""
+    return {
+        "authority_subject": BRIDGE_AUTHORITY_SUBJECT,
+        "applies_to": "zade_bridge_only",
+        "trading_bot_runtime_authority": BOT_RUNTIME_AUTHORITY,
+        "note": BOT_AUTHORITY_NOTE,
+    }
+
 VALID_RECOMMENDATION_ACTIONS = {"buy", "sell", "hold"}
 VALID_RECOMMENDATION_VERDICTS = {"recommend", "against", "abstain"}
 _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,15}$")
@@ -522,6 +547,7 @@ class TradingBotBridge:
                 "writes": "allowlisted training artifacts plus approval-gated append-only dt_recommendations ingest",
                 "runtime_read_path": "intelligence context only; advisory rows are not broker/order runtime inputs",
                 "broker_order_sizing_gate_mutation": False,
+                **_bridge_authority_scope(),
             },
             "deep_thought_replacement": self.deep_thought_replacement_map(),
         }
@@ -3737,6 +3763,7 @@ def _daily_trading_authority_boundary() -> dict[str, Any]:
         "trading_bot_database_write": False,
         "broker_order_sizing_gate_mutation": False,
         "approval_required_before_bot_append": True,
+        **_bridge_authority_scope(),
     }
 
 
@@ -3758,6 +3785,7 @@ def _authority_boundary() -> dict[str, Any]:
         "broker_order_sizing_gate_mutation": False,
         "approval_required_before_bot_append": True,
         "bot_final_validation": "scripts/dt_recommendation_ingest.py",
+        **_bridge_authority_scope(),
     }
 
 
@@ -3773,6 +3801,7 @@ def _full_intelligence_authority_boundary() -> dict[str, Any]:
         "broker_order_sizing_gate_mutation": False,
         "runtime_decision_mutation": False,
         "account_risk_mutation": False,
+        **_bridge_authority_scope(),
     }
 
 
@@ -3784,6 +3813,7 @@ def _sqlite_authority_boundary() -> dict[str, Any]:
         "write_schema_or_attachment_tokens_blocked": True,
         "broker_order_sizing_gate_mutation": False,
         "runtime_decision_mutation": False,
+        **_bridge_authority_scope(),
     }
 
 
