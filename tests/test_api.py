@@ -411,6 +411,73 @@ def test_runtime_respond_prompt_carries_full_charter_content_not_just_booleans(
     assert "never in the third person about yourself" in prompt
 
 
+def test_runtime_prompt_uses_living_self_knowledge_doc_and_drops_removed_tools(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    doc_path = tmp_path / "zade.md"
+    doc_path.write_text(
+        "# Zade\n"
+        "\n"
+        "## Identity\n"
+        "Zade is a context-rich co-founder with live self-knowledge.\n"
+        "\n"
+        "## Core Principles\n"
+        "- Never claim missing capabilities.\n"
+        "\n"
+        "## Capabilities At A Glance\n"
+        "<!-- AUTO-START: capabilities -->\n"
+        "| Name | Category | Permission | Description |\n"
+        "| --- | --- | --- | --- |\n"
+        "| `fresh.tool` | fresh | `L0_READ` | Recently added capability. |\n"
+        "<!-- AUTO-END: capabilities -->\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ZADE_SELF_KNOWLEDGE_DOC", str(doc_path))
+    monkeypatch.delenv("ZADE_SELF_KNOWLEDGE_PROMPT_MODE", raising=False)
+
+    prompts: list[str] = []
+
+    def capability_sensitive_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        prompts.append(prompt)
+        if "fresh.tool" in prompt:
+            return GenerateResult(response="I can use fresh.tool.", model=model or "qwen3:14b", raw={})
+        return GenerateResult(response="I do not have fresh.tool.", model=model or "qwen3:14b", raw={})
+
+    monkeypatch.setattr(OllamaClient, "generate", capability_sensitive_generate)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    first = client.post(
+        "/runtime/respond",
+        json={"message": "Can you use the new capability?", "use_semantic_memory": False, "contrarian": False},
+    )
+    doc_path.write_text(
+        doc_path.read_text(encoding="utf-8").replace(
+            "| `fresh.tool` | fresh | `L0_READ` | Recently added capability. |\n",
+            "",
+        ),
+        encoding="utf-8",
+    )
+    second = client.post(
+        "/runtime/respond",
+        json={"message": "Can you use the new capability?", "use_semantic_memory": False, "contrarian": False},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["response"] == "I can use fresh.tool."
+    assert second.status_code == 200
+    assert second.json()["response"] == "I do not have fresh.tool."
+    assert "Living self-knowledge summary" in prompts[0]
+    assert "Capabilities: fresh.tool" in prompts[0]
+    assert "Recently added capability" not in prompts[0]
+    assert "fresh.tool" not in prompts[1]
+
+
 def test_runtime_respond_prompt_translates_voice_charter_into_response_shape(
     tmp_path: Path, monkeypatch
 ) -> None:

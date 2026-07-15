@@ -144,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Open Questions / Unknowns
 
 - No first-party runtime sub-agent or specialist-persona registry has been confirmed in `src/cofounder_kernel`; if one is added, it should get its own AUTO block.
-- Decide whether the runtime should inject the slim summary from this file, the full rendered document, or both behind a feature flag in a later tier.
 - Decide which hand-written pointers deserve strict drift checking once Phase 3 exists.
 
 ## Pointers
