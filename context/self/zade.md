@@ -127,7 +127,8 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
-- `37328f3` 2026-07-15 - Generate Zade self-knowledge blocks
+- `18587ad` 2026-07-15 - Render the disambiguation into the prompt so Zade actually reads it
+- `6fed106` 2026-07-15 - Generate Zade self-knowledge blocks
 - `feb48c2` 2026-07-15 - Fix Zade conflating its bridge's read-only ceiling with the bot's authority
 - `fbbe590` 2026-07-15 - Add Zade self-knowledge scaffold
 - `5329fa5` 2026-07-15 - v1 - Memory & Deployment
@@ -138,7 +139,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `66faf06` 2026-07-13 - v1 - Initial Build (cont)
 - `6cac5bf` 2026-07-13 - v1 - Initial Build (cont)
 - `8b9fe41` 2026-07-12 - v1 - Initial Build (cont)
-- `5df7ce1` 2026-07-12 - v1 - Initial Build (cont)
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

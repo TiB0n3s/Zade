@@ -1,0 +1,7 @@
+# One reference per line. Use either:
+#   reference
+#   kind:reference
+#
+# The drift checker skips entries here when a hand-written self-knowledge
+# pointer is intentionally external, aspirational, or otherwise not provable
+# from the local codebase.
