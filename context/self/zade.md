@@ -128,6 +128,8 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `9b35d85` 2026-07-15 - Merge pull request #1 from TiB0n3s/feat/phase3-swarm-screen
+- `f80e84a` 2026-07-15 - Complete Phase 3 + swarm first slice + screen awareness
 - `5000405` 2026-07-15 - Inject living self-knowledge into runtime prompt
 - `81f21ab` 2026-07-15 - Install self-knowledge pre-commit automation
 - `5ddb0b2` 2026-07-15 - Relocate Zade UI to bundled Tauri assets (Option B) + frameless chrome, dev loop, native toasts
@@ -138,8 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `fbbe590` 2026-07-15 - Add Zade self-knowledge scaffold
 - `5329fa5` 2026-07-15 - v1 - Memory & Deployment
 - `2e308eb` 2026-07-14 - Add durable brain & memory system for Zade (8 tiers + doc-recall)
-- `a21b22f` 2026-07-14 - Commit pre-existing working-tree changes (universe shell, CORS, voice, theme)
-- `3a2f1c3` 2026-07-14 - Force revalidation on /ui static assets to fix stale WebView2 cache
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
