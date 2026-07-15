@@ -127,6 +127,8 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `5ddb0b2` 2026-07-15 - Relocate Zade UI to bundled Tauri assets (Option B) + frameless chrome, dev loop, native toasts
+- `b65143a` 2026-07-15 - Add Zade self-knowledge drift checks
 - `18587ad` 2026-07-15 - Render the disambiguation into the prompt so Zade actually reads it
 - `6fed106` 2026-07-15 - Generate Zade self-knowledge blocks
 - `feb48c2` 2026-07-15 - Fix Zade conflating its bridge's read-only ceiling with the bot's authority
@@ -137,8 +139,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `3a2f1c3` 2026-07-14 - Force revalidation on /ui static assets to fix stale WebView2 cache
 - `084d2b9` 2026-07-14 - v1 - Memory & Deployment
 - `66faf06` 2026-07-13 - v1 - Initial Build (cont)
-- `6cac5bf` 2026-07-13 - v1 - Initial Build (cont)
-- `8b9fe41` 2026-07-12 - v1 - Initial Build (cont)
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
