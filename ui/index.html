@@ -198,9 +198,9 @@
             <div class="kicker">Set me loose</div>
             <div class="qa-row">
               <button type="button" id="qaDaydream">Daydream</button>
-              <a href="/ui/research.html">Research</a>
-              <a href="/ui/browser.html">The browser</a>
-              <a href="/ui/vault.html">The vault</a>
+              <a href="research.html">Research</a>
+              <a href="browser.html">The browser</a>
+              <a href="vault.html">The vault</a>
             </div>
             <div class="qa-note" id="qaNote"></div>
             <div class="qa-hint"><kbd>Ctrl</kbd> <kbd>K</kbd> — anywhere in the house, instantly.</div>
@@ -697,8 +697,8 @@
         const pending = Number(t.pending_approvals || 0);
         const bits = [];
         bits.push(attentionCount == null ? '' : `<span${attentionCount ? ' class="hot"' : ''}>${attentionCount} need${attentionCount === 1 ? 's' : ''} you</span>`);
-        bits.push(`<a href="/ui/surfacing.html"${unread ? ' class="hot"' : ''}>${unread} unread</a>`);
-        bits.push(`<a href="/ui/approvals.html"${pending ? ' class="hot"' : ''}>${pending} awaiting your word</a>`);
+        bits.push(`<a href="surfacing.html"${unread ? ' class="hot"' : ''}>${unread} unread</a>`);
+        bits.push(`<a href="approvals.html"${pending ? ' class="hot"' : ''}>${pending} awaiting your word</a>`);
         bits.push(`<span>${t.ollama_ok ? 'models warm' : 'models down'}</span>`);
         byId('todayStrip').innerHTML = bits.filter(Boolean).join('<span class="sep">·</span>');
       } catch (e) { byId('todayStrip').innerHTML = ''; }
@@ -711,10 +711,10 @@
         const items = data.items || data.notifications || [];
         box.innerHTML = items.length
           ? items.map((n) => `
-              <a class="away-row" href="/ui/surfacing.html">
+              <a class="away-row" href="surfacing.html">
                 <div class="away-title">${esc(n.title || '(untitled)')}</div>
                 <div class="away-sub">${esc([n.severity, relTime(n.created_at)].filter(Boolean).join(' · '))}</div>
-              </a>`).join('') + '<a class="rail-more" href="/ui/surfacing.html">everything I noted →</a>'
+              </a>`).join('') + '<a class="rail-more" href="surfacing.html">everything I noted →</a>'
           : '<div class="rail-empty">Nothing happened that you need to hear about. That’s the job.</div>';
       } catch (err) { box.innerHTML = '<div class="rail-empty">Could not load — ' + esc(err.message) + '</div>'; }
     }
@@ -726,10 +726,10 @@
         const items = data.items || [];
         box.innerHTML = items.length
           ? items.map((d) => `
-              <a class="decision-row" href="/ui/strategy.html">
+              <a class="decision-row" href="strategy.html">
                 <div class="decision-title">${esc(d.title || d.decision || '(untitled)')}</div>
                 <div class="decision-sub">${esc([d.status, relTime(d.created_at || d.decided_at)].filter(Boolean).join(' · '))}</div>
-              </a>`).join('') + '<a class="rail-more" href="/ui/strategy.html">the full ledger →</a>'
+              </a>`).join('') + '<a class="rail-more" href="strategy.html">the full ledger →</a>'
           : '<div class="rail-empty">No decisions on record yet. When you make one, I remember it forever.</div>';
       } catch (err) { box.innerHTML = '<div class="rail-empty">Could not load — ' + esc(err.message) + '</div>'; }
     }

@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `cb27d4e` 2026-07-15 - Fix Zade home page asset paths for Option B (relativize index.html)
 - `9b35d85` 2026-07-15 - Merge pull request #1 from TiB0n3s/feat/phase3-swarm-screen
 - `f80e84a` 2026-07-15 - Complete Phase 3 + swarm first slice + screen awareness
 - `5000405` 2026-07-15 - Inject living self-knowledge into runtime prompt
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `feb48c2` 2026-07-15 - Fix Zade conflating its bridge's read-only ceiling with the bot's authority
 - `fbbe590` 2026-07-15 - Add Zade self-knowledge scaffold
 - `5329fa5` 2026-07-15 - v1 - Memory & Deployment
-- `2e308eb` 2026-07-14 - Add durable brain & memory system for Zade (8 tiers + doc-recall)
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
