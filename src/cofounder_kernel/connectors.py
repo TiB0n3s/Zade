@@ -165,7 +165,7 @@ class ConnectorService:
         name = str(item.target or (item.metadata or {}).get("connector", "")).strip()
         if not name:
             raise ValueError("Connector sync work item has no connector target.")
-        return self.sync(name)
+        return {"handler": SYNC_ACTION, "status": "ok", **self.sync(name)}
 
     def sync(self, name: str) -> dict[str, Any]:
         """Fetch read-only items and stage them as candidates. Never called autonomously."""

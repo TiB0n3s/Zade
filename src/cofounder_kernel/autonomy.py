@@ -246,6 +246,36 @@ class WorkQueueService:
         self.db.update_work_item(item.id, status="running", authority_decision=authority.decision.value)
         try:
             result = self._dispatch(item)
+            result_failure = _work_action_result_failure(result)
+            if result_failure:
+                self.db.update_work_item(
+                    item.id,
+                    status="error",
+                    authority_decision=authority.decision.value,
+                    result=result,
+                    error=result_failure,
+                )
+                self.db.audit(
+                    actor="work.queue",
+                    action="work.run",
+                    target=item.action,
+                    permission_tier=item.permission_tier,
+                    status="error",
+                    details={
+                        "item_id": item.id,
+                        "authority": authority.as_dict(),
+                        "result": result,
+                        "error": result_failure,
+                    },
+                )
+                return RunResult(
+                    item_id=item.id,
+                    status="error",
+                    action=item.action,
+                    authority=authority.as_dict(),
+                    result=result,
+                    error=result_failure,
+                )
             self.db.update_work_item(
                 item.id,
                 status="done",
@@ -451,6 +481,18 @@ def _queue_status_for_decision(decision: AuthorityDecision) -> str:
     if decision == AuthorityDecision.DENY:
         return "denied"
     return "approval_required"
+
+
+def _work_action_result_failure(result: dict[str, Any]) -> str:
+    if not isinstance(result, dict):
+        return ""
+    if result.get("ok") is False:
+        return "Work action returned ok=false."
+    status = str(result.get("status") or "").strip().lower()
+    if status in {"error", "failed", "failure", "flow_error"}:
+        error = str(result.get("error") or "").strip()
+        return f"Work action returned status={status}: {error}" if error else f"Work action returned status={status}."
+    return ""
 
 
 def _source_is_founder_command(source: str, metadata: dict[str, Any]) -> bool:

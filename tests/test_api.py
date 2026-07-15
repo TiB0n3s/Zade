@@ -642,6 +642,77 @@ def test_runtime_respond_prompt_includes_trading_bot_context_for_trading_questio
     assert "POST /trading-bot/daily-brief (active, local_memory_write_no_trade_authority)" in prompt
 
 
+def test_trading_bot_prompt_omits_unrelated_founder_next_actions(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "read_only_diagnostic_no_trade_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "authority_boundary": {
+                "writes": "approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": False,
+                "broker_order_sizing_gate_mutation": False,
+            },
+            "deep_thought_replacement": {
+                "active_count": 6,
+                "planned_count": 0,
+                "seams": [
+                    {
+                        "zade_replacement": "POST /trading-bot/daily-brief",
+                        "status": "active",
+                        "authority": "local_memory_write_no_trade_authority",
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    seeded = client.post(
+        "/founder/active-objectives",
+        json={
+            "objective": "Manual Object Habit Test",
+            "desired_outcome": "Founders keep manual operating objects current.",
+            "metric": "evidence items",
+            "target": "4",
+            "next_action": "Collect four more evidence items or revise the minimum threshold.",
+        },
+    )
+    assert seeded.status_code == 200
+
+    runtime = client.app.state.runtime
+    message = "What needs to be done on the trading-bot today?"
+    context = runtime.context(message=message, use_memory=False, use_semantic_memory=False, use_skills=False)
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    prompt = runtime._build_governed_prompt(message=message, context=context, authority=authority, conversation_block="")
+
+    assert context["evidence_state"]["trading_bot_context_present"] is True
+    assert "Trading-bot:" in prompt
+    assert "Bridge status: ok; enabled=True" in prompt
+    assert "POST /trading-bot/daily-brief (active, local_memory_write_no_trade_authority)" in prompt
+    assert "Active objective: Omitted for this domain-status answer" in prompt
+    assert "One thing that matters most: Omitted for this domain-status answer" in prompt
+    assert "the Trading-bot block is the fresh status check for this turn" in prompt
+    assert "Local memory and semantic hits are historical recall" in prompt
+    assert "Manual Object Habit Test" not in prompt
+    assert "Collect four more evidence items" not in prompt
+
+
 def test_runtime_respond_flags_third_person_self_reference_without_rewriting(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1038,6 +1109,67 @@ def test_runtime_research_command_uses_founder_supplied_urls(
     # The URL is treated as a source, not folded into the topic.
     assert "http" not in route["topic"]
     assert "pricing model" in route["topic"]
+
+
+def test_runtime_does_not_route_trading_bot_investigation_to_web_research(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    monkeypatch.setattr(netguard, "is_private_host", lambda host: False)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                "To better understand the trading-bot, investigate the full WSL environment. "
+                "Forget what you think you know and learn the trading environment correctly."
+            ),
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["research"] is None
+    assert "research_work_routed" not in payload["governor"]["applied_rules"]
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    assumptions = client.get("/founder/assumptions").json()["items"]
+    assert not any("trading-bot" in item["statement"].lower() for item in assumptions)
+
+
+def test_runtime_does_not_route_local_system_investigation_to_web_research(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    monkeypatch.setattr(netguard, "is_private_host", lambda host: False)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Investigate Zade's local database, runtime events, and this workspace.",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["research"] is None
+    assert "research_work_routed" not in payload["governor"]["applied_rules"]
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    assumptions = client.get("/founder/assumptions").json()["items"]
+    assert not any("zade's local database" in item["statement"].lower() for item in assumptions)
 
 
 def test_runtime_research_command_stays_gated_until_typed_phrase(
@@ -2174,6 +2306,99 @@ def test_approved_local_handler_can_dispatch_work_item(tmp_path: Path, monkeypat
     assert approved.json()["work_item"]["status"] == "done"
     assert approved.json()["dispatch_result"]["memory_id"] > 0
     assert searched.json()["matches"][0]["title"] == "Approved handler note"
+
+
+def test_approval_dispatch_marks_non_reporting_ok_false_handler_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    app = create_app(config)
+    app.state.handlers.register(
+        "external.fake.collect",
+        "Fake collector for dispatch-contract regression tests.",
+        lambda item: {
+            "handler": "external.fake.collect",
+            "status": "flow_error",
+            "ok": False,
+            "collected": 0,
+        },
+    )
+    client = TestClient(app)
+
+    queued = client.post(
+        "/work/items",
+        json={
+            "kind": "external",
+            "title": "Collect fake evidence",
+            "action": "external.fake.collect",
+            "target": "fake-source",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
+        },
+    )
+    approved = client.post(
+        f"/work/items/{queued.json()['item_id']}/approve",
+        json={
+            "resolved_by": "founder",
+            "dispatch": True,
+            "typed_confirmation": "make the jump to hyperspace",
+        },
+    )
+
+    assert approved.status_code == 200, approved.text
+    payload = approved.json()
+    assert payload["dispatch"] == "dispatch_failed"
+    assert payload["work_item"]["status"] == "error"
+    assert "handler returned ok=false" in payload["work_item"]["last_error"]
+
+
+def test_approval_dispatch_marks_handler_action_mismatch_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    app = create_app(config)
+    app.state.handlers.register(
+        "external.fake.collect",
+        "Fake collector for dispatch-contract regression tests.",
+        lambda item: {"handler": "external.wrong.handler", "status": "ok"},
+    )
+    client = TestClient(app)
+
+    queued = client.post(
+        "/work/items",
+        json={
+            "kind": "external",
+            "title": "Collect fake evidence",
+            "action": "external.fake.collect",
+            "target": "fake-source",
+            "permission_tier": "L3_EXTERNAL_ACTION",
+            "source": "zade.proposal",
+        },
+    )
+    approved = client.post(
+        f"/work/items/{queued.json()['item_id']}/approve",
+        json={
+            "resolved_by": "founder",
+            "dispatch": True,
+            "typed_confirmation": "make the jump to hyperspace",
+        },
+    )
+
+    assert approved.status_code == 200, approved.text
+    payload = approved.json()
+    assert payload["dispatch"] == "dispatch_failed"
+    assert payload["work_item"]["status"] == "error"
+    assert "handler mismatch" in payload["work_item"]["last_error"]
 
 
 def test_revoked_action_handler_blocks_dispatch_and_can_be_regranted(tmp_path: Path, monkeypatch) -> None:

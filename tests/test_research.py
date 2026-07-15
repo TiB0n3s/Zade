@@ -120,6 +120,27 @@ def test_research_run_fetches_scores_and_files_evidence(tmp_path: Path, monkeypa
     assert any(item["evidence_type"] == "web_research" for item in evidence)
 
 
+def test_research_dispatch_marks_work_item_error_when_all_fetches_fail(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    app = create_app(_config(tmp_path))
+    client = TestClient(app)
+
+    def fake_fetch(url, *, timeout=20.0, max_bytes=2_000_000, allowed_hosts=None):
+        raise ValueError("Research fetch failed (HTTP 403).")
+
+    monkeypatch.setattr(research_module, "fetch_url", fake_fetch)
+
+    queued = client.post("/research/run", json={"topic": "blocked source", "urls": [PUBLIC]})
+    approved = _approve_and_dispatch(client, queued.json()["item_id"])
+
+    assert approved["dispatch"] == "dispatch_failed"
+    assert approved["work_item"]["status"] == "error"
+    assert approved["dispatch_result"]["ok"] is False
+    assert "handler returned ok=false" in approved["work_item"]["last_error"]
+    console = client.get("/approval-console").json()["items"][0]
+    assert console["work_item"]["status"] == "error"
+
+
 def test_research_run_rejects_unsafe_urls(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     client = TestClient(create_app(_config(tmp_path)))

@@ -193,6 +193,15 @@ class TradingBotSQLiteQueryRequest(BaseModel):
     database: str = Field(default="trades.db", min_length=1, max_length=80)
 
 
+class TradingBotTrainingRunRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=80)
+    target_date: str | None = Field(default=None, max_length=10)
+    symbols: list[str] = Field(default_factory=list)
+    extra_args: list[str] = Field(default_factory=list, max_length=40)
+    timeout_seconds: float = Field(default=300.0, ge=1.0, le=3600.0)
+    limit_output_chars: int = Field(default=12000, ge=100, le=50000)
+
+
 class TradingBotEvidenceSnapshotRequest(BaseModel):
     target_date: str = Field(min_length=10, max_length=10)
     symbols: list[str] = Field(default_factory=list)

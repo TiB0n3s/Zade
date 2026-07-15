@@ -132,6 +132,167 @@ def test_trading_bot_ops_check_is_allowlisted(tmp_path: Path, monkeypatch) -> No
     assert "ops_check.py paper-session-evidence 2026-07-12" in commands[-1]
 
 
+def test_trading_bot_intelligence_access_profile_exposes_full_intelligence_scope(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    client = TestClient(create_app(_config(tmp_path)))
+
+    response = client.get("/trading-bot/intelligence/access")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime_effect"] == "full_intelligence_no_broker_order_authority"
+    assert body["capabilities"]["training"]["enabled"] is True
+    assert "supervised-predictions" in body["capabilities"]["training"]["commands"]
+    assert body["capabilities"]["advisory"]["enabled"] is True
+    assert body["capabilities"]["events"]["read"] is True
+    assert body["capabilities"]["market_context"]["read"] is True
+    assert body["capabilities"]["signals"]["watch"] is True
+    assert body["authority_boundary"]["broker_order_sizing_gate_mutation"] is False
+
+
+def test_trading_bot_training_run_is_allowlisted_and_blocks_shell_injection(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    commands: list[str] = []
+
+    def fake_run(self: TradingBotBridge, script: str, *, timeout: float | None = None) -> dict:
+        commands.append(script)
+        return {"ok": True, "exit_code": 0, "stdout": "trained\n", "stderr": ""}
+
+    monkeypatch.setattr(TradingBotBridge, "_run_repo_shell", fake_run)
+    client = TestClient(create_app(_config(tmp_path)))
+
+    ok = client.post(
+        "/trading-bot/training/run",
+        json={
+            "command": "supervised-predictions",
+            "symbols": ["AAPL"],
+            "extra_args": ["--json"],
+        },
+    )
+    unsupported = client.post("/trading-bot/training/run", json={"command": "live-trader"})
+    injected = client.post(
+        "/trading-bot/training/run",
+        json={"command": "supervised-predictions", "extra_args": ["; rm -rf /"]},
+    )
+
+    assert ok.status_code == 200
+    assert ok.json()["runtime_effect"] == "full_intelligence_no_broker_order_authority"
+    assert "scripts/train_supervised_predictions.py" in commands[0]
+    assert "--symbol AAPL" in commands[0]
+    assert "--json" in commands[0]
+    assert unsupported.status_code == 400
+    assert injected.status_code == 400
+    assert len(commands) == 1
+
+
+def test_trading_bot_recent_events_reads_bot_event_json(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    commands: list[str] = []
+
+    def fake_run(self: TradingBotBridge, script: str, *, timeout: float | None = None) -> dict:
+        commands.append(script)
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "stdout": json.dumps(
+                [{"id": 7, "event_type": "signal", "symbol": "AAPL", "created_at": "2026-07-12T14:30:00"}]
+            ),
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "_run_repo_shell", fake_run)
+    client = TestClient(create_app(_config(tmp_path)))
+
+    response = client.get("/trading-bot/events/recent?limit=2&symbol=AAPL&event_type=signal")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime_effect"] == "full_intelligence_no_broker_order_authority"
+    assert body["items"][0]["event_type"] == "signal"
+    assert "scripts/bot_events.py" in commands[0]
+    assert "--json" in commands[0]
+    assert "--limit 2" in commands[0]
+    assert "--symbol AAPL" in commands[0]
+    assert "--event-type signal" in commands[0]
+
+
+def test_trading_bot_signal_watch_reads_signal_database_tables(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    queries: list[str] = []
+
+    def fake_query(self: TradingBotBridge, **kwargs) -> dict:
+        sql = kwargs["sql"]
+        queries.append(sql)
+        if "webhook_events" in sql:
+            rows = [{"id": 1, "symbol": "AAPL", "event_type": "webhook", "received_at": "2026-07-12T14:30:00"}]
+        elif "auto_buy_decision_snapshots" in sql:
+            rows = [{"id": 2, "symbol": "AAPL", "decision": "approved", "created_at": "2026-07-12T14:31:00"}]
+        else:
+            rows = []
+        return {
+            "columns": list(rows[0].keys()) if rows else [],
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": False,
+            "runtime_effect": "read_only_sqlite_no_trade_authority",
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "run_sqlite_query", fake_query)
+    client = TestClient(create_app(_config(tmp_path)))
+
+    response = client.get("/trading-bot/signals/recent?limit=3&symbol=AAPL")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime_effect"] == "full_intelligence_no_broker_order_authority"
+    assert body["summary"]["total_rows"] == 2
+    assert body["tables"]["webhook_events"]["rows"][0]["symbol"] == "AAPL"
+    assert body["tables"]["auto_buy_decision_snapshots"]["rows"][0]["decision"] == "approved"
+    assert any("webhook_events" in query for query in queries)
+    assert any("auto_buy_decision_snapshots" in query for query in queries)
+    assert body["authority_boundary"]["broker_order_sizing_gate_mutation"] is False
+
+
+def test_trading_bot_market_context_reads_file_and_context_tables(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def fake_run(self: TradingBotBridge, script: str, *, timeout: float | None = None) -> dict:
+        assert "market_context.json" in script
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "stdout": json.dumps({"exists": True, "path": "market_context.json", "data": {"regime": "risk-on"}}),
+            "stderr": "",
+        }
+
+    def fake_query(self: TradingBotBridge, **kwargs) -> dict:
+        rows = [{"id": 1, "symbol": "AAPL", "context_date": "2026-07-12", "summary": "earnings drift"}]
+        return {
+            "columns": list(rows[0].keys()),
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": False,
+            "runtime_effect": "read_only_sqlite_no_trade_authority",
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "_run_repo_shell", fake_run)
+    monkeypatch.setattr(TradingBotBridge, "run_sqlite_query", fake_query)
+    client = TestClient(create_app(_config(tmp_path)))
+
+    response = client.get("/trading-bot/market-context?target_date=2026-07-12&symbol=AAPL&limit=5")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime_effect"] == "full_intelligence_no_broker_order_authority"
+    assert body["market_context_file"]["data"]["regime"] == "risk-on"
+    assert body["tables"]["daily_symbol_context"]["rows"][0]["summary"] == "earnings drift"
+    assert body["authority_boundary"]["broker_order_sizing_gate_mutation"] is False
+
+
 def test_trading_bot_advisory_generate_queues_diagnostic_recommendation(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 

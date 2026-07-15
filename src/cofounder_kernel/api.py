@@ -117,6 +117,7 @@ from .models import (
     TradingBotOpsCheckRequest,
     TradingBotRecommendationCreate,
     TradingBotSQLiteQueryRequest,
+    TradingBotTrainingRunRequest,
     TradingBotTriggerProposalRequest,
     VoiceCharterUpsert,
     VoiceConverseRequest,
@@ -1295,6 +1296,10 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     def trading_bot_deep_thought_replacement() -> dict[str, Any]:
         return trading_bot.deep_thought_replacement_map()
 
+    @app.get("/trading-bot/intelligence/access")
+    def trading_bot_intelligence_access() -> dict[str, Any]:
+        return trading_bot.intelligence_access()
+
     @app.get("/trading-bot/sqlite/schema")
     def trading_bot_sqlite_schema(
         database: str = "trades.db",
@@ -1310,6 +1315,43 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     def trading_bot_sqlite_query(payload: TradingBotSQLiteQueryRequest) -> dict[str, Any]:
         try:
             return trading_bot.run_sqlite_query(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/trading-bot/training/run")
+    def trading_bot_training_run(payload: TradingBotTrainingRunRequest) -> dict[str, Any]:
+        try:
+            return trading_bot.run_training(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/trading-bot/events/recent")
+    def trading_bot_recent_events(
+        limit: int = 50,
+        event_type: str | None = None,
+        symbol: str | None = None,
+        since: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return trading_bot.recent_events(limit=limit, event_type=event_type, symbol=symbol, since=since)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/trading-bot/signals/recent")
+    def trading_bot_recent_signals(limit: int = 50, symbol: str | None = None) -> dict[str, Any]:
+        try:
+            return trading_bot.recent_signals(limit=limit, symbol=symbol)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/trading-bot/market-context")
+    def trading_bot_market_context(
+        target_date: str | None = None,
+        symbol: str | None = None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        try:
+            return trading_bot.market_context(target_date=target_date, symbol=symbol, limit=limit)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2708,8 +2750,13 @@ def _inventory_payload(
             "GET /trading-bot/status",
             "GET /trading-bot/safe-ops-checks",
             "GET /trading-bot/deep-thought-replacement",
+            "GET /trading-bot/intelligence/access",
             "GET /trading-bot/sqlite/schema",
             "POST /trading-bot/sqlite/query",
+            "POST /trading-bot/training/run",
+            "GET /trading-bot/events/recent",
+            "GET /trading-bot/signals/recent",
+            "GET /trading-bot/market-context",
             "POST /trading-bot/evidence/snapshot",
             "POST /trading-bot/ops-check",
             "POST /trading-bot/recommendations",
@@ -2729,6 +2776,10 @@ def _inventory_payload(
             "trading_judgments",
             "missed_call_reviews",
             "read-only SQLite query audit events",
+            "trading-bot training run audit events",
+            "trading-bot bot_events reads",
+            "trading-bot market context snapshots",
+            "trading-bot signal table snapshots",
             "trading-bot evidence snapshots",
             "trading-bot dt_recommendations",
             "trading-bot dt recommendation outcome reports",
@@ -2736,11 +2787,16 @@ def _inventory_payload(
             "Trading Project raw vault exports",
             "dt_trigger proposal records",
         ],
-        "runtime_effect": "advisory_only_no_trade_authority",
+        "runtime_effect": "full_intelligence_no_broker_order_authority",
         "safe_write_path": "external.dt_recommendation.ingest -> scripts/dt_recommendation_ingest.py",
         "deep_thought_replacement": TradingBotBridge(config=cfg, db=db).deep_thought_replacement_map(),
         "operating_rules": [
+            "Zade has full trading intelligence access for training, advisory work, events, market context, signal watching, and database visibility.",
+            "Zade may run only allowlisted bot training scripts; training can write bot-owned model artifacts but cannot load models into broker/order runtime paths.",
             "Zade may run only allowlisted read-only bot diagnostics through this layer.",
+            "Zade may read bot_events through the bot script or a read-only SQLite fallback.",
+            "Zade may read market_context.json and daily_symbol_context snapshots.",
+            "Zade may watch recent signal landing tables through read-only SQLite snapshots.",
             "Zade may query only the allowlisted trading-bot SQLite database in mode=ro with PRAGMA query_only enabled.",
             "SQLite queries are limited to SELECT, WITH, EXPLAIN, and narrow read-only PRAGMA statements; write/schema/attachment tokens are blocked before WSL execution.",
             "Evidence snapshots query only known diagnostic tables with date and optional symbol scopes.",

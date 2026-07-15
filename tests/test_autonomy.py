@@ -73,6 +73,29 @@ def test_scan_queues_and_runs_inbox_ingestion(tmp_path: Path) -> None:
     assert semantic_matches[0]["document_title"] == "note.md"
 
 
+def test_run_next_marks_error_result_as_error(tmp_path: Path) -> None:
+    queue, db, config = make_queue(tmp_path)
+    missing_file = config.paths.inbox_dir / "missing.md"
+    queued = queue.enqueue(
+        kind="ingestion",
+        title="Ingest missing file",
+        detail="Import a file that no longer exists.",
+        action="ingest.file",
+        target=str(missing_file),
+        permission_tier="L1_MEMORY_WRITE",
+    )
+
+    result = queue.run_next()
+    item = db.get_work_item(queued.item_id)
+
+    assert result.status == "error"
+    assert result.result["status"] == "error"
+    assert "Not a file" in result.error
+    assert item is not None
+    assert item.status == "error"
+    assert "Not a file" in item.last_error
+
+
 def test_enqueue_external_action_stops_at_approval_required(tmp_path: Path) -> None:
     queue, db, _config = make_queue(tmp_path)
 

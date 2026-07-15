@@ -9,6 +9,8 @@ from .handlers import ActionHandlerRegistry
 
 
 NON_APPROVABLE_TIERS = {"L4_IRREVERSIBLE", "DENIED"}
+REPORTING_FAILURE_ACTIONS = {"external.browser.run", "dev.command.run"}
+HANDLER_ERROR_STATUSES = {"error", "failed", "failure", "flow_error"}
 
 
 class ApprovalService:
@@ -451,6 +453,30 @@ class ApprovalService:
             raise
 
         result = {"approval_dispatch": True, **result}
+        handler_failure = _handler_result_failure(item.action, result)
+        if handler_failure:
+            self.db.update_work_item(
+                item.id,
+                status="error",
+                authority_decision=item.authority_decision,
+                result=result,
+                error=handler_failure,
+            )
+            failed = self.db.get_work_item(item.id)
+            audit_id = self.db.audit(
+                actor="approval",
+                action="approval.dispatch",
+                target=item.action,
+                permission_tier=item.permission_tier,
+                status="error",
+                details={"work_item_id": item.id, "result": result, "error": handler_failure},
+            )
+            return {
+                "dispatch": "dispatch_failed",
+                "result": result,
+                "work_item": asdict(failed) if failed else None,
+                "audit_id": audit_id,
+            }
         self.db.update_work_item(
             item.id,
             status="done",
@@ -649,6 +675,23 @@ class ApprovalService:
 
 def _request_to_dict(request: ApprovalRequest) -> dict[str, Any]:
     return asdict(request)
+
+
+def _handler_result_failure(action: str, result: dict[str, Any]) -> str:
+    handler = str(result.get("handler") or "").strip()
+    if not handler:
+        return "Dispatch handler result is missing handler action."
+    if handler != action:
+        return f"Dispatch handler mismatch: action={action}, handler={handler}."
+    report_only = action in REPORTING_FAILURE_ACTIONS
+    if result.get("ok") is False:
+        if report_only:
+            return ""
+        return "Dispatch handler returned ok=false."
+    status = str(result.get("status") or "").strip().lower()
+    if status in HANDLER_ERROR_STATUSES and not report_only:
+        return f"Dispatch handler returned status={status}."
+    return ""
 
 
 def _proposal_sentence(request: ApprovalRequest) -> str:

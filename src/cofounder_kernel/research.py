@@ -299,7 +299,7 @@ class ResearchService:
         )
         return {
             "handler": RESEARCH_RUN_ACTION,
-            "status": "ok",
+            "status": "ok" if ok else "flow_error",
             "ok": ok,
             "topic": topic,
             "fetched": fetched,

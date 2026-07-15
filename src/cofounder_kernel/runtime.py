@@ -882,15 +882,39 @@ class RuntimeService:
         dashboard = context["founder_dashboard"]
         active_objective = dashboard.get("active_objective") or {}
         approval_pressure = dashboard.get("approval_pressure") or {}
+        domain_context_present = bool(context.get("trading_bot_context", {}).get("present"))
         # Only surface the standing "one thing that matters most" directive when the
         # founder is actually asking for direction. Otherwise greetings and open
         # conversation collapse into parroting the same stored to-do every turn.
         wants_direction = _message_wants_direction(message)
-        one_thing_line = (
-            f'- One thing that matters most: {dashboard.get("one_thing_that_matters_most_today", "")}'
-            if wants_direction
-            else "- (No standing directive applies here; answer what the founder actually said — do not surface a stored to-do unprompted.)"
-        )
+        if domain_context_present:
+            active_objective_line = (
+                "- Active objective: Omitted for this domain-status answer; use the requested domain context instead."
+            )
+            active_objective_next_action_line = (
+                "- Active objective next action: Omitted for this domain-status answer; "
+                "do not treat global founder objectives as trading-bot next actions."
+            )
+            one_thing_line = (
+                "- One thing that matters most: Omitted for this domain-status answer; "
+                "answer from the Trading-bot block and directly relevant recall only."
+            )
+            domain_evidence_rule = (
+                "- Domain evidence rule: the Trading-bot block is the fresh status check for this turn. "
+                "Local memory and semantic hits are historical recall; never describe them as checked today "
+                "or current diagnostics unless their date and endpoint are explicit."
+            )
+        else:
+            active_objective_line = f'- Active objective: {active_objective.get("objective", "none")}'
+            active_objective_next_action_line = (
+                f'- Active objective next action: {active_objective.get("next_action", "") or "none"}'
+            )
+            one_thing_line = (
+                f'- One thing that matters most: {dashboard.get("one_thing_that_matters_most_today", "")}'
+                if wants_direction
+                else "- (No standing directive applies here; answer what the founder actually said — do not surface a stored to-do unprompted.)"
+            )
+            domain_evidence_rule = ""
         memory_block = _brief_hits(
             context["memory_hits"],
             "kind",
@@ -908,7 +932,6 @@ class RuntimeService:
         skill_block = context.get("skill_prompt_block", "No operating skills matched this request.")
         trading_bot_block = _brief_trading_bot_context(context.get("trading_bot_context", {}))
         authority_block = _founder_direct_authority_payload(authority)
-        domain_context_present = bool(context.get("trading_bot_context", {}).get("present"))
         approval_pressure_block = (
             "Omitted for this domain-status answer; do not pivot to approval pressure unless the approval directly gates this domain."
             if domain_context_present
@@ -956,8 +979,8 @@ Current time: {current_time}
 
 ----------  Founder state  ----------
 - Company health: {dashboard["company_health"]}
-- Active objective: {active_objective.get("objective", "none")}
-- Active objective next action: {active_objective.get("next_action", "") or "none"}
+{active_objective_line}
+{active_objective_next_action_line}
 {one_thing_line}
 - Approval pressure: {approval_pressure_block}
 
@@ -972,6 +995,7 @@ Trading-bot: {trading_bot_block}
 
 ----------  Before you answer  ----------
 Answer as yourself — decisive, concrete, tight, with your dry edge. No hedging, no generic-assistant voice, no throat-clearing. Lead with the move.
+{domain_evidence_rule}
 {checkpoint}
 ====================  ELLIE  ====================
 {message}
@@ -1195,6 +1219,8 @@ Answer as yourself — decisive, concrete, tight, with your dry edge. No hedging
             return None
         topic = _extract_research_topic(message)
         if not topic:
+            return None
+        if _is_local_system_investigation_topic(message, topic):
             return None
         try:
             assumption = self.founder.create_assumption(
@@ -2044,6 +2070,70 @@ _POLITENESS_PREFIX_RE = re.compile(
 
 _URL_RE = re.compile(r"https://[^\s<>\"'`)\]]+", re.IGNORECASE)
 
+_LOCAL_SYSTEM_NAMED_MARKERS = (
+    "zade",
+    "localaicofounder",
+    "local ai cofounder",
+    "cofounder kernel",
+    "trading-bot",
+    "trading bot",
+    "ai brain",
+    "memory-hot",
+    "wsl",
+    "ubuntu-tradingbot",
+    "127.0.0.1",
+    "localhost",
+)
+
+_LOCAL_SYSTEM_SURFACE_MARKERS = (
+    "repo",
+    "repository",
+    "workspace",
+    "database",
+    "sqlite",
+    " db",
+    "runtime",
+    "kernel",
+    "events",
+    "signals",
+    "market context",
+    "logs",
+    "scheduler",
+    "cron",
+    "git",
+    "process",
+    "service",
+)
+
+_LOCAL_SYSTEM_SCOPE_MARKERS = (
+    "this ",
+    "our ",
+    "my ",
+    "local ",
+    "current ",
+    "running ",
+    "live ",
+)
+
+_LOCAL_SYSTEM_ACTION_MARKERS = (
+    "research",
+    "investigate",
+    "inspect",
+    "diagnose",
+    "audit",
+    "check",
+    "read",
+    "watch",
+    "monitor",
+    "analyze",
+    "look into",
+    "learn",
+)
+
+_LOCAL_PATH_RE = re.compile(
+    r"(?i)(?:(?:^|[\s\"'(\[])[a-z]:[\\/]|\\\\wsl|wsl\.localhost|/home/|/mnt/|\.sqlite\b|\.db\b)"
+)
+
 
 def _extract_urls(message: str) -> list[str]:
     """Pull explicit https URLs out of the founder message (egress requires https)."""
@@ -2083,6 +2173,24 @@ def _extract_research_topic(message: str) -> str:
     if len(topic) < 3 or topic.lower() in _RESEARCH_TOPIC_STOPWORDS:
         return ""
     return topic[:200]
+
+
+def _is_local_system_investigation_topic(message: str, topic: str) -> bool:
+    stripped_message = _POLITENESS_PREFIX_RE.sub("", message or "", count=1)
+    text = _URL_RE.sub("", f"{stripped_message} {topic or ''}").lower()
+    if not any(marker in text for marker in _LOCAL_SYSTEM_ACTION_MARKERS):
+        return False
+    if _LOCAL_PATH_RE.search(text):
+        return True
+    if any(marker in text for marker in _LOCAL_SYSTEM_NAMED_MARKERS):
+        return True
+    scoped_to_local = any(marker in text for marker in _LOCAL_SYSTEM_SCOPE_MARKERS)
+    names_local_surface = any(marker in text for marker in _LOCAL_SYSTEM_SURFACE_MARKERS)
+    return scoped_to_local and names_local_surface
+
+
+def _is_local_trading_bot_investigation_topic(message: str, topic: str) -> bool:
+    return _is_local_system_investigation_topic(message, topic)
 
 
 def _render_research_route_block(route: dict[str, Any]) -> str:

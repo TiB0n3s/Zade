@@ -22,12 +22,15 @@ ZADE_DT_TRIGGER_PROPOSAL_ACTION = "external.dt_trigger.propose"
 READ_ONLY_RUNTIME_EFFECT = "read_only_diagnostic_no_trade_authority"
 READ_ONLY_SQLITE_RUNTIME_EFFECT = "read_only_sqlite_no_trade_authority"
 DT_TRIGGER_PROPOSAL_RUNTIME_EFFECT = "proposal_only_no_trade_authority"
+FULL_INTELLIGENCE_RUNTIME_EFFECT = "full_intelligence_no_broker_order_authority"
 
 VALID_RECOMMENDATION_ACTIONS = {"buy", "sell", "hold"}
 VALID_RECOMMENDATION_VERDICTS = {"recommend", "against", "abstain"}
 _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,15}$")
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CLI_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.,:=@/+%-]+$")
+_EVENT_TYPE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 
 SAFE_OPS_CHECKS: dict[str, dict[str, Any]] = {
     "authority-health": {"date_required": False},
@@ -119,6 +122,197 @@ TRADING_SQLITE_DATABASES = {
     "trades": "trades.db",
     "trades.db": "trades.db",
 }
+
+TRADING_BOT_PYTHONPATH = "src:scripts:."
+
+TRADING_TRAINING_COMMANDS: dict[str, dict[str, Any]] = {
+    "supervised-predictions": {
+        "script": "scripts/train_supervised_predictions.py",
+        "description": "Train/evaluate the observe-only supervised prediction scaffold.",
+        "date_flag": None,
+        "date_required": False,
+        "symbol_flag": "--symbol",
+        "multi_symbol": False,
+    },
+    "regime-model": {
+        "script": "scripts/train_regime_model.py",
+        "description": "Train the optional HMM regime model from feature snapshots.",
+        "date_flag": None,
+        "date_required": False,
+        "symbol_flag": None,
+        "multi_symbol": False,
+    },
+    "pipeline-retrain": {
+        "script": "pipeline/retrain.py",
+        "description": "Run the automated observe-only ML retraining trigger.",
+        "date_flag": "--date",
+        "date_required": False,
+        "symbol_flag": None,
+        "multi_symbol": False,
+    },
+    "symbol-universe": {
+        "script": "pipeline/symbol_universe_retrain.py",
+        "description": "Retrain when the approved symbol universe changes.",
+        "date_flag": "--date",
+        "date_required": True,
+        "symbol_flag": None,
+        "multi_symbol": False,
+    },
+    "historical-bar-model": {
+        "script": "pipeline/train_historical_bar_model.py",
+        "description": "Train observe-only models directly from historical bar pattern features.",
+        "date_flag": "--end-date",
+        "date_required": False,
+        "symbol_flag": "--symbol",
+        "multi_symbol": False,
+    },
+}
+
+TRADING_EVENT_TABLE = {
+    "columns": [
+        "id",
+        "timestamp",
+        "event_type",
+        "symbol",
+        "action",
+        "decision",
+        "severity",
+        "reason",
+        "source",
+        "payload_json",
+    ],
+    "order_by": [("timestamp", "DESC"), ("id", "DESC")],
+    "symbol_column": "symbol",
+    "event_type_column": "event_type",
+    "since_column": "timestamp",
+}
+
+TRADING_SIGNAL_TABLES: dict[str, dict[str, Any]] = {
+    "webhook_events": {
+        "columns": [
+            "id",
+            "dedupe_key",
+            "received_at",
+            "symbol",
+            "action",
+            "signal_price",
+            "source",
+            "status",
+            "queued_at",
+            "started_at",
+            "finished_at",
+            "order_id",
+            "client_order_id",
+            "failure_reason",
+        ],
+        "order_by": [("received_at", "DESC"), ("id", "DESC")],
+        "symbol_column": "symbol",
+    },
+    "auto_buy_candidates": {
+        "columns": [
+            "id",
+            "timestamp",
+            "symbol",
+            "signal_source",
+            "decision",
+            "score",
+            "reason",
+            "setup_label",
+            "setup_score",
+            "annotation_prediction_score",
+            "order_submitted",
+            "hard_block_reason",
+        ],
+        "order_by": [("timestamp", "DESC"), ("id", "DESC")],
+        "symbol_column": "symbol",
+    },
+    "auto_buy_decision_snapshots": {
+        "columns": [
+            "id",
+            "created_at",
+            "candidate_timestamp",
+            "symbol",
+            "signal_source",
+            "decision",
+            "score",
+            "reason",
+            "hard_block_reason",
+            "order_submitted",
+            "order_status",
+            "runtime_effect",
+            "execution_status",
+        ],
+        "order_by": [("created_at", "DESC"), ("id", "DESC")],
+        "symbol_column": "symbol",
+    },
+    "auto_sell_candidates": {
+        "columns": [
+            "id",
+            "timestamp",
+            "symbol",
+            "qty",
+            "action",
+            "severity",
+            "reason",
+            "sell_pressure_score",
+            "sell_pressure_recommendation",
+            "auto_sell_enabled",
+            "order_submitted",
+            "order_id",
+        ],
+        "order_by": [("timestamp", "DESC"), ("id", "DESC")],
+        "symbol_column": "symbol",
+    },
+}
+
+TRADING_MARKET_CONTEXT_TABLES: dict[str, dict[str, Any]] = {
+    "daily_symbol_context": {
+        "columns": [
+            "id",
+            "market_date",
+            "symbol",
+            "source",
+            "macro_sentiment",
+            "macro_regime",
+            "risk_multiplier",
+            "block_new_buys",
+            "bias",
+            "confidence",
+            "fundamental_score",
+            "risk_level",
+            "entry_quality",
+            "avoid_type",
+            "reason",
+            "daily_pct",
+            "intraday_pct",
+            "momentum_30m_pct",
+            "last_price",
+            "catalyst_score",
+            "relative_strength_score",
+            "sector_alignment",
+            "raw_json",
+            "created_at",
+            "updated_at",
+        ],
+        "date_column": "market_date",
+        "symbol_column": "symbol",
+        "order_by": [("market_date", "DESC"), ("updated_at", "DESC"), ("id", "DESC")],
+    },
+}
+
+_MARKET_CONTEXT_FILE_SCRIPT = """
+import json
+from pathlib import Path
+
+path = Path("market_context.json")
+payload = {"exists": path.exists(), "path": str(path), "data": None, "error": ""}
+if path.exists():
+    try:
+        payload["data"] = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        payload["error"] = f"{exc.__class__.__name__}: {exc}"
+print(json.dumps(payload, sort_keys=True, default=str))
+""".strip()
 
 TRADING_EVIDENCE_TABLES: dict[str, dict[str, Any]] = {
     "auto_buy_candidates": {
@@ -316,16 +510,17 @@ class TradingBotBridge:
         return {
             "ok": ok,
             "enabled": True,
-            "runtime_effect": READ_ONLY_RUNTIME_EFFECT,
+            "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
             "wsl_distro": cfg.wsl_distro,
             "repo_path": cfg.repo_path,
             "repo_reachable": repo_probe["ok"],
             "advisory_lane_present": lane_probe["ok"],
             "git": _compact_probe(git_probe, limit=4000),
             "safe_ops_checks": self.safe_ops_checks(),
+            "intelligence_access": self.intelligence_access(),
             "authority_boundary": {
-                "writes": "approval-gated append-only dt_recommendations ingest",
-                "runtime_read_path": False,
+                "writes": "allowlisted training artifacts plus approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": "intelligence context only; advisory rows are not broker/order runtime inputs",
                 "broker_order_sizing_gate_mutation": False,
             },
             "deep_thought_replacement": self.deep_thought_replacement_map(),
@@ -340,6 +535,304 @@ class TradingBotBridge:
             }
             for command, spec in sorted(SAFE_OPS_CHECKS.items())
         ]
+
+    def intelligence_access(self) -> dict[str, Any]:
+        enabled = bool(self.config.trading_bot.enabled)
+        return {
+            "ok": enabled,
+            "enabled": enabled,
+            "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            "capabilities": {
+                "training": {
+                    "enabled": enabled,
+                    "commands": sorted(TRADING_TRAINING_COMMANDS),
+                    "details": {
+                        command: {
+                            "script": spec["script"],
+                            "description": spec["description"],
+                            "date_required": bool(spec.get("date_required")),
+                            "date_flag": spec.get("date_flag"),
+                            "symbol_flag": spec.get("symbol_flag"),
+                            "multi_symbol": bool(spec.get("multi_symbol")),
+                        }
+                        for command, spec in sorted(TRADING_TRAINING_COMMANDS.items())
+                    },
+                },
+                "advisory": {
+                    "enabled": enabled,
+                    "routes": [
+                        "POST /trading-bot/advisory/generate",
+                        "POST /trading-bot/recommendations",
+                        "POST /trading-bot/daily-brief",
+                    ],
+                },
+                "events": {
+                    "read": enabled,
+                    "route": "GET /trading-bot/events/recent",
+                    "table": "bot_events",
+                },
+                "market_context": {
+                    "read": enabled,
+                    "route": "GET /trading-bot/market-context",
+                    "tables": sorted(TRADING_MARKET_CONTEXT_TABLES),
+                    "file": "market_context.json",
+                },
+                "signals": {
+                    "watch": enabled,
+                    "route": "GET /trading-bot/signals/recent",
+                    "tables": sorted(TRADING_SIGNAL_TABLES),
+                },
+                "sqlite": {
+                    "read": enabled,
+                    "routes": [
+                        "GET /trading-bot/sqlite/schema",
+                        "POST /trading-bot/sqlite/query",
+                        "POST /trading-bot/evidence/snapshot",
+                    ],
+                },
+            },
+            "authority_boundary": _full_intelligence_authority_boundary(),
+        }
+
+    def run_training(
+        self,
+        *,
+        command: str,
+        target_date: str | None = None,
+        symbols: list[str] | None = None,
+        extra_args: list[str] | None = None,
+        timeout_seconds: float = 300.0,
+        limit_output_chars: int = 12000,
+    ) -> dict[str, Any]:
+        command_key = str(command or "").strip()
+        spec = TRADING_TRAINING_COMMANDS.get(command_key)
+        if not spec:
+            raise ValueError(f"Unsupported trading-bot training command: {command}")
+
+        args = [
+            "env",
+            f"PYTHONPATH={TRADING_BOT_PYTHONPATH}",
+            self.config.trading_bot.python,
+            spec["script"],
+        ]
+        if target_date:
+            _validate_date(target_date)
+            date_flag = spec.get("date_flag")
+            if not date_flag:
+                raise ValueError(f"{command_key} does not accept target_date through the Zade bridge.")
+            args.extend([str(date_flag), target_date])
+        elif spec.get("date_required"):
+            raise ValueError(f"{command_key} requires target_date.")
+
+        symbol_targets = _normalize_requested_symbols(symbols)
+        if symbol_targets:
+            symbol_flag = spec.get("symbol_flag")
+            if not symbol_flag:
+                raise ValueError(f"{command_key} does not accept symbols through the Zade bridge.")
+            if len(symbol_targets) > 1 and not spec.get("multi_symbol"):
+                raise ValueError(f"{command_key} accepts only one symbol per run.")
+            for symbol in symbol_targets:
+                args.extend([str(symbol_flag), symbol])
+
+        safe_extra_args = _validate_cli_extra_args(extra_args)
+        args.extend(safe_extra_args)
+        timeout_seconds = max(1.0, min(3600.0, float(timeout_seconds)))
+        limit_output_chars = max(100, min(50000, int(limit_output_chars)))
+
+        result = self._run_repo_shell(_shell_join(args), timeout=timeout_seconds)
+        parsed = _parse_json_value(result["stdout"])
+        audit_id = self.db.audit(
+            actor="trading_bot.bridge",
+            action="trading_bot.training.run",
+            target=command_key,
+            permission_tier="L2_FILE_WRITE",
+            status="ok" if result["ok"] else "error",
+            details={
+                "command": command_key,
+                "script": spec["script"],
+                "target_date": target_date,
+                "symbols": symbol_targets,
+                "extra_args": safe_extra_args,
+                "exit_code": result["exit_code"],
+                "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+                "broker_order_sizing_gate_mutation": False,
+            },
+        )
+        return {
+            "command": command_key,
+            "script": spec["script"],
+            "target_date": target_date,
+            "symbols": symbol_targets,
+            "extra_args": safe_extra_args,
+            "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            "authority_boundary": _full_intelligence_authority_boundary(),
+            "ok": result["ok"],
+            "exit_code": result["exit_code"],
+            "stdout": _limit(result["stdout"], limit_output_chars),
+            "stderr": _limit(result["stderr"], limit_output_chars),
+            "parsed": parsed,
+            "audit_id": audit_id,
+        }
+
+    def recent_events(
+        self,
+        *,
+        limit: int = 50,
+        event_type: str | None = None,
+        symbol: str | None = None,
+        since: str | None = None,
+    ) -> dict[str, Any]:
+        limit = max(1, min(500, int(limit)))
+        event_type_filter = _validate_event_type(event_type)
+        symbol_filter = _normalize_single_symbol(symbol)
+        since_filter = _validate_cli_optional_value(since, "since") if since else None
+        args = [
+            "env",
+            f"PYTHONPATH={TRADING_BOT_PYTHONPATH}",
+            self.config.trading_bot.python,
+            "scripts/bot_events.py",
+            "--json",
+            "--limit",
+            str(limit),
+        ]
+        if event_type_filter:
+            args.extend(["--event-type", event_type_filter])
+        if symbol_filter:
+            args.extend(["--symbol", symbol_filter])
+        if since_filter:
+            args.extend(["--since", since_filter])
+
+        result = self._run_repo_shell(_shell_join(args), timeout=30)
+        parsed = _parse_json_value(result["stdout"])
+        items = _json_rows(parsed)
+        source = "scripts/bot_events.py"
+        fallback: dict[str, Any] | None = None
+        if not result["ok"] or parsed is None:
+            source = "sqlite:bot_events"
+            fallback = self._query_table_snapshot(
+                table="bot_events",
+                spec=TRADING_EVENT_TABLE,
+                limit=limit,
+                symbol=symbol_filter,
+                event_type=event_type_filter,
+                since=since_filter,
+            )
+            items = list(fallback.get("rows") or [])
+
+        audit_id = self.db.audit(
+            actor="trading_bot.bridge",
+            action="trading_bot.events.recent",
+            target=event_type_filter or "all",
+            permission_tier="L0_READ",
+            status="ok" if result["ok"] or (fallback and not fallback.get("error")) else "error",
+            details={
+                "limit": limit,
+                "event_type": event_type_filter,
+                "symbol": symbol_filter,
+                "since": since_filter,
+                "source": source,
+                "row_count": len(items),
+                "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            },
+        )
+        return {
+            "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            "authority_boundary": _full_intelligence_authority_boundary(),
+            "source": source,
+            "filters": {
+                "limit": limit,
+                "event_type": event_type_filter,
+                "symbol": symbol_filter,
+                "since": since_filter,
+            },
+            "items": items,
+            "row_count": len(items),
+            "script_probe": _compact_probe(result, limit=4000),
+            "fallback": fallback,
+            "audit_id": audit_id,
+        }
+
+    def recent_signals(self, *, limit: int = 50, symbol: str | None = None) -> dict[str, Any]:
+        limit = max(1, min(500, int(limit)))
+        symbol_filter = _normalize_single_symbol(symbol)
+        tables: dict[str, Any] = {}
+        for table_name, spec in TRADING_SIGNAL_TABLES.items():
+            tables[table_name] = self._query_table_snapshot(
+                table=table_name,
+                spec=spec,
+                limit=limit,
+                symbol=symbol_filter,
+            )
+        total_rows = sum(len(result.get("rows") or []) for result in tables.values())
+        audit_id = self.db.audit(
+            actor="trading_bot.bridge",
+            action="trading_bot.signals.recent",
+            target=symbol_filter or "all",
+            permission_tier="L0_READ",
+            status="ok",
+            details={
+                "limit": limit,
+                "symbol": symbol_filter,
+                "tables": sorted(tables),
+                "total_rows": total_rows,
+                "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            },
+        )
+        return {
+            "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            "authority_boundary": _full_intelligence_authority_boundary(),
+            "filters": {"limit": limit, "symbol": symbol_filter},
+            "summary": {"total_rows": total_rows, "tables": sorted(tables)},
+            "tables": tables,
+            "audit_id": audit_id,
+        }
+
+    def market_context(
+        self,
+        *,
+        target_date: str | None = None,
+        symbol: str | None = None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        if target_date:
+            _validate_date(target_date)
+        limit = max(1, min(200, int(limit)))
+        symbol_filter = _normalize_single_symbol(symbol)
+        file_result = self._read_market_context_file()
+        tables: dict[str, Any] = {}
+        for table_name, spec in TRADING_MARKET_CONTEXT_TABLES.items():
+            tables[table_name] = self._query_table_snapshot(
+                table=table_name,
+                spec=spec,
+                limit=limit,
+                target_date=target_date,
+                symbol=symbol_filter,
+            )
+        total_rows = sum(len(result.get("rows") or []) for result in tables.values())
+        audit_id = self.db.audit(
+            actor="trading_bot.bridge",
+            action="trading_bot.market_context.read",
+            target=target_date or "latest",
+            permission_tier="L0_READ",
+            status="ok" if file_result.get("ok") or total_rows else "error",
+            details={
+                "target_date": target_date,
+                "symbol": symbol_filter,
+                "limit": limit,
+                "file_exists": file_result.get("exists"),
+                "total_rows": total_rows,
+                "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            },
+        )
+        return {
+            "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            "authority_boundary": _full_intelligence_authority_boundary(),
+            "filters": {"target_date": target_date, "symbol": symbol_filter, "limit": limit},
+            "market_context_file": file_result,
+            "summary": {"total_rows": total_rows, "tables": sorted(tables)},
+            "tables": tables,
+            "audit_id": audit_id,
+        }
 
     def sqlite_schema(
         self,
@@ -1229,6 +1722,16 @@ class TradingBotBridge:
                 "status": "active",
                 "authority": DT_TRIGGER_PROPOSAL_RUNTIME_EFFECT,
             },
+            {
+                "deep_thought_integration": "Training, event, market-context, and signal watcher access",
+                "zade_replacement": (
+                    "GET /trading-bot/intelligence/access, POST /trading-bot/training/run, "
+                    "GET /trading-bot/events/recent, GET /trading-bot/market-context, "
+                    "and GET /trading-bot/signals/recent"
+                ),
+                "status": "active",
+                "authority": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+            },
         ]
         return {
             "goal": "Replace Deep Thought trading-bot integrations with Zade-owned, local-first, authority-safe seams.",
@@ -1944,6 +2447,69 @@ class TradingBotBridge:
             ).fetchone()
         return row is not None
 
+    def _query_table_snapshot(
+        self,
+        *,
+        table: str,
+        spec: dict[str, Any],
+        limit: int,
+        target_date: str | None = None,
+        symbol: str | None = None,
+        event_type: str | None = None,
+        since: str | None = None,
+    ) -> dict[str, Any]:
+        query = _table_snapshot_query(
+            table=table,
+            spec=spec,
+            limit=limit,
+            target_date=target_date,
+            symbol=symbol,
+            event_type=event_type,
+            since=since,
+        )
+        try:
+            result = self.run_sqlite_query(
+                sql=query["sql"],
+                params=query["params"],
+                limit=limit,
+                timeout_seconds=10.0,
+                database="trades.db",
+            )
+            return {"ok": True, "table": table, **result}
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "table": table,
+                "error": str(exc),
+                "rows": [],
+                "row_count": 0,
+                "runtime_effect": READ_ONLY_SQLITE_RUNTIME_EFFECT,
+            }
+
+    def _read_market_context_file(self) -> dict[str, Any]:
+        result = self._run_repo_shell(
+            _shell_join(
+                [
+                    "env",
+                    f"PYTHONPATH={TRADING_BOT_PYTHONPATH}",
+                    self.config.trading_bot.python,
+                    "-c",
+                    _MARKET_CONTEXT_FILE_SCRIPT,
+                ]
+            ),
+            timeout=10,
+        )
+        parsed = _parse_json_value(result["stdout"])
+        payload = parsed if isinstance(parsed, dict) else {}
+        return {
+            "ok": bool(result["ok"] and payload),
+            "exists": bool(payload.get("exists")),
+            "path": payload.get("path") or "market_context.json",
+            "data": payload.get("data"),
+            "error": payload.get("error") or ("" if result["ok"] else _limit(result["stderr"], 1000)),
+            "runtime_effect": FULL_INTELLIGENCE_RUNTIME_EFFECT,
+        }
+
     def _run_repo_shell(self, script: str, *, timeout: float | None = None) -> dict[str, Any]:
         cfg = self.config.trading_bot
         if not cfg.enabled:
@@ -2013,6 +2579,33 @@ def _parse_json(stdout: str) -> dict[str, Any] | None:
             return None
         return parsed if isinstance(parsed, dict) else {"value": parsed}
     return None
+
+
+def _parse_json_value(stdout: str) -> Any:
+    text = str(stdout or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        parsed = _parse_json(text)
+        if not parsed:
+            return None
+        if set(parsed) == {"value"}:
+            return parsed["value"]
+        return parsed
+
+
+def _json_rows(parsed: Any) -> list[dict[str, Any]]:
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict):
+        for key in ("items", "rows", "events", "value"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return [parsed]
+    return []
 
 
 def _sqlite_database_path(database: str) -> str:
@@ -2185,6 +2778,65 @@ def _snapshot_query(*, table: str, target_date: str, symbols: list[str], limit: 
     return {"sql": sql, "params": params}
 
 
+def _table_snapshot_query(
+    *,
+    table: str,
+    spec: dict[str, Any],
+    limit: int,
+    target_date: str | None = None,
+    symbol: str | None = None,
+    event_type: str | None = None,
+    since: str | None = None,
+) -> dict[str, Any]:
+    columns = ", ".join(_quote_identifier(str(column)) for column in spec["columns"])
+    where_parts: list[str] = []
+    params: list[Any] = []
+
+    date_column = spec.get("date_column")
+    if target_date and date_column:
+        quoted_date_column = _quote_identifier(str(date_column))
+        if date_column == "market_date":
+            where_parts.append(f"{quoted_date_column} = ?")
+        else:
+            where_parts.append(f"substr({quoted_date_column}, 1, 10) = ?")
+        params.append(target_date)
+
+    symbol_column = spec.get("symbol_column")
+    if symbol and symbol_column:
+        where_parts.append(f"{_quote_identifier(str(symbol_column))} = ?")
+        params.append(symbol)
+
+    event_type_column = spec.get("event_type_column")
+    if event_type and event_type_column:
+        where_parts.append(f"{_quote_identifier(str(event_type_column))} = ?")
+        params.append(event_type)
+
+    since_column = spec.get("since_column")
+    if since and since_column:
+        where_parts.append(f"{_quote_identifier(str(since_column))} >= ?")
+        params.append(since)
+
+    where = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    order_by = _format_order_by(spec.get("order_by") or [("id", "DESC")])
+    sql = f"SELECT {columns} FROM {_quote_identifier(table)}{where} ORDER BY {order_by} LIMIT {int(limit)}"
+    return {"sql": sql, "params": params}
+
+
+def _format_order_by(items: Any) -> str:
+    formatted: list[str] = []
+    for item in list(items or []):
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise ValueError("Invalid table snapshot order_by config.")
+        column = _quote_identifier(str(item[0]))
+        direction = str(item[1] or "DESC").upper()
+        if direction not in {"ASC", "DESC"}:
+            raise ValueError("Invalid table snapshot order direction.")
+        formatted.append(f"{column} {direction}")
+    if not formatted:
+        formatted.append(f"{_quote_identifier('id')} DESC")
+    return ", ".join(formatted)
+
+
 def _normalize_symbols(symbols: list[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
@@ -2205,6 +2857,44 @@ def _normalize_requested_symbols(symbols: list[str] | None) -> list[str]:
     if any(str(raw or "").strip() for raw in raw_symbols) and not normalized:
         raise ValueError("No valid trading symbols supplied.")
     return normalized
+
+
+def _normalize_single_symbol(symbol: str | None) -> str | None:
+    if symbol is None or not str(symbol).strip():
+        return None
+    normalized = _normalize_symbols([str(symbol)])
+    if not normalized:
+        raise ValueError(f"Invalid trading symbol: {symbol!r}")
+    return normalized[0]
+
+
+def _validate_event_type(value: str | None) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    if not _EVENT_TYPE_RE.match(text):
+        raise ValueError(f"Invalid event_type: {value!r}")
+    return text
+
+
+def _validate_cli_extra_args(values: list[str] | None) -> list[str]:
+    safe: list[str] = []
+    for index, value in enumerate(list(values or [])):
+        safe.append(_validate_cli_optional_value(value, f"extra_args[{index}]"))
+    return safe
+
+
+def _validate_cli_optional_value(value: str | None, label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{label} cannot be empty.")
+    if len(text) > 240:
+        raise ValueError(f"{label} must be <= 240 chars.")
+    if "\\" in text or ".." in text or text.startswith(("/", "~")):
+        raise ValueError(f"{label} cannot reference absolute or parent paths.")
+    if not _CLI_TOKEN_RE.match(text):
+        raise ValueError(f"{label} contains unsupported shell characters.")
+    return text
 
 
 def _summarize_diagnostics(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2999,8 +3689,8 @@ def _daily_brief_text(
     counts = _daily_section_counts(sections)
     lines = [
         f"Trading intelligence brief for {target_date}.",
-        f"Runtime effect: {READ_ONLY_RUNTIME_EFFECT}.",
-        "Authority: observe-only. No broker, order, sizing, gate, execution, account-risk, or runtime mutation.",
+        f"Runtime effect: {FULL_INTELLIGENCE_RUNTIME_EFFECT}.",
+        "Authority: full intelligence access. No broker, order, sizing, gate, execution, account-risk, or runtime mutation.",
         f"Commands: {', '.join(summary.get('commands') or [])}.",
         f"Symbols: {', '.join(symbol_targets) if symbol_targets else 'none discovered'}.",
         f"Counts: strong={counts['strong']} watch={counts['watch']} blocked={counts['blocked']} noise={counts['noise']}.",
@@ -3040,6 +3730,7 @@ def _daily_highest_value_lesson(*, summary: dict[str, Any], sections: dict[str, 
 
 def _daily_trading_authority_boundary() -> dict[str, Any]:
     return {
+        "intelligence": FULL_INTELLIGENCE_RUNTIME_EFFECT,
         "diagnostics": READ_ONLY_RUNTIME_EFFECT,
         "sqlite": READ_ONLY_SQLITE_RUNTIME_EFFECT,
         "writes": ["memories", "founder_evidence", "trading_judgments", "missed_call_reviews"],
@@ -3067,6 +3758,21 @@ def _authority_boundary() -> dict[str, Any]:
         "broker_order_sizing_gate_mutation": False,
         "approval_required_before_bot_append": True,
         "bot_final_validation": "scripts/dt_recommendation_ingest.py",
+    }
+
+
+def _full_intelligence_authority_boundary() -> dict[str, Any]:
+    return {
+        "scope": "training_advisory_events_market_context_signals_database_visibility",
+        "training_scripts": "allowlisted_bot_training_commands",
+        "advisory_writes": "approval-gated dt_recommendations append only",
+        "database_reads": "SQLite mode=ro with query_only for direct table reads",
+        "event_reads": "bot_events script or read-only SQLite fallback",
+        "market_context_reads": "market_context.json plus daily_symbol_context read-only snapshot",
+        "signal_watch": "read-only snapshots of signal/event/decision tables",
+        "broker_order_sizing_gate_mutation": False,
+        "runtime_decision_mutation": False,
+        "account_risk_mutation": False,
     }
 
 
@@ -3130,7 +3836,7 @@ def _idempotency_key(market_date: str, symbol: str, action: str, verdict: str, c
 
 def _default_recommendation_risks() -> list[str]:
     return [
-        "Advisory rows must remain observe-only and never become a bot runtime input without a separate promotion.",
+        "Advisory rows may inform intelligence review and training, but must not become broker/order runtime input without a separate promotion.",
         "The bot must perform final symbol, runtime_effect, rate-limit, and idempotency validation.",
         "Founder approval is required before Zade writes into the trading-bot database.",
     ]
