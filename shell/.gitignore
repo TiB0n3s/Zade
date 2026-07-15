@@ -1,3 +1,8 @@
 node_modules/
 src-tauri/target/
 src-tauri/gen/
+
+# Updater signing key — SECRET. The public key lives in tauri.conf.json; the
+# private key must never be committed. (.pub is safe but kept out for tidiness.)
+zade-update.key
+zade-update.key.pub

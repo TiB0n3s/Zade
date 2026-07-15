@@ -247,6 +247,43 @@ class ResearchConfig:
 
 
 @dataclass(frozen=True)
+class RolesConfig:
+    """Local specialist role panel (swarm, local half). Fully local; no bounds to
+    set beyond an on/off — each role is one governed pass on a local model."""
+
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class DelegationConfig:
+    """Delegated specialist work (swarm, frontier half).
+
+    Auto-invoke is on by founder decision, bounded by a daily budget; past it,
+    invocation falls back to typed-phrase approval. The external agent is a
+    configured argv command (no shell). Empty command = brief-only (can't invoke).
+    """
+
+    enabled: bool = True
+    auto_invoke: bool = True
+    agent_command: tuple[str, ...] = ()
+    daily_budget: int = 25
+    timeout_seconds: float = 600.0
+    max_output_chars: int = 20_000
+    default_reliability: str = "C"
+
+
+@dataclass(frozen=True)
+class ScreenConfig:
+    """Local screen awareness. Explicit, on-demand; the textual read is free, the
+    pixel snapshot is the optional 'screen' extra and is confined + pruned."""
+
+    enabled: bool = True
+    storage_subdir: str = "screen-captures"
+    keep_last: int = 20
+    max_windows: int = 60
+
+
+@dataclass(frozen=True)
 class KernelConfig:
     app: AppConfig = AppConfig()
     identity: IdentityConfig = IdentityConfig()
@@ -261,6 +298,9 @@ class KernelConfig:
     vault: VaultConfig = VaultConfig()
     tray: TrayConfig = TrayConfig()
     research: ResearchConfig = ResearchConfig()
+    roles: RolesConfig = RolesConfig()
+    delegation: DelegationConfig = DelegationConfig()
+    screen: ScreenConfig = ScreenConfig()
 
 
 def _read_toml(path: Path) -> dict:
@@ -405,6 +445,27 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         allow_hosts=_segments(research_raw.get("allow_hosts"), ()),
         default_reliability=str(research_raw.get("default_reliability", "C")).strip() or "C",
     )
+    roles_raw = raw.get("roles", {})
+    roles = RolesConfig(
+        enabled=_bool(os.getenv("ZADE_ROLES_ENABLED", roles_raw.get("enabled", True))),
+    )
+    delegation_raw = raw.get("delegation", {})
+    delegation = DelegationConfig(
+        enabled=_bool(os.getenv("ZADE_DELEGATION_ENABLED", delegation_raw.get("enabled", True))),
+        auto_invoke=_bool(os.getenv("ZADE_DELEGATION_AUTO_INVOKE", delegation_raw.get("auto_invoke", True))),
+        agent_command=_command(delegation_raw.get("agent_command")),
+        daily_budget=int(os.getenv("ZADE_DELEGATION_DAILY_BUDGET", delegation_raw.get("daily_budget", 25))),
+        timeout_seconds=float(delegation_raw.get("timeout_seconds", 600.0)),
+        max_output_chars=int(delegation_raw.get("max_output_chars", 20_000)),
+        default_reliability=str(delegation_raw.get("default_reliability", "C")).strip() or "C",
+    )
+    screen_raw = raw.get("screen", {})
+    screen = ScreenConfig(
+        enabled=_bool(os.getenv("ZADE_SCREEN_ENABLED", screen_raw.get("enabled", True))),
+        storage_subdir=str(screen_raw.get("storage_subdir", "screen-captures")).strip() or "screen-captures",
+        keep_last=int(screen_raw.get("keep_last", 20)),
+        max_windows=int(screen_raw.get("max_windows", 60)),
+    )
     return KernelConfig(
         app=app,
         identity=identity,
@@ -418,6 +479,10 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         browser=browser,
         vault=vault,
         tray=tray,
+        research=research,
+        roles=roles,
+        delegation=delegation,
+        screen=screen,
     )
 
 

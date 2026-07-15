@@ -327,6 +327,30 @@ class ResearchDaydreamRequest(BaseModel):
     notify: bool = True
 
 
+class RolePassRequest(BaseModel):
+    role: str = Field(min_length=1, max_length=40)
+    content: str = Field(min_length=1, max_length=8000)
+    subject: str = Field(default="", max_length=200)
+
+
+class DelegationBriefRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=1000)
+    context: str = Field(default="", max_length=8000)
+    acceptance: str = Field(default="", max_length=2000)
+
+
+class DelegationQueueRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=1000)
+    brief: str = Field(default="", max_length=12000)
+    context: str = Field(default="", max_length=8000)
+    acceptance: str = Field(default="", max_length=2000)
+    auto_invoke: bool | None = None
+
+
+class ScreenCaptureRequest(BaseModel):
+    snapshot: bool = False
+
+
 class VoiceTranscribeRequest(BaseModel):
     audio_base64: str = Field(min_length=1)
     audio_mime: str = Field(default="audio/wav", max_length=80)
