@@ -18,7 +18,7 @@
       .grid, .row, .metric-row { grid-template-columns: 1fr; }
     }
   </style>
-  <link rel="stylesheet" href="/ui/zade-ui.css">
+  <link rel="stylesheet" href="zade-ui.css">
 </head>
 <body>
   <header>
@@ -298,6 +298,6 @@
     byId('recommendNoTaskBtn').addEventListener('click', () => withBusy(byId('recommendNoTaskBtn'), 'Recommending…', () => recommend(false)));
     load().catch((err) => { byId('activeObjective').textContent = 'Load failed: ' + err.message; });
   </script>
-  <script src="/ui/zade-ui.js"></script>
+  <script src="zade-ui.js"></script>
 </body>
 </html>

@@ -428,6 +428,63 @@
     loop();
   };
 
+  // ============================================================
+  //  Frameless titlebar — the shell runs decorations:false, so the
+  //  universe draws its own chrome: a full-width drag region + Zade
+  //  window controls. Injected ONLY under Tauri (window.__TAURI__);
+  //  in a browser / kernel-served fallback the native chrome stays.
+  //  Controls call the shell's own win_* commands over the same IPC
+  //  bridge as the kernel proxy — close = hide-to-tray (resident).
+  // ============================================================
+  const inTauri = () => !!(window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === "function");
+  // Only the production shell is frameless. The init-script bridge (BRIDGE_JS in
+  // the shell's main.rs) sets window.__ZADE_FRAMELESS__ by comparing against the
+  // fixed kernel origin, so this is correct whatever Tauri's asset host is. In the
+  // dev loop (ZADE_DEV_UI) the flag is false → keep OS chrome, no custom bar (which
+  // would otherwise double-stack, since withGlobalTauri injects __TAURI__ there).
+  // Defaults to showing the bar if the flag is somehow absent (better than a bare
+  // window); a plain browser has no __TAURI__ so it's skipped anyway.
+  const isFramelessShell = () => inTauri() && window.__ZADE_FRAMELESS__ !== false;
+
+  const TB_ICONS = {
+    min: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>',
+    max: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5.5" y="5.5" width="13" height="13" rx="1.5"/></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>'
+  };
+
+  const injectTitlebar = () => {
+    if (!isFramelessShell() || document.querySelector(".zade-titlebar")) return;
+    const invoke = window.__TAURI__.core.invoke;
+    const bar = el("div", "zade-titlebar");
+    bar.setAttribute("data-tauri-drag-region", "");
+    const title = el("div", "zade-titlebar-title", "Zade");
+    title.setAttribute("data-tauri-drag-region", "");
+    const controls = el("div", "zade-titlebar-controls");
+    const mkBtn = (kind, cmd, label, extra) => {
+      const btn = el("button", "zade-tb-btn" + (extra ? " " + extra : ""), TB_ICONS[kind]);
+      btn.type = "button";
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+      btn.addEventListener("click", () => { try { invoke(cmd); } catch (e) { /* IPC gone */ } });
+      return btn;
+    };
+    controls.appendChild(mkBtn("min", "win_minimize", "Minimize"));
+    controls.appendChild(mkBtn("max", "win_toggle_maximize", "Maximize / restore"));
+    controls.appendChild(mkBtn("close", "win_hide", "Close to tray", "zade-tb-close"));
+    bar.appendChild(title);
+    bar.appendChild(controls);
+    document.body.insertBefore(bar, document.body.firstChild);
+    document.body.classList.add("zade-has-titlebar");
+
+    // Rust emits the new fullscreen state on immersive toggle; hide our chrome
+    // while immersed so the world fills the screen.
+    if (window.__TAURI__.event && window.__TAURI__.event.listen) {
+      window.__TAURI__.event.listen("zade://immersive", (evt) => {
+        document.body.classList.toggle("zade-immersive", !!evt.payload);
+      });
+    }
+  };
+
   const injectSidebar = () => {
     if (document.querySelector(".zade-sidebar")) return;
 
@@ -892,6 +949,7 @@
     injectSkipLink();
     injectAmbient();
     injectCursorGlow();
+    injectTitlebar();
     injectSidebar();
     hideHeaderWorkspaceLinks();
     normalizeMessages(document);

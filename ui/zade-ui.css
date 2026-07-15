@@ -222,6 +222,41 @@ body.zade-has-sidebar { padding-left: var(--z-sidebar-w); }
 .zade-sidebar-foot .zade-status span { font-size: 10.5px; letter-spacing: 0.05em; color: var(--z-faint); }
 @keyframes zade-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
+/* ---------- 4b · Frameless titlebar (injected by zade-ui.js only under Tauri) ---------- */
+:root { --z-titlebar-h: 34px; }
+/* Make room: push flow content down, and start the fixed sidebar below the bar. */
+body.zade-has-titlebar { padding-top: var(--z-titlebar-h); }
+body.zade-has-titlebar.zade-has-sidebar .zade-sidebar { inset: var(--z-titlebar-h) auto 0 0; }
+body.zade-has-titlebar .zade-workspace-nav { top: var(--z-titlebar-h); }
+.zade-titlebar {
+  position: fixed; top: 0; left: 0; right: 0; height: var(--z-titlebar-h);
+  z-index: 120;
+  display: flex; align-items: center; justify-content: space-between;
+  padding-left: 15px;
+  background: linear-gradient(180deg, #0c0c0e, #08080a);
+  border-bottom: 1px solid var(--z-line);
+  -webkit-user-select: none; user-select: none;
+}
+.zade-titlebar-title {
+  flex: 1; height: 100%; display: flex; align-items: center;
+  font-family: var(--z-serif); font-style: italic; font-size: 13px;
+  letter-spacing: 0.09em; color: var(--z-faint);
+}
+.zade-titlebar-controls { display: flex; height: 100%; }
+.zade-tb-btn {
+  width: 46px; height: 100%; min-height: 0; padding: 0;
+  border: 0; border-radius: 0; background: transparent; color: var(--z-muted);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: background 0.18s ease, color 0.18s ease;
+}
+.zade-tb-btn:hover { background: rgba(255, 255, 255, 0.06); color: var(--z-ink-hi); }
+.zade-tb-btn.zade-tb-close:hover { background: #b0473f; color: #fff; }
+.zade-tb-btn svg { width: 13px; height: 13px; }
+/* Immersive (full-screen): OS chrome and our titlebar both gone; reclaim the strip. */
+body.zade-immersive { padding-top: 0; }
+body.zade-immersive .zade-titlebar { display: none; }
+body.zade-immersive.zade-has-sidebar .zade-sidebar { inset: 0 auto 0 0; }
+
 /* ---------- 4b · Activity beacon (injected by zade-ui.js) ---------- */
 /* Surfaces the work Zade does off the chat/voice thread: contrarian passes,
    operating loops, cadence reviews, self-evals, the work queue. margin-top:auto

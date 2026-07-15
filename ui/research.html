@@ -31,7 +31,7 @@
     .queued a { color: var(--z-accent-2, #d07d74); }
     .guard { font-size: 11px; color: var(--z-faint); margin-top: 4px; }
   </style>
-  <link rel="stylesheet" href="/ui/zade-ui.css">
+  <link rel="stylesheet" href="zade-ui.css">
 </head>
 <body data-zade-type="sans">
   <main>
@@ -118,7 +118,7 @@
         note.textContent = 'Queued.'; note.className = 'note good';
         box.hidden = false;
         box.innerHTML = `Work item <strong>#${esc(result.work_item_id ?? result.id ?? '?')}</strong> is waiting in ` +
-          `<a href="/ui/approvals.html">Approvals</a> — approve, then dispatch with the typed phrase to fetch. ` +
+          `<a href="approvals.html">Approvals</a> — approve, then dispatch with the typed phrase to fetch. ` +
           `<div style="margin-top:6px;">${esc(result.note || '')}</div>`;
       } catch (err) { note.textContent = 'Queue failed: ' + err.message; note.className = 'note err'; }
     }
@@ -128,6 +128,6 @@
 
     loadTopics();
   </script>
-  <script src="/ui/zade-ui.js"></script>
+  <script src="zade-ui.js"></script>
 </body>
 </html>

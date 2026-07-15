@@ -36,7 +36,7 @@
     .plan a { color: var(--z-accent-2, #d07d74); }
     .guard { font-size: 11px; color: var(--z-faint); margin-top: 4px; }
   </style>
-  <link rel="stylesheet" href="/ui/zade-ui.css">
+  <link rel="stylesheet" href="zade-ui.css">
 </head>
 <body data-zade-type="sans">
   <main>
@@ -147,7 +147,7 @@
     function showPlan(box, result, queued) {
       box.hidden = false;
       const lines = [];
-      if (queued) lines.push(`Work item #${esc(result.work_item_id ?? result.id ?? '?')} queued — approve &amp; dispatch in <a href="/ui/approvals.html">Approvals</a>.`);
+      if (queued) lines.push(`Work item #${esc(result.work_item_id ?? result.id ?? '?')} queued — approve &amp; dispatch in <a href="approvals.html">Approvals</a>.`);
       if (result.plan) lines.push(esc(JSON.stringify(result.plan, null, 2)));
       else {
         const copy = { ...result }; delete copy.note;
@@ -232,6 +232,6 @@
 
     listFolder();
   </script>
-  <script src="/ui/zade-ui.js"></script>
+  <script src="zade-ui.js"></script>
 </body>
 </html>

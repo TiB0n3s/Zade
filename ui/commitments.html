@@ -40,7 +40,7 @@
       .row, .row3, .metric-row, .close-row, .renegotiate-row { grid-template-columns: 1fr; }
     }
   </style>
-  <link rel="stylesheet" href="/ui/zade-ui.css">
+  <link rel="stylesheet" href="zade-ui.css">
 </head>
 <body>
   <header>
@@ -364,6 +364,6 @@
     byId('createBtn').addEventListener('click', () => withBusy(byId('createBtn'), 'Creating…', createCommitment));
     loadAll().catch((err) => { console.error('Initial commitments load failed', err); });
   </script>
-  <script src="/ui/zade-ui.js"></script>
+  <script src="zade-ui.js"></script>
 </body>
 </html>

@@ -42,7 +42,7 @@
       .jumpnav { position: static; }
     }
   </style>
-  <link rel="stylesheet" href="/ui/zade-ui.css">
+  <link rel="stylesheet" href="zade-ui.css">
 </head>
 <body>
   <header>
@@ -872,6 +872,6 @@
     byId('loadAllBtn').addEventListener('click', () => withBusy(byId('loadAllBtn'), 'Loading all…', () => loadAll().catch((err) => { console.error(err); })));
     loadAll().catch((err) => { console.error('Initial ledger load failed', err); });
   </script>
-  <script src="/ui/zade-ui.js"></script>
+  <script src="zade-ui.js"></script>
 </body>
 </html>

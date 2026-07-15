@@ -70,7 +70,7 @@
       .row, .row3, .mini-row { grid-template-columns: 1fr; }
     }
   </style>
-  <link rel="stylesheet" href="/ui/zade-ui.css">
+  <link rel="stylesheet" href="zade-ui.css">
 </head>
 <body>
   <header>
@@ -672,7 +672,7 @@
       if (!NON_TERMINAL_STEP.has(step.status)) return '';
       const parts = [];
       if (step.execution === 'work_queue') {
-        parts.push(`<div class="muted">This step runs through the work queue — approve Zade proposals or dispatch direct commands from <a class="button secondary tiny" href="/ui/approvals.html#approvals" style="margin-left:4px;">Approvals</a>.</div>`);
+        parts.push(`<div class="muted">This step runs through the work queue — approve Zade proposals or dispatch direct commands from <a class="button secondary tiny" href="approvals.html#approvals" style="margin-left:4px;">Approvals</a>.</div>`);
       } else {
         if (step.status === 'approval_required') {
           parts.push(`<div class="actions"><button class="ok tiny" data-approve="${step.id}" data-plan="${plan.id}" title="Approve this step so it can run">Approve</button></div>`);
@@ -895,6 +895,6 @@
     activate(location.hash.replace('#', ''));
   })();
   </script>
-  <script src="/ui/zade-ui.js"></script>
+  <script src="zade-ui.js"></script>
 </body>
 </html>

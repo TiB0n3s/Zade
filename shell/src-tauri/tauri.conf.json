@@ -1,26 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Zade",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "ai.zade.shell",
   "build": {
-    "frontendDist": "../dist"
+    "frontendDist": "../../ui"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "Zade",
-        "width": 1280,
-        "height": 840,
-        "minWidth": 900,
-        "minHeight": 600,
-        "center": true,
-        "backgroundColor": "#141210"
-      }
-    ],
+    "withGlobalTauri": true,
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {

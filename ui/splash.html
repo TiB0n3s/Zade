@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Zade</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; margin: 0; }
+    body {
+      background: #141210; color: #d9d2c7;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      height: 100vh; display: flex; align-items: center; justify-content: center;
+    }
+    .wake { text-align: center; }
+    .sigil {
+      font-size: 64px; font-weight: 600; color: #d07d74;
+      animation: breathe 2.4s ease-in-out infinite;
+    }
+    @keyframes breathe { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+    .line { margin-top: 18px; font-style: italic; font-size: 15px; color: #8a8378; }
+    .detail { margin-top: 10px; font-size: 11.5px; letter-spacing: .08em; color: #5c564d; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <div class="wake">
+    <div class="sigil">Z</div>
+    <div class="line" id="line">Zade is waking&hellip;</div>
+    <div class="detail" id="detail">starting kernel</div>
+  </div>
+  <script>
+    // Option B: the UI is a Tauri asset (tauri://localhost). fetch() is bridged
+    // in the shell's init script — a plain fetch("/health") is proxied to the
+    // kernel over loopback, so here we can actually read health (no opaque
+    // no-cors probe needed) and hand off to the home page once it answers.
+    let tries = 0;
+    async function probe() {
+      tries += 1;
+      try {
+        const r = await fetch("/health", { cache: "no-store" });
+        if (r.ok) {
+          document.getElementById("line").textContent = "Zade is here.";
+          document.getElementById("detail").textContent = "entering";
+          setTimeout(() => window.location.replace("index.html"), 200);
+          return;
+        }
+      } catch (e) { /* kernel not up yet */ }
+      if (tries > 8) {
+        document.getElementById("detail").textContent = "still starting the kernel (" + tries + ")";
+      }
+      setTimeout(probe, 700);
+    }
+    probe();
+  </script>
+</body>
+</html>
