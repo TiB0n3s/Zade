@@ -19,16 +19,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_window_state::StateFlags;
 
 const KERNEL_BASE: &str = "http://127.0.0.1:8787";
@@ -272,20 +273,31 @@ fn supervise() {
 }
 
 /// Poll the kernel and keep the tray tooltip honest about the brain (Ollama).
+/// Managed prerequisite: when the kernel is up but Ollama is down AND Ollama is
+/// installed, auto-start it (with a cooldown so a broken Ollama isn't hammered).
 fn watch_status(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        let (kernel_ok, ollama_ok) = kernel_status();
-        let tip = if !kernel_ok {
-            "Zade — waking the kernel…"
-        } else if ollama_ok {
-            "Zade — online"
-        } else {
-            "Zade — brain offline · start Ollama"
-        };
-        if let Some(tray) = app.tray_by_id("zade-shell") {
-            let _ = tray.set_tooltip(Some(tip));
+    std::thread::spawn(move || {
+        let mut last_ollama_start = Instant::now() - RESPAWN_COOLDOWN;
+        loop {
+            let (kernel_ok, ollama_ok) = kernel_status();
+            let tip = if !kernel_ok {
+                "Zade — waking the kernel…"
+            } else if ollama_ok {
+                "Zade — online"
+            } else {
+                "Zade — brain offline · start Ollama"
+            };
+            if let Some(tray) = app.tray_by_id("zade-shell") {
+                let _ = tray.set_tooltip(Some(tip));
+            }
+            if kernel_ok && !ollama_ok && last_ollama_start.elapsed() >= RESPAWN_COOLDOWN {
+                if let Some(exe) = ollama_exe() {
+                    start_ollama(&exe);
+                    last_ollama_start = Instant::now();
+                }
+            }
+            std::thread::sleep(STATUS_INTERVAL);
         }
-        std::thread::sleep(STATUS_INTERVAL);
     });
 }
 
@@ -436,6 +448,84 @@ fn build_main_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Check the update endpoint and toast the result. Async (the check is network),
+/// spawned from the sync tray handler.
+fn check_updates(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let message = match handle.updater() {
+            Ok(updater) => match updater.check().await {
+                Ok(Some(update)) => format!("Update available: v{}. Restart to install.", update.version),
+                Ok(None) => "Zade is up to date.".to_string(),
+                Err(err) => format!("Update check failed: {err}"),
+            },
+            Err(err) => format!("Updater unavailable: {err}"),
+        };
+        let _ = handle
+            .notification()
+            .builder()
+            .title("Zade — updates")
+            .body(message)
+            .show();
+    });
+}
+
+/// Locate the installed Ollama executable: the known install path, then PATH.
+fn ollama_exe() -> Option<PathBuf> {
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let candidate = PathBuf::from(local).join("Programs").join("Ollama").join("ollama.exe");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    if let Ok(out) = Command::new("where").arg("ollama").output() {
+        if out.status.success() {
+            if let Some(line) = String::from_utf8_lossy(&out.stdout).lines().next() {
+                let candidate = PathBuf::from(line.trim());
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn start_ollama(exe: &Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = Command::new(exe).arg("serve").creation_flags(CREATE_NO_WINDOW).spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new(exe).arg("serve").spawn();
+    }
+}
+
+/// Managed prerequisite: start Ollama if installed, else install it (winget, or
+/// open the download page as a fallback). Toasts what it did.
+fn manage_ollama(app: &AppHandle) {
+    let message = if let Some(exe) = ollama_exe() {
+        start_ollama(&exe);
+        "Ollama is installed — starting it now."
+    } else if Command::new("winget")
+        .args([
+            "install", "--id", "Ollama.Ollama", "-e", "--source", "winget",
+            "--accept-package-agreements", "--accept-source-agreements",
+        ])
+        .spawn()
+        .is_ok()
+    {
+        "Installing Ollama via winget…"
+    } else {
+        let _ = Command::new("cmd").args(["/c", "start", "", "https://ollama.com/download"]).spawn();
+        "Opened the Ollama download page."
+    };
+    let _ = app.notification().builder().title("Zade — Ollama").body(message).show();
+}
+
 fn main() {
     supervise();
 
@@ -450,6 +540,7 @@ fn main() {
             Some(vec![START_HIDDEN_FLAG]),
         ))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Persist ONLY geometry. The default flags also save/restore `decorations`,
         // which poisons the frameless window: a dev-mode run (decorations:true)
         // gets restored over the builder's decorations(false), resurrecting the OS
@@ -499,6 +590,10 @@ fn main() {
                 start_on,
                 None::<&str>,
             )?;
+            let updates = MenuItem::with_id(app, "updates", "Check for updates", true, None::<&str>)?;
+            let ollama = MenuItem::with_id(app, "ollama", "Install / start Ollama", true, None::<&str>)?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
             let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,
@@ -507,7 +602,10 @@ fn main() {
                 true,
                 None::<&str>,
             )?;
-            let menu = Menu::with_items(app, &[&show, &immersive, &autostart, &hide, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show, &immersive, &autostart, &sep1, &updates, &ollama, &sep2, &hide, &quit],
+            )?;
 
             let autostart_check = autostart.clone();
             TrayIconBuilder::with_id("zade-shell")
@@ -518,6 +616,8 @@ fn main() {
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => show_main(app),
                     "immersive" => toggle_immersive(app),
+                    "updates" => check_updates(app),
+                    "ollama" => manage_ollama(app),
                     "autostart" => {
                         let al = app.autolaunch();
                         let enabled = al.is_enabled().unwrap_or(false);

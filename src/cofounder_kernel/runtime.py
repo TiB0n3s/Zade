@@ -18,6 +18,7 @@ from .db import KernelDatabase, utc_now
 from .founder import FounderService
 from .ingestion import IngestionService
 from .ollama import OllamaClient
+from .self_knowledge.prompt import prompt_self_knowledge_mode, render_prompt_self_knowledge
 from .skills import SkillService
 from .trading_bot import TradingBotBridge
 
@@ -600,6 +601,22 @@ class RuntimeService:
         return [dict(row) | {"details": json.loads(row["details_json"] or "{}")} for row in rows]
 
     def _render_self_knowledge(self) -> str:
+        """Render the self-knowledge block injected into the governed prompt.
+
+        Default mode is the slim living document summary from context/self/zade.md.
+        The legacy live inventory remains available as a fallback and through
+        ZADE_SELF_KNOWLEDGE_PROMPT_MODE=runtime.
+        """
+        mode = prompt_self_knowledge_mode()
+        if mode == "off":
+            return "Self-knowledge prompt injection disabled by ZADE_SELF_KNOWLEDGE_PROMPT_MODE=off."
+        if mode in {"slim", "full"}:
+            rendered = render_prompt_self_knowledge(mode=mode)
+            if rendered:
+                return rendered
+        return self._render_runtime_self_inventory()
+
+    def _render_runtime_self_inventory(self) -> str:
         """A compact, auto-generated self-inventory (Tier 2): identity, models,
         storage, authority posture, tools, and skills — so questions about what
         Zade can reach are answered from fact, not guessed. Never hand-written."""

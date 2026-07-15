@@ -28,6 +28,8 @@
     vault: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="4"/><path d="M12 8v1M12 15v1M8 12h1M15 12h1"/>',
     research: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><path d="M11 8v3l2 2"/>',
     brief: '<path d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 4v5h5"/><path d="M8 13h7M8 17h7"/>',
+    swarm: '<circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v3M11 11 6.5 17M13 11l4.5 6"/>',
+    screen: '<rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8M12 16v4"/>',
     bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>'
   };
 
@@ -56,6 +58,8 @@
       label: "Ops",
       pages: [
         ["Brief", "digest", I.brief],
+        ["Swarm", "swarm", I.swarm],
+        ["Screen", "screen", I.screen],
         ["Browser", "browser", I.browser],
         ["Vault", "vault", I.vault],
         ["Research", "research", I.research]
@@ -67,7 +71,8 @@
   // folded 6 + Ops; the palette also reaches the standalone consoles.
   const ALL_PAGES = [
     ["Home", "index"], ["The brief", "digest"], ["Inbox", "inbox"], ["Strategy", "strategy"], ["Memory", "memory"],
-    ["Trading", "trading"], ["Settings", "settings"], ["Browser", "browser"], ["Vault", "vault"],
+    ["Trading", "trading"], ["Settings", "settings"], ["Swarm", "swarm"], ["Screen", "screen"],
+    ["Browser", "browser"], ["Vault", "vault"],
     ["Research", "research"], ["Approvals console", "approvals"], ["Founder ops", "founder"],
     ["Operating ledger", "ledger"], ["Commitments", "commitments"], ["Attention & notifications", "surfacing"],
     ["System", "system"], ["Voice", "voice"]

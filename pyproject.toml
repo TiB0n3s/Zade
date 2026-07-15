@@ -24,6 +24,9 @@ tray = [
   "pystray>=0.19",
   "Pillow>=10",
 ]
+screen = [
+  "mss>=9",
+]
 
 [project.scripts]
 cofounder-kernel = "cofounder_kernel.__main__:main"

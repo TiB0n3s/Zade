@@ -2,7 +2,7 @@
 
 Date: 2026-07-13
 Owner: founder (decision) · drafted for the Deep Thought decommission plan (item 6 of 7)
-Status: **DECIDED 2026-07-13** — founder chose **Option C hybrid with auto-invoke enabled**: local RolePass panel + DelegationService that MAY automatically invoke external agents as approval-gated L3 external actions (not brief-only). Open questions 2 (which DT roles) and 4 (cost tolerance) remain to be answered at build time. Build queued behind the desktop-universe Phase 1.
+Status: **FIRST SLICE BUILT + LIVE-VERIFIED 2026-07-15.** Founder chose **Option C hybrid with auto-invoke enabled**. Roles answered: red-team + triage + gap-finder (local) and engineering/research (delegated). Cost tolerance: **larger daily budget** before approval. Shipped: `roles.py` (RolePassService — 4 local roles on the general model, one governed pass each, recorded as telemetry; generalizes ContrarianCritic) at `GET /roles`, `GET /roles/status`, `POST /roles/run`; `delegation.py` (DelegationService — scoped brief builder + L3 `external.delegation.run` handler + **budgeted auto-invoke**: runs the configured external-agent argv command without asking up to `delegation.daily_budget` (default 25), then falls back to typed-phrase approval; brief-only when no agent command configured) at `GET /delegation/status`, `POST /delegation/brief`, `POST /delegation/run`. Config: `RolesConfig`/`DelegationConfig`; tests `test_roles.py` + `test_delegation.py` (19 green with screen); live-verified over real HTTP incl. a real local-model red-team pass (verdict "Premature deployment", 6.2s). Remaining/next increment: a UI console for roles/delegation; wire roles into the runtime as an on-demand panel; optionally let the founder pick the external agent command in Settings.
 
 ---
 

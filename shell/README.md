@@ -55,9 +55,29 @@ loopback from Rust:
   keeps the tooltip honest: *online* / *brain offline · start Ollama* /
   *waking the kernel…*.
 
-Deferred by decision (2026-07-14): **code signing** (ships unsigned — SmartScreen
-shows an "unknown publisher" prompt) and **auto-update** (rebuild/reinstall
-manually for now).
+**Phase 3 completion (v0.4.0)**
+- **Code signing** — `scripts/sign-shell.ps1` signs the exe + NSIS installer with
+  `Set-AuthenticodeSignature` (no SDK needed). Self-signed by default (`CN=Zade
+  Local Shell`); set `ZADE_SIGN_THUMBPRINT` to a real OV/EV cert to ship trusted.
+  Self-signed shows `UnknownError`/unknown-publisher on other machines — expected
+  until the cert is trusted; the pipeline is real.
+- **Auto-update** — `tauri-plugin-updater` with a signing keypair
+  (`zade-update.key*`, gitignored) and `createUpdaterArtifacts`. The tray's *Check
+  for updates* polls a **local update channel**: the kernel serves the manifest at
+  `GET /shell/latest.json` (loopback, so `dangerousInsecureTransportProtocol` is
+  on — payloads are still signature-verified). Inert by default (version `0.0.0`);
+  drop a Tauri manifest at `data_dir/shell-update.json` to publish locally, or
+  point `updater.endpoints` at GitHub Releases for remote updates.
+- **Ollama managed** — the status watcher auto-starts Ollama when it's installed
+  but down; the tray's *Install / start Ollama* installs it via winget (or opens
+  the download page) when it's missing.
+
+Build the signed installer + updater artifacts:
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content .\zade-update.key -Raw
+npx tauri build
+.\scripts\sign-shell.ps1   # Authenticode-sign the exe + installer
+```
 
 ## Layout
 

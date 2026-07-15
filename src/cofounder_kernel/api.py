@@ -29,6 +29,9 @@ from .founder import FounderService
 from .handlers import ActionHandlerRegistry
 from .ingestion import IngestionService
 from .research import ResearchService
+from .roles import RolePassService
+from .delegation import DelegationService
+from .screen import ScreenService
 from .models import (
     ActionPlanCreate,
     ActionPlanFromRecommendation,
@@ -49,6 +52,10 @@ from .models import (
     BrowserRunRequest,
     ResearchDaydreamRequest,
     ResearchRunRequest,
+    RolePassRequest,
+    DelegationBriefRequest,
+    DelegationQueueRequest,
+    ScreenCaptureRequest,
     VaultDeleteRequest,
     VaultMoveRequest,
     VaultRestoreRequest,
@@ -245,6 +252,14 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     # needs the notification bus, which is built later).
     runtime.research = research
 
+    # Specialist swarm (hybrid). Roles run LOCALLY (no approval); delegation hands
+    # heavy work OUT to an external agent as an approval-gated L3 action (auto-invoke
+    # bounded by a daily budget). Screen awareness is a local, on-demand read.
+    roles = RolePassService(config=cfg, db=db, ollama=ollama)
+    delegation = DelegationService(config=cfg, db=db, founder=founder, work_queue=work_queue)
+    delegation.register_into(handlers)
+    screen = ScreenService(config=cfg, db=db)
+
     # Tier 4: keep the semantic memory index current. Incremental + best-effort —
     # a fresh DB or an embedder outage is a harmless no-op, and unchanged memories
     # are skipped, so steady-state startup makes no embedder calls.
@@ -290,6 +305,9 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     app.state.vault = vault
     app.state.tray = tray
     app.state.research = research
+    app.state.roles = roles
+    app.state.delegation = delegation
+    app.state.screen = screen
     app.state.surfacing = surfacing
     app.state.bus = bus
     app.state.commitments = commitments
@@ -855,6 +873,88 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
                 "Web research is an external action: approve and dispatch the work item with the typed "
                 "confirmation phrase to fetch the sources."
             ),
+        }
+
+    # ---- Swarm: local roles ----
+    @app.get("/roles")
+    def list_roles() -> dict[str, Any]:
+        return {"roles": roles.list_roles()}
+
+    @app.get("/roles/status")
+    def roles_status() -> dict[str, Any]:
+        return roles.status()
+
+    @app.post("/roles/run")
+    def roles_run(payload: RolePassRequest) -> dict[str, Any]:
+        try:
+            return roles.run(role=payload.role, content=payload.content, subject=payload.subject)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # ---- Swarm: delegation ----
+    @app.get("/delegation/status")
+    def delegation_status() -> dict[str, Any]:
+        return delegation.status()
+
+    @app.post("/delegation/brief")
+    def delegation_brief(payload: DelegationBriefRequest) -> dict[str, Any]:
+        try:
+            brief = delegation.build_brief(
+                task=payload.task, context=payload.context, acceptance=payload.acceptance
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"brief": brief}
+
+    @app.post("/delegation/run")
+    def delegation_run(payload: DelegationQueueRequest) -> dict[str, Any]:
+        try:
+            return delegation.queue_delegation(
+                task=payload.task,
+                brief=payload.brief,
+                context=payload.context,
+                acceptance=payload.acceptance,
+                auto_invoke=payload.auto_invoke,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # ---- Screen awareness ----
+    @app.get("/screen/status")
+    def screen_status() -> dict[str, Any]:
+        return screen.status()
+
+    @app.post("/screen/capture")
+    def screen_capture(payload: ScreenCaptureRequest | None = None) -> dict[str, Any]:
+        request = payload or ScreenCaptureRequest()
+        try:
+            return screen.capture(snapshot=request.snapshot)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # ---- Shell auto-update manifest (local channel) ----
+    @app.get("/shell/latest.json")
+    def shell_update_manifest() -> dict[str, Any]:
+        """Update manifest the desktop shell's updater polls over loopback.
+
+        Local-first update channel: inert by default (version 0.0.0 is never newer
+        than an installed build, so the updater reports "up to date"). To publish a
+        local update, drop a Tauri-format manifest at ``data_dir/shell-update.json``
+        (version, notes, pub_date, platforms{signature,url}) and it is served here.
+        Pointing the shell's ``updater.endpoints`` at GitHub Releases instead is the
+        one config change for remote auto-update.
+        """
+        override = cfg.paths.data_dir / "shell-update.json"
+        if override.exists():
+            try:
+                return json.loads(override.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                pass
+        return {
+            "version": "0.0.0",
+            "notes": "No shell update published on the local channel.",
+            "pub_date": "1970-01-01T00:00:00Z",
+            "platforms": {},
         }
 
     @app.get("/voice/status")
@@ -2505,6 +2605,38 @@ def _inventory_payload(
             "Web fetch is the one deliberate outbound-to-the-open-web exception and runs only through approved dispatch with the typed confirmation phrase (L3 external action).",
             "Egress is https-only to public hosts, redirects refused, and byte-capped; an optional host allowlist can tighten it further.",
             "Fetched pages are salience-scored against the topic and filed as graded web_research evidence — a sourced external claim, never native certainty.",
+        ],
+    }
+    inventory["roles_layer"] = {
+        "routes": ["GET /roles", "GET /roles/status", "POST /roles/run"],
+        "enabled": cfg.roles.enabled,
+        "roles": ["red_team", "triage", "summarize", "gap_finder"],
+        "operating_rules": [
+            "The local half of the specialist swarm: each role is one governed pass on a LOCAL model — no network, no approval, no external cost.",
+            "A role produces a finding attached to the subject; it never takes an action or grants permission.",
+            "Findings are recorded as model-call telemetry so a role's latency and value can be measured.",
+        ],
+    }
+    inventory["delegation_layer"] = {
+        "routes": ["GET /delegation/status", "POST /delegation/brief", "POST /delegation/run"],
+        "dispatch_action": "external.delegation.run",
+        "enabled": cfg.delegation.enabled,
+        "auto_invoke": cfg.delegation.auto_invoke,
+        "daily_budget": cfg.delegation.daily_budget,
+        "operating_rules": [
+            "The frontier half of the swarm: Zade packages a scoped brief and hands heavy work OUT to a configured external agent (Claude Code/Codex), then captures the artifact — it does not try to BE the agent.",
+            "Invoking an external agent is an L3 external action. Auto-invoke runs it without asking up to the daily budget; past that it requires the typed confirmation phrase.",
+            "With no agent command configured, delegation is brief-only (prepare-not-send) and can never invoke.",
+            "Artifacts are filed as delegated-work evidence — a sourced external claim, never native certainty.",
+        ],
+    }
+    inventory["screen_layer"] = {
+        "routes": ["GET /screen/status", "POST /screen/capture"],
+        "enabled": cfg.screen.enabled,
+        "operating_rules": [
+            "Local, on-demand read of the screen: no network, no approval — but explicit, never on a timer.",
+            "The textual read (focused + visible window titles) captures no pixels and needs no extra dependency.",
+            "A pixel snapshot is optional (the 'screen' extra installs mss), confined to the data dir, pruned to the last N; raw pixels never cross the wire or land in a response/log.",
         ],
     }
     inventory["tray_layer"] = {

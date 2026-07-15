@@ -41,6 +41,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 | `dev.git.commit` | dev | yes | Stage and commit local changes in the workspace (refuses the default branch by default). |
 | `external.browser.run` | external | yes | Run an approved headed browser flow (navigate/read/links/fill/click/press/screenshot). |
 | `external.connector.sync` | external | yes | Read-only sync of an approved external connector into staged candidate items. |
+| `external.delegation.run` | external | yes | Invoke a configured external agent (Claude Code/Codex) on a scoped brief and file its artifact (approved external action). |
 | `external.dt_recommendation.ingest` | external | yes | Append an observe-only Zade/DT advisory recommendation to the trading-bot dt_recommendations lane. |
 | `external.dt_trigger.propose` | external | yes | Record an approved dt_trigger proposal locally without running the trading bot. |
 | `external.research.run` | external | yes | Fetch approved web sources for a research topic and file them as graded evidence (approved external action). |
@@ -127,6 +128,10 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `5000405` 2026-07-15 - Inject living self-knowledge into runtime prompt
+- `81f21ab` 2026-07-15 - Install self-knowledge pre-commit automation
+- `5ddb0b2` 2026-07-15 - Relocate Zade UI to bundled Tauri assets (Option B) + frameless chrome, dev loop, native toasts
+- `b65143a` 2026-07-15 - Add Zade self-knowledge drift checks
 - `18587ad` 2026-07-15 - Render the disambiguation into the prompt so Zade actually reads it
 - `6fed106` 2026-07-15 - Generate Zade self-knowledge blocks
 - `feb48c2` 2026-07-15 - Fix Zade conflating its bridge's read-only ceiling with the bot's authority
@@ -135,16 +140,11 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `2e308eb` 2026-07-14 - Add durable brain & memory system for Zade (8 tiers + doc-recall)
 - `a21b22f` 2026-07-14 - Commit pre-existing working-tree changes (universe shell, CORS, voice, theme)
 - `3a2f1c3` 2026-07-14 - Force revalidation on /ui static assets to fix stale WebView2 cache
-- `084d2b9` 2026-07-14 - v1 - Memory & Deployment
-- `66faf06` 2026-07-13 - v1 - Initial Build (cont)
-- `6cac5bf` 2026-07-13 - v1 - Initial Build (cont)
-- `8b9fe41` 2026-07-12 - v1 - Initial Build (cont)
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
 
 - No first-party runtime sub-agent or specialist-persona registry has been confirmed in `src/cofounder_kernel`; if one is added, it should get its own AUTO block.
-- Decide whether the runtime should inject the slim summary from this file, the full rendered document, or both behind a feature flag in a later tier.
 - Decide which hand-written pointers deserve strict drift checking once Phase 3 exists.
 
 ## Pointers
