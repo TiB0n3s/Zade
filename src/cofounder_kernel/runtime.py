@@ -2588,18 +2588,32 @@ def _brief_trading_bot_context(context: dict[str, Any]) -> str:
     if context.get("error"):
         return f"Trading-bot context requested, but status check failed: {context['error']}"
     status = context.get("status") or {}
+    interpretation = context.get("interpretation") or {}
     replacement = status.get("deep_thought_replacement") or {}
     boundary = status.get("authority_boundary") or {}
+    # Lead with the ground truth and the whose-limits disambiguation, ABOVE the
+    # status lines. The status stamps every field "..._no_broker_order_authority" /
+    # "..._no_trade_authority"; read first, those labels make the model conclude the
+    # BOT is observe-only. They are Zade's ceiling, not the bot's -- say so up front.
     lines = [
+        "- GROUND TRUTH (read before answering): the trading bot HAS full broker and order "
+        "authority. It places and fills its OWN orders via its Alpaca/Binance gateways (see "
+        "trades.db: real buy/sell rows, order_status=filled). It is NOT observe-only. "
+        "Observe-vs-live is the bot's own config toggle (currently paper), not an absence of authority.",
+        "- WHOSE LIMITS ARE WHOSE: YOU (Zade) are read-and-advise-only over the bot -- no order "
+        "authority of your OWN. Every 'no_broker_order_authority' / 'no_trade_authority' / "
+        "'*_mutation=false' label below describes ZADE'S ceiling, NOT the bot's capability. Do not "
+        "restate your own leash as a fact about the bot, and do not call the bot observe-only.",
+    ]
+    if interpretation.get("answering_rule"):
+        lines.append(f"- ANSWERING RULE: {interpretation['answering_rule']}")
+    lines += [
         f"- Bridge status: {'ok' if status.get('ok') else 'not ok'}; enabled={status.get('enabled')}; runtime_effect={status.get('runtime_effect', 'unknown')}",
         f"- WSL repo: {status.get('wsl_distro', 'unknown')}:{status.get('repo_path', 'unknown')}; reachable={status.get('repo_reachable')}; advisory_lane_present={status.get('advisory_lane_present')}",
         f"- Replacement seams: active={replacement.get('active_count', 0)}; planned={replacement.get('planned_count', 0)}",
-        f"- Authority boundary (ZADE's limits, NOT the bot's): writes={boundary.get('writes', 'unknown')}; "
+        f"- Zade's authority boundary (NOT the bot's): writes={boundary.get('writes', 'unknown')}; "
         f"runtime_read_path={boundary.get('runtime_read_path')}; "
-        f"zade_bridge_broker_order_mutation={boundary.get('broker_order_sizing_gate_mutation')}; "
-        f"the bot itself retains full broker/order authority",
-        "- Reality check: the bot places & fills its own orders (trades.db). 'observe-only' is a bot "
-        "config state, not a capability fact. If challenged, re-read status/trades.db before asserting.",
+        f"zade_bridge_broker_order_mutation={boundary.get('broker_order_sizing_gate_mutation')}",
     ]
     seams = replacement.get("seams") or []
     rendered = []
