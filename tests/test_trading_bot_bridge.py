@@ -879,3 +879,68 @@ def test_daily_brief_can_export_to_vault_raw_folder(tmp_path: Path, monkeypatch)
     assert response.status_code == 200
     assert path == tmp_path / "hot" / "Trading Project" / "01-raw" / "zade-trading-brief-2026-07-12.md"
     assert "Zade Trading Brief - 2026-07-12" in path.read_text(encoding="utf-8")
+
+
+def test_trading_bot_activity_snapshot_parses_live_rows(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    payload = {
+        "trades": {
+            "today_total": 139,
+            "buys": 72,
+            "sells": 67,
+            "symbols": 32,
+            "recent_fills": [
+                {"symbol": "AAPL", "action": "buy", "qty": 54, "fill_price": 327.64, "order_status": "filled"},
+            ],
+        },
+        "equity": {
+            "latest_equity": 88419.57,
+            "session_date": "2026-07-15",
+            "intraday_change": -865.39,
+            "change_vs_prior_close": -871.59,
+            "samples_today": 302,
+        },
+        "signals": [{"symbol": "RKLB", "decision": "avoid", "score": -4}],
+        "errors": [],
+    }
+    monkeypatch.setattr(
+        TradingBotBridge,
+        "_run_repo_shell",
+        lambda self, script, *, timeout=None: {"ok": True, "exit_code": 0, "stdout": json.dumps(payload), "stderr": ""},
+    )
+    client = TestClient(create_app(_config(tmp_path)))
+    bridge = client.app.state.runtime.trading_bot
+
+    snap = bridge.activity_snapshot()
+
+    assert snap["ok"] is True
+    assert snap["runtime_effect"] == "read_only_sqlite_no_trade_authority"
+    assert snap["trades"]["today_total"] == 139
+    assert snap["trades"]["buys"] == 72
+    assert snap["equity"]["latest_equity"] == 88419.57
+    assert snap["equity"]["intraday_change"] == -865.39
+    assert snap["signals"][0]["symbol"] == "RKLB"
+    # Read-only boundary is carried, subject-scoped to the bridge.
+    assert snap["authority_boundary"]["broker_order_sizing_gate_mutation"] is False
+    assert snap["authority_boundary"]["trading_bot_runtime_authority"] == "full_broker_order_authority_retained_by_bot"
+
+
+def test_trading_bot_activity_snapshot_failure_reports_error_not_fabrication(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(
+        TradingBotBridge,
+        "_run_repo_shell",
+        lambda self, script, *, timeout=None: {"ok": False, "exit_code": 1, "stdout": "", "stderr": "wsl: distro not found"},
+    )
+    client = TestClient(create_app(_config(tmp_path)))
+    bridge = client.app.state.runtime.trading_bot
+
+    snap = bridge.activity_snapshot()
+
+    assert snap["ok"] is False
+    assert snap["trades"] == {}
+    assert snap["equity"] == {}
+    assert snap["signals"] == []
+    # The failure is surfaced (so the prompt renders "unavailable -- do not fabricate"),
+    # never silently swallowed into empty-but-ok data.
+    assert snap["errors"]

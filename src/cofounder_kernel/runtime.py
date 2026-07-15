@@ -270,7 +270,20 @@ class RuntimeService:
             status = self.trading_bot.status()
         except Exception as exc:
             return {"present": True, "error": str(exc), "interpretation": _TRADING_BOT_INTERPRETATION}
-        return {"present": True, "status": status, "interpretation": _TRADING_BOT_INTERPRETATION}
+        # Pull the live trade/equity/signal snapshot so PnL, "what did the bot do
+        # today", and signal questions are answered from real rows -- not fabricated.
+        # A bridge failure must never break the turn: fall back to an unavailable
+        # marker the prompt renders as "say you couldn't load it; do not invent".
+        try:
+            activity = self.trading_bot.activity_snapshot()
+        except Exception as exc:
+            activity = {"ok": False, "errors": [str(exc)], "trades": {}, "equity": {}, "signals": []}
+        return {
+            "present": True,
+            "status": status,
+            "activity": activity,
+            "interpretation": _TRADING_BOT_INTERPRETATION,
+        }
 
     def respond(
         self,
@@ -2595,8 +2608,67 @@ def _mentions_trading_bot(message: str) -> bool:
         "order authority",
         "broker",
         "place order",
+        # Trade-data vocabulary: a PnL/fills question is a trading-bot question even
+        # with no "bot" noun, so the live snapshot gets loaded instead of Zade
+        # answering blind. ("equity" is deliberately excluded -- it collides with
+        # cap-table/ownership talk; rely on stickiness for that mid-thread.)
+        "pnl",
+        "p&l",
+        "p and l",
+        "profit and loss",
+        "fills",
     )
     return any(signal in lowered for signal in signals)
+
+
+def _render_live_trading_data(activity: dict[str, Any]) -> list[str]:
+    """Render the live trade/equity/signal snapshot as prompt lines. When the
+    snapshot is missing or failed, emit an explicit 'unavailable -- do not
+    fabricate' line instead of silently omitting it, so the model never fills the
+    gap with invented numbers."""
+    if not activity:
+        return [
+            "- LIVE TRADING DATA: not loaded this turn. If asked for numbers, say you don't have them "
+            "loaded; do not fabricate trades, prices, or P&L."
+        ]
+    if not activity.get("ok"):
+        errs = "; ".join(str(e) for e in (activity.get("errors") or [])[:2]) or "bridge read failed"
+        return [
+            f"- LIVE TRADING DATA: unavailable this turn ({errs}). Tell the founder you could not load "
+            "the live numbers; do not fabricate trades, prices, or P&L."
+        ]
+    out: list[str] = []
+    tr = activity.get("trades") or {}
+    eq = activity.get("equity") or {}
+    if tr:
+        out.append(
+            f"- LIVE TRADING DATA -- today: {tr.get('today_total', '?')} trades "
+            f"({tr.get('buys', '?')} buy / {tr.get('sells', '?')} sell) across {tr.get('symbols', '?')} symbols."
+        )
+    if eq:
+        out.append(
+            f"- Account equity: ${eq.get('latest_equity', '?')} (session {eq.get('session_date', '?')}); "
+            f"intraday change ${eq.get('intraday_change', '?')}; vs prior close ${eq.get('change_vs_prior_close', '?')}. "
+            "This equity delta IS the P&L figure -- there is no separate stored P&L column."
+        )
+    fills = tr.get("recent_fills") or []
+    if fills:
+        rendered = "; ".join(
+            f"{f.get('symbol')} {f.get('action')} {f.get('qty')}@{f.get('fill_price')} ({f.get('order_status')})"
+            for f in fills[:8]
+        )
+        out.append(f"- Recent fills (newest first): {rendered}")
+    sigs = activity.get("signals") or []
+    if sigs:
+        rendered = "; ".join(
+            f"{s.get('symbol')} {s.get('decision')} score={s.get('score')}" for s in sigs[:5]
+        )
+        out.append(f"- Latest auto-buy candidates/signals: {rendered}")
+    if not out:
+        out.append(
+            "- LIVE TRADING DATA: loaded but empty (no trades/equity/signals returned). Say so; do not fabricate."
+        )
+    return out
 
 
 def _brief_trading_bot_context(context: dict[str, Any]) -> str:
@@ -2606,6 +2678,7 @@ def _brief_trading_bot_context(context: dict[str, Any]) -> str:
         return f"Trading-bot context requested, but status check failed: {context['error']}"
     status = context.get("status") or {}
     interpretation = context.get("interpretation") or {}
+    activity = context.get("activity") or {}
     replacement = status.get("deep_thought_replacement") or {}
     boundary = status.get("authority_boundary") or {}
     # Lead with the ground truth and the whose-limits disambiguation, ABOVE the
@@ -2624,6 +2697,15 @@ def _brief_trading_bot_context(context: dict[str, Any]) -> str:
     ]
     if interpretation.get("answering_rule"):
         lines.append(f"- ANSWERING RULE: {interpretation['answering_rule']}")
+    lines.append(
+        "- DATA DISCIPLINE: the LIVE TRADING DATA below is the only source for numbers this turn. "
+        "Answer PnL, trade, position, and signal questions from it verbatim. If the founder asks for "
+        "a figure it does not contain, say plainly you don't have it loaded and name the read to run. "
+        "NEVER invent a symbol, side, quantity, price, count, or P&L. NEVER say you are 'pulling', "
+        "'fetching', or to 'check the bridge' -- this turn already contains everything the bridge "
+        "returned; there is no further fetch you can perform or narrate."
+    )
+    lines.extend(_render_live_trading_data(activity))
     lines += [
         f"- Bridge status: {'ok' if status.get('ok') else 'not ok'}; enabled={status.get('enabled')}; runtime_effect={status.get('runtime_effect', 'unknown')}",
         f"- WSL repo: {status.get('wsl_distro', 'unknown')}:{status.get('repo_path', 'unknown')}; reachable={status.get('repo_reachable')}; advisory_lane_present={status.get('advisory_lane_present')}",

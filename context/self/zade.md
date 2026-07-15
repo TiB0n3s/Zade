@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `f6a3cdd` 2026-07-15 - Finish index.html relativization for Option B (nav links)
 - `cb27d4e` 2026-07-15 - Fix Zade home page asset paths for Option B (relativize index.html)
 - `9b35d85` 2026-07-15 - Merge pull request #1 from TiB0n3s/feat/phase3-swarm-screen
 - `f80e84a` 2026-07-15 - Complete Phase 3 + swarm first slice + screen awareness
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `6fed106` 2026-07-15 - Generate Zade self-knowledge blocks
 - `feb48c2` 2026-07-15 - Fix Zade conflating its bridge's read-only ceiling with the bot's authority
 - `fbbe590` 2026-07-15 - Add Zade self-knowledge scaffold
-- `5329fa5` 2026-07-15 - v1 - Memory & Deployment
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

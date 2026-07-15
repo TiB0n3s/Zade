@@ -150,6 +150,75 @@ TRADING_SQLITE_DATABASES = {
 
 TRADING_BOT_PYTHONPATH = "src:scripts:."
 
+# Read-only worker that produces the compact live snapshot the chat runtime needs
+# to answer PnL / trade-activity / signal questions from real rows instead of
+# fabricating: today's trade activity from trades.db, account equity + intraday
+# change from engine_state.db, and the latest auto-buy candidates. Stdlib only;
+# every connection is mode=ro. Emits a single JSON line.
+_ACTIVITY_SNAPSHOT_SCRIPT = r"""
+import sqlite3, json, datetime as dt
+
+def _date(ns):
+    return dt.datetime.fromtimestamp(ns / 1e9, dt.timezone.utc).date()
+
+out = {"trades": {}, "equity": {}, "signals": [], "errors": []}
+
+try:
+    t = sqlite3.connect("file:trades.db?mode=ro", uri=True)
+    t.row_factory = sqlite3.Row
+    t.execute("PRAGMA query_only = ON")
+    r = t.execute(
+        "SELECT COUNT(*) n, SUM(action='buy') buys, SUM(action='sell') sells, "
+        "COUNT(DISTINCT symbol) syms FROM trades WHERE date(timestamp)=date('now')"
+    ).fetchone()
+    out["trades"] = {
+        "today_total": r["n"] or 0,
+        "buys": r["buys"] or 0,
+        "sells": r["sells"] or 0,
+        "symbols": r["syms"] or 0,
+    }
+    out["trades"]["recent_fills"] = [
+        dict(x) for x in t.execute(
+            "SELECT timestamp,symbol,action,qty,fill_price,order_status "
+            "FROM trades ORDER BY timestamp DESC LIMIT 10"
+        )
+    ]
+    try:
+        out["signals"] = [
+            dict(x) for x in t.execute(
+                "SELECT timestamp,symbol,decision,score,reason "
+                "FROM auto_buy_candidates ORDER BY timestamp DESC LIMIT 5"
+            )
+        ]
+    except Exception as exc:
+        out["errors"].append("signals:%s" % exc)
+except Exception as exc:
+    out["errors"].append("trades:%s" % exc)
+
+try:
+    e = sqlite3.connect("file:engine_state.db?mode=ro", uri=True)
+    e.execute("PRAGMA query_only = ON")
+    rows = e.execute("SELECT ts_ns, equity FROM equity_samples ORDER BY ts_ns DESC LIMIT 5000").fetchall()
+    if rows:
+        latest_ns, latest_eq = rows[0]
+        latest_day = _date(latest_ns)
+        today = [(ns, eq) for ns, eq in rows if _date(ns) == latest_day]
+        prior = [(ns, eq) for ns, eq in rows if _date(ns) < latest_day]
+        first_today = today[-1][1] if today else latest_eq
+        prior_close = prior[0][1] if prior else first_today
+        out["equity"] = {
+            "latest_equity": round(latest_eq, 2),
+            "session_date": str(latest_day),
+            "intraday_change": round(latest_eq - first_today, 2),
+            "change_vs_prior_close": round(latest_eq - prior_close, 2),
+            "samples_today": len(today),
+        }
+except Exception as exc:
+    out["errors"].append("equity:%s" % exc)
+
+print(json.dumps(out, default=str))
+""".strip()
+
 TRADING_TRAINING_COMMANDS: dict[str, dict[str, Any]] = {
     "supervised-predictions": {
         "script": "scripts/train_supervised_predictions.py",
@@ -550,6 +619,59 @@ class TradingBotBridge:
                 **_bridge_authority_scope(),
             },
             "deep_thought_replacement": self.deep_thought_replacement_map(),
+        }
+
+    def activity_snapshot(self, *, limit_output_chars: int = 6000) -> dict[str, Any]:
+        """Compact, read-only live trading data for chat context: today's trade
+        activity, account equity + intraday change, and the latest auto-buy
+        candidates. This is what lets Zade answer PnL / trade / signal questions
+        from real rows instead of fabricating. Reads trades.db and
+        engine_state.db read-only; never touches broker/order/runtime paths."""
+        cfg = self.config.trading_bot
+        if not cfg.enabled:
+            return {
+                "ok": False,
+                "enabled": False,
+                "runtime_effect": READ_ONLY_SQLITE_RUNTIME_EFFECT,
+                "reason": "trading-bot bridge disabled",
+                "trades": {},
+                "equity": {},
+                "signals": [],
+                "errors": ["trading-bot bridge disabled"],
+            }
+        result = self._run_repo_shell(
+            _shell_join([cfg.python, "-c", _ACTIVITY_SNAPSHOT_SCRIPT]),
+            timeout=30,
+        )
+        parsed = _parse_json_value(result["stdout"])
+        data = parsed if isinstance(parsed, dict) else {}
+        errors = list(data.get("errors") or [])
+        if not result["ok"] and not errors:
+            errors.append(_limit(result["stderr"], 300))
+        ok = bool(result["ok"] and data and not data.get("errors"))
+        self.db.audit(
+            actor="trading_bot.bridge",
+            action="trading_bot.activity.snapshot",
+            target="today",
+            permission_tier="L0_READ",
+            status="ok" if ok else "error",
+            details={
+                "today_total": (data.get("trades") or {}).get("today_total"),
+                "latest_equity": (data.get("equity") or {}).get("latest_equity"),
+                "exit_code": result["exit_code"],
+                "errors": errors[:3],
+                "runtime_effect": READ_ONLY_SQLITE_RUNTIME_EFFECT,
+            },
+        )
+        return {
+            "ok": ok,
+            "runtime_effect": READ_ONLY_SQLITE_RUNTIME_EFFECT,
+            "authority_boundary": _sqlite_authority_boundary(),
+            "trades": data.get("trades") or {},
+            "equity": data.get("equity") or {},
+            "signals": data.get("signals") or [],
+            "errors": errors,
+            "probe": _compact_probe(result, limit=limit_output_chars),
         }
 
     def safe_ops_checks(self) -> list[dict[str, Any]]:
