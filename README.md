@@ -102,6 +102,72 @@ $env:COFOUNDER_LOCAL_TOKEN = "choose-a-local-secret"
 
 When set, every `POST`, `PUT`, `PATCH`, and `DELETE` requires `X-Zade-Token`. The static UI reads the same token from `localStorage.zadeKernelToken`.
 
+## Prompt Profiles
+
+Zade's runtime prompt profiles are embedded application assets in `src/cofounder_kernel/prompt_assets/zade`. They are loaded as UTF-8 package resources, adapted for this local runtime, and injected into the actual `/runtime/respond` model-request path before the prompt is sent to Ollama. The full system prompt is not logged by default.
+
+Available profile IDs:
+
+| ID | Purpose |
+|---|---|
+| `general` | Default full local profile from `zade-4.3-beta.md`. |
+| `build` | Local software-engineering operator from `zade-build.md`. |
+| `expert` | Research and synthesis mode from `zade-expert.md`, adapted to local runtime capabilities. |
+| `account` | Compact account/X-style replies from `zade-account.md`, without unavailable X/media tool claims. |
+| `api` | Compact policy and identity layer from `zade-api.md`. |
+| `companion` | Shared baseline plus the Companion section from `zade-personas.md`. |
+| `dark-comedian` | Shared baseline plus the Dark Comedian section. |
+| `loyal-confidant` | Shared baseline plus the Loyal Confidant section. |
+| `study-mentor` | Shared baseline plus the Study Mentor section. |
+| `medical-information` | Shared baseline plus the Medical Information section. |
+| `therapeutic-support` | Shared baseline plus the Therapeutic Support section. |
+
+Selection precedence is:
+
+1. `profile` in the current request body.
+2. `metadata.prompt_profile` on the conversation/session.
+3. `[prompt_profiles] default` in `config.toml` or `ZADE_PROMPT_PROFILE`.
+
+List profiles:
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/runtime/profiles"
+```
+
+Use a profile for one request:
+
+```powershell
+$body = @{ message = "Inspect the failing tests."; profile = "build" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/runtime/respond" -Method Post -Body $body -ContentType "application/json"
+```
+
+Set a conversation/session profile:
+
+```powershell
+$conversation = @{
+  title = "Study session"
+  metadata = @{ prompt_profile = "study-mentor" }
+} | ConvertTo-Json -Depth 4
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/conversations" -Method Post -Body $conversation -ContentType "application/json"
+```
+
+Set a persistent default in `config.toml`:
+
+```toml
+[prompt_profiles]
+default = "general"
+```
+
+The loader resolves only these exact prompt placeholders at request time: `{ZADE_HOME}`, `{SKILLS_ROOT}`, `{CURRENT_TIME}`, and `{CURRENTDATE}`. Other braces, including JSON schemas in the source assets, are left untouched.
+
+Tool compatibility is local-runtime-first. Source prompt tool lists, render components, sandbox claims, X/search/media tools, shell tools, schedulers, and subagent tools are excluded from the active system prompt. Zade's real capabilities come from the live local registry in the existing self-inventory block; if a capability is not listed there, the model must say it is unavailable or route through the approval/work-queue path.
+
+To edit the prompt suite safely, edit the Markdown files under `src/cofounder_kernel/prompt_assets/zade`, keep profile IDs stable, and run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_prompt_profiles.py
+```
+
 ## Core Endpoints
 
 ```text
@@ -253,6 +319,7 @@ POST /ingest/folder
 GET  /brief/daily
 POST /chat
 GET  /runtime/charter-stack
+GET  /runtime/profiles
 GET  /runtime/context
 POST /runtime/context
 POST /runtime/respond
@@ -1544,6 +1611,7 @@ Implemented:
 - relationship charters with prompt injection and consent-respecting safety boundaries
 - voice charter with prompt injection, decisive style, and evidence-honest safety controls
 - runtime governor with charter-stack context, authority gating, operating loop, and runtime event log
+- selectable Zade prompt profiles with embedded runtime assets, request/session/config precedence, exact placeholder binding, and local tool-compatibility adaptation
 - episodic conversation memory with durable threads, turn history, prompt continuity, and bounded rolling summaries
 - proactive surfacing layer with deterministic attention scanning, ranked initiated briefs, since-last-brief deltas, and cadence integration
 - automatic contrarian pass that red-teams recommendation-shaped responses through the reasoning model, attaches the challenge visibly, and persists it as a contrarian review

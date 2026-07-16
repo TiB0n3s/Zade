@@ -1,89 +1,164 @@
 ---
 name: code-review
-description: Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes — Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/PRD asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X".
+description: Review the current diff at maximum effort for correctness bugs and reuse/simplification/efficiency cleanups. Use for code review, current-branch review, PR review, review since a fixed point, or when the user asks for max or ultimate effort review.
 ---
+`max effort -> 5+5 angles x 8 candidates -> 1-vote verify -> sweep -> <=15 findings`
 
-Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
+You are reviewing for **recall** at maximum effort: catch every real bug. At
+this level, catching real bugs matters more than avoiding false positives - a
+missed bug ships. Err on the side of surfacing.
 
-- **Standards** — does the code conform to this repo's documented coding standards?
-- **Spec** — does the code faithfully implement the originating issue / PRD / spec?
+## Phase 0 - Gather the diff
 
-Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
+Run `git diff @{upstream}...HEAD` (or `git diff main...HEAD` / `git diff HEAD~1`
+if there's no upstream) to get the unified diff under review. If there are
+uncommitted changes, or the range diff is empty, also run `git diff HEAD` and
+include the working-tree changes in scope - the review often runs before the
+commit. If a PR number, branch name, or file path was passed as an argument,
+review that target instead. Treat this diff as the review scope.
 
-The issue tracker should have been provided to you — run `/setup-matt-pocock-skills` if `docs/agents/issue-tracker.md` is missing.
+## Phase 1 - Find candidates (5 correctness angles + 3 cleanup angles + 1 altitude angle + 1 conventions angle, up to 8 each)
 
-## Process
+Run **10 independent finder angles** via the Agent tool. Each
+surfaces **up to 8 candidate findings**. Do NOT let one angle's conclusions
+suppress another's - if two angles flag the same line for different reasons,
+record both.
 
-### 1. Pin the fixed point
+### Angle A - line-by-line diff scan
 
-Whatever the user said is the fixed point — a commit SHA, branch name, tag, `main`, `HEAD~5`, etc. If they didn't specify one, ask for it.
+Read every hunk in the diff, line by line. Then Read the enclosing function for
+each hunk - bugs in unchanged lines of a touched function are in scope (the PR
+re-exposes or fails to fix them). For every line ask: what input, state, timing,
+or platform makes this line wrong? Look for inverted/wrong conditions,
+off-by-one, null/undefined deref, missing `await`, falsy-zero checks,
+wrong-variable copy-paste, error swallowed in catch, unescaped regex metachars.
 
-Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base). Also note the list of commits via `git log <fixed-point>..HEAD --oneline`.
+### Angle B - removed-behavior auditor
 
-Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here — not inside two parallel sub-agents.
+For every line the diff DELETES or replaces, name the invariant or behavior it
+enforced, then search the new code for where that invariant is re-established.
+If you can't find it, that's a candidate: a removed guard, a dropped error
+path, a narrowed validation, a deleted test that was covering a real case.
 
-### 2. Identify the spec source
+### Angle C - cross-file tracer
 
-Look for the originating spec, in this order:
+For each function the diff changes, find its callers (Grep for the symbol) and
+check whether the change breaks any call site: a new precondition, a changed
+return shape, a new exception, a timing/ordering dependency. Also check callees:
+does a parallel change in the same PR make a call unsafe?
 
-1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.) — fetch via the workflow in `docs/agents/issue-tracker.md`.
-2. A path the user passed as an argument.
-3. A PRD/spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
-4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
+### Angle D - language-pitfall specialist
 
-### 3. Identify the standards sources
+Scan for the classic pitfalls of the diff's language/framework - for example:
+JS falsy-zero, `==` coercion, closure-captured loop var; Python mutable default
+args, late-binding closures; Go nil-map write, range-var capture; SQL injection;
+timezone/DST drift; float equality. Flag any instance the diff introduces.
 
-Anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
+### Angle E - wrapper/proxy correctness
 
-On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below — a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Two rules bind it:
+When the PR adds or modifies a type that wraps another (cache, proxy, decorator,
+adapter): check that every method routes to the wrapped instance and not back
+through a registry/session/global - e.g. a caching provider holding a
+`delegate` field that resolves IDs via `session.get(...)` instead of
+`delegate.get(...)` will re-enter the cache or recurse. Also check that the
+wrapper forwards all the methods the callers actually use.
 
-- **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
-- **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation — and, like any standard here, skip anything tooling already enforces.
+### Reuse
 
-Each smell reads *what it is* → *how to fix*; match it against the diff:
+The angles above hunt for bugs; this one and the next two hunt for cleanup in
+the changed code. Flag new code that re-implements something the codebase
+already has - Grep shared/utility modules and files adjacent to the change,
+and name the existing helper to call instead.
 
-- **Mysterious Name** — a function, variable, or type whose name doesn't reveal what it does or holds. → rename it; if no honest name comes, the design's murky.
-- **Duplicated Code** — the same logic shape appears in more than one hunk or file in the change. → extract the shared shape, call it from both.
-- **Feature Envy** — a method that reaches into another object's data more than its own. → move the method onto the data it envies.
-- **Data Clumps** — the same few fields or params keep travelling together (a type wanting to be born). → bundle them into one type, pass that.
-- **Primitive Obsession** — a primitive or string standing in for a domain concept that deserves its own type. → give the concept its own small type.
-- **Repeated Switches** — the same `switch`/`if`-cascade on the same type recurs across the change. → replace with polymorphism, or one map both sites share.
-- **Shotgun Surgery** — one logical change forces scattered edits across many files in the diff. → gather what changes together into one module.
-- **Divergent Change** — one file or module is edited for several unrelated reasons. → split so each module changes for one reason.
-- **Speculative Generality** — abstraction, parameters, or hooks added for needs the spec doesn't have. → delete it; inline back until a real need shows.
-- **Message Chains** — long `a.b().c().d()` navigation the caller shouldn't depend on. → hide the walk behind one method on the first object.
-- **Middle Man** — a class or function that mostly just delegates onward. → cut it, call the real target direct.
-- **Refused Bequest** — a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
+### Simplification
 
-### 4. Spawn both sub-agents in parallel
+Flag unnecessary complexity the diff adds: redundant or derivable state,
+copy-paste with slight variation, deep nesting, dead code left behind. Name
+the simpler form that does the same job.
 
-Send a single message with two `Agent` tool calls. Use the `general-purpose` subagent for both.
+### Efficiency
 
-**Standards sub-agent prompt** — include:
+Flag wasted work the diff introduces: redundant computation or repeated I/O,
+independent operations run sequentially, blocking work added to startup or
+hot paths. Also flag long-lived objects built from closures or captured
+environments - they keep the entire enclosing scope alive for the object's
+lifetime (a memory leak when that scope holds large values); prefer a
+class/struct that copies only the fields it needs. Name the cheaper
+alternative.
 
-- The full diff command and commit list.
-- The list of standards-source files you found in step 3, **plus the smell baseline from step 3** pasted in full — the sub-agent has no other access to it.
-- The brief: "Report — per file/hunk where relevant — (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
+### Altitude
 
-**Spec sub-agent prompt** — include:
+Check that each change is implemented at the right depth, not as a fragile
+bandaid. Special cases layered on shared infrastructure are a sign the fix
+isn't deep enough - prefer generalizing the underlying mechanism over adding
+special cases.
 
-- The diff command and commit list.
-- The path or fetched contents of the spec.
-- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
+### Conventions (Zade.md)
 
-If the spec is missing, skip the Spec sub-agent and note this in the final report.
+Find the Zade.md files that govern the changed code: the user-level
+~/.Zade/Zade.md, the repo-root Zade.md, plus any Zade.md or
+Zade.local.md in a directory that is an ancestor of a changed file (a
+directory's Zade.md only applies to files at or below it). Read each one
+that exists, then check the diff for clear violations of the rules they state.
 
-### 5. Aggregate
+Only flag a violation when you can quote the exact rule and the exact line
+that breaks it - no style preferences, no vague "spirit of the doc"
+inferences. In the finding, name the Zade.md path and quote the rule so the
+report can cite it. If no Zade.md applies, return nothing for this angle.
 
-Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings — the two axes are deliberately separate (see _Why two axes_).
+Cleanup, altitude, and conventions candidates use the same
+`file`/`line`/`summary` shape; in `failure_scenario`, state the concrete
+cost (what is duplicated, wasted, harder to maintain, or which Zade.md rule
+is broken) instead of a crash. Correctness bugs always outrank cleanup,
+altitude, and conventions findings when the output cap forces a cut.
 
-End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes — that's the reranking the separation exists to prevent.
+## Phase 2 - Verify (1-vote, 3-state)
 
-## Why two axes
+Dedup candidates that point at the same line/mechanism, keeping the one with
+the most concrete failure scenario. For each remaining candidate, run **one
+verifier** via the Agent tool: give it the diff, the relevant
+file(s), and the candidate, and have it return exactly one of:
 
-A change can pass one axis and fail the other:
+- **CONFIRMED** - can name the inputs/state that trigger it and the wrong
+  output or crash. Quote the line.
+- **PLAUSIBLE** - mechanism is real, trigger is uncertain (timing, env,
+  config). State what would confirm it.
+- **REFUTED** - factually wrong (code doesn't say that) or guarded elsewhere.
+  Quote the line that proves it.
 
-- Code that follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
-- Code that does exactly what the issue asked but breaks the project's conventions → **Spec pass, Standards fail.**
+Keep candidates where the vote is CONFIRMED or PLAUSIBLE.
 
-Reporting them separately stops one axis from masking the other.
+This is recall mode - a single non-REFUTED vote carries the finding. Do NOT
+drop on uncertainty.
+
+## Phase 3 - Sweep for gaps
+
+Run **one more finder** as a fresh reviewer who has the verified list. Re-read
+the diff and enclosing functions looking ONLY for defects not already listed.
+Do not re-derive or re-confirm anything already there - the job is gaps. Focus
+on what the first pass tends to miss: moved/extracted code that dropped a guard
+or anchor; second-tier footguns (dataclass default evaluated once, `hash()`
+non-determinism, lock-scope shrink, predicate methods with side effects);
+setup/teardown asymmetry in tests; config defaults flipped.
+
+Surface **up to 8 additional candidates**, each naming a defect not already on
+the list. If nothing new, return an empty sweep - do not pad.
+
+## Output
+
+Return findings as a JSON array of at most 15 objects:
+
+```json
+[
+  {
+    "file": "path/to/file.ext",
+    "line": 123,
+    "summary": "one-sentence statement of the bug",
+    "failure_scenario": "concrete inputs/state -> wrong output/crash"
+  }
+]
+```
+
+Ranked most-severe first. If more than 15 survive, keep the 15 most
+severe. If nothing survives verification, return `[]`.
+

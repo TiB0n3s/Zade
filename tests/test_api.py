@@ -7,8 +7,8 @@ import cofounder_kernel.handlers as handlers_module
 import cofounder_kernel.research as research_module
 from cofounder_kernel import netguard
 from cofounder_kernel.api import _build_prompt, create_app
-from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, SecurityConfig
-from cofounder_kernel.ollama import GenerateResult, OllamaClient
+from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, PromptProfileConfig, SecurityConfig
+from cofounder_kernel.ollama import GenerateResult, OllamaClient, OllamaThinkingUnsupported
 from cofounder_kernel.trading_bot import TradingBotBridge
 
 
@@ -43,6 +43,59 @@ def fake_generate(
     num_predict: int = 512,
 ) -> GenerateResult:
     return GenerateResult(response="This is the next move.", model=model or "qwen3:14b", raw={"prompt": prompt})
+
+
+def _messages_to_prompt(messages: object) -> str:
+    return "\n\n".join(str(getattr(message, "content", "")) for message in messages)
+
+
+def _chat_from_generate(generate_func):
+    def fake_chat(
+        self: OllamaClient,
+        *,
+        messages,
+        model: str | None = None,
+        think: bool | None = None,
+        temperature: float | None = None,
+        num_predict: int = 512,
+        tools=None,
+    ) -> GenerateResult:
+        return generate_func(
+            self,
+            prompt=_messages_to_prompt(messages),
+            model=model,
+            think=think,
+            temperature=temperature,
+            num_predict=num_predict,
+        )
+
+    return fake_chat
+
+
+def patch_ollama_model(monkeypatch, generate_func) -> None:
+    monkeypatch.setattr(OllamaClient, "generate", generate_func)
+    monkeypatch.setattr(OllamaClient, "chat", _chat_from_generate(generate_func))
+
+
+def test_ollama_generate_falls_back_when_model_does_not_support_thinking(monkeypatch) -> None:
+    client = OllamaClient(OllamaConfig(base_url="http://127.0.0.1:1"))
+    calls: list[dict[str, object]] = []
+
+    def fake_post_json(path: str, body: dict[str, object]) -> dict[str, object]:
+        calls.append(dict(body))
+        if body.get("think") is True:
+            raise OllamaThinkingUnsupported('"qwen2.5-coder:14b" does not support thinking')
+        return {"response": "OK"}
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+
+    result = client.generate(prompt="say ok", model="qwen2.5-coder:14b", think=True)
+
+    assert result.response == "OK"
+    assert calls[0]["think"] is True
+    assert calls[1]["think"] is False
+    assert result.raw["_zade_effective_think"] is False
+    assert "thinking_not_supported" in str(result.raw["_zade_think_fallback"])
 
 
 def test_static_ui_is_served_from_kernel(tmp_path: Path, monkeypatch) -> None:
@@ -444,7 +497,7 @@ def test_runtime_prompt_uses_living_self_knowledge_doc_and_drops_removed_tools(
             return GenerateResult(response="I can use fresh.tool.", model=model or "qwen3:14b", raw={})
         return GenerateResult(response="I do not have fresh.tool.", model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", capability_sensitive_generate)
+    patch_ollama_model(monkeypatch, capability_sensitive_generate)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -476,6 +529,173 @@ def test_runtime_prompt_uses_living_self_knowledge_doc_and_drops_removed_tools(
     assert "Capabilities: fresh.tool" in prompts[0]
     assert "Recently added capability" not in prompts[0]
     assert "fresh.tool" not in prompts[1]
+
+
+def test_runtime_respond_sends_selected_profile_system_message_to_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    captured_messages: list[list[object]] = []
+
+    def capture_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
+        captured_messages.append(list(messages))
+        return GenerateResult(response="Build profile active.", model=model or "qwen3:14b", raw={"messages": messages})
+
+    monkeypatch.setattr(OllamaClient, "chat", capture_chat)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        prompt_profiles=PromptProfileConfig(default="api"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "USER_SENTINEL {CURRENT_TIME} web_search",
+            "profile": "build",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["context"]["prompt_profile"]["id"] == "build"
+    assert captured_messages
+    assert [message.role for message in captured_messages[0]] == ["system", "user"]
+    system_message = captured_messages[0][0].content
+    user_message = captured_messages[0][1].content
+    assert "engineering operator" in system_message
+    assert "Profile: build" in system_message
+    assert "USER_SENTINEL" not in system_message
+    assert "{CURRENT_TIME}" not in system_message
+    assert "todo_write" not in system_message
+    assert "web_search" not in system_message
+    assert "USER_SENTINEL {CURRENT_TIME} web_search" in user_message
+
+    calls = client.get("/models/telemetry/calls").json()["items"]
+    assert calls[0]["metadata"]["prompt_profile"]["id"] == "build"
+
+
+def test_runtime_respond_sends_default_general_profile_to_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    captured_messages: list[list[object]] = []
+
+    def capture_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
+        captured_messages.append(list(messages))
+        return GenerateResult(response="General profile active.", model=model or "qwen3:14b", raw={"messages": messages})
+
+    monkeypatch.setattr(OllamaClient, "chat", capture_chat)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "GENERAL_SENTINEL web_search",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["context"]["prompt_profile"]["id"] == "general"
+    assert [message.role for message in captured_messages[0]] == ["system", "user"]
+    system_message = captured_messages[0][0].content
+    user_message = captured_messages[0][1].content
+    assert "Profile: general" in system_message
+    assert "zade-4.3-beta.md" in system_message
+    assert "GENERAL_SENTINEL" not in system_message
+    assert "web_search" not in system_message
+    assert "GENERAL_SENTINEL web_search" in user_message
+
+
+def test_runtime_profile_precedence_request_then_conversation_then_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    captured_prompts: list[str] = []
+
+    def capture_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        captured_prompts.append(prompt)
+        return GenerateResult(response="Profile response.", model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, capture_generate)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        prompt_profiles=PromptProfileConfig(default="api"),
+    )
+    client = TestClient(create_app(config))
+    conversation = client.post(
+        "/conversations",
+        json={"title": "study session", "metadata": {"prompt_profile": "study-mentor"}},
+    )
+    conversation_id = conversation.json()["conversation"]["id"]
+
+    session_response = client.post(
+        "/runtime/respond",
+        json={"message": "Explain this.", "conversation_id": conversation_id, "use_semantic_memory": False, "contrarian": False},
+    )
+    explicit_response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Now switch modes.",
+            "conversation_id": conversation_id,
+            "profile": "build",
+            "use_semantic_memory": False,
+            "contrarian": False,
+        },
+    )
+    default_response = client.post(
+        "/runtime/respond",
+        json={"message": "Default profile.", "use_semantic_memory": False, "contrarian": False},
+    )
+
+    assert session_response.status_code == 200
+    assert session_response.json()["context"]["prompt_profile"]["id"] == "study-mentor"
+    assert "# Study Mentor" in captured_prompts[0]
+    assert explicit_response.status_code == 200
+    assert explicit_response.json()["context"]["prompt_profile"]["id"] == "build"
+    assert "Profile: build" in captured_prompts[1]
+    assert default_response.status_code == 200
+    assert default_response.json()["context"]["prompt_profile"]["id"] == "api"
+    assert "Profile: api" in captured_prompts[2]
+
+
+def test_runtime_profiles_status_and_unknown_profile_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    profiles = client.get("/runtime/profiles")
+    unknown = client.post(
+        "/runtime/respond",
+        json={"message": "Use a missing profile.", "profile": "missing", "use_semantic_memory": False},
+    )
+
+    assert profiles.status_code == 200
+    assert profiles.json()["default_profile"] == "general"
+    ids = [item["id"] for item in profiles.json()["profiles"]]
+    assert "general" in ids
+    assert "therapeutic-support" in ids
+    assert unknown.status_code == 404
+    assert "Unknown Zade prompt profile 'missing'" in unknown.json()["detail"]
+    assert "general" in unknown.json()["detail"]
 
 
 def test_runtime_respond_prompt_translates_voice_charter_into_response_shape(
@@ -709,6 +929,675 @@ def test_runtime_respond_prompt_includes_trading_bot_context_for_trading_questio
     assert "POST /trading-bot/daily-brief (active, local_memory_write_no_trade_authority)" in prompt
 
 
+def test_runtime_respond_prompt_injects_repo_change_evidence_for_what_changed_questions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "full_intelligence_no_broker_order_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "git": {
+                "ok": True,
+                "exit_code": 0,
+                "stdout": "## main...origin/main\na1b2c3d Tighten auto-buy scoring threshold",
+                "stderr": "",
+            },
+            "authority_boundary": {
+                "writes": "allowlisted training artifacts plus approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": "intelligence context only",
+                "broker_order_sizing_gate_mutation": False,
+            },
+            "deep_thought_replacement": {"active_count": 6, "planned_count": 0, "seams": []},
+        }
+
+    def fake_recent_changes(self: TradingBotBridge, *, hours: int = 48, max_commits: int = 20) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "read_only_diagnostic_no_trade_authority",
+            "window_hours": hours,
+            "commits": {
+                "ok": True,
+                "exit_code": 0,
+                "stdout": (
+                    "a1b2c3d 2026-07-15 14:02:11 -0500 Tighten auto-buy scoring threshold\n"
+                    " src/trading_bot/scoring.py | 12 ++++++------"
+                ),
+                "stderr": "",
+            },
+            "working_tree": {
+                "ok": True,
+                "exit_code": 0,
+                "stdout": "## main\n M config/wealth_engine.yaml",
+                "stderr": "",
+            },
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    monkeypatch.setattr(TradingBotBridge, "recent_changes", fake_recent_changes)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    runtime = client.app.state.runtime
+    message = "I made a few modifications to the trading-bot yesterday, can you see what has changed?"
+    context = runtime.context(
+        message=message,
+        use_memory=False,
+        use_semantic_memory=False,
+        use_skills=False,
+    )
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    prompt = runtime._build_governed_prompt(
+        message=message,
+        context=context,
+        authority=authority,
+        conversation_block="",
+    )
+
+    assert context["trading_bot_context"]["recent_changes"]["ok"] is True
+    # The completed git read is in the prompt, so the model reports findings instead
+    # of narrating a check it cannot perform.
+    assert "REPO CHANGE EVIDENCE" in prompt
+    assert "Tighten auto-buy scoring threshold" in prompt
+    assert "config/wealth_engine.yaml" in prompt
+    assert "CHANGE ANSWERING RULE" in prompt
+    assert "never promise to look" in prompt
+    # The status git probe is no longer discarded before rendering.
+    assert "Repo git probe" in prompt
+
+
+def test_runtime_status_questions_do_not_run_repo_change_read(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    calls: list[str] = []
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "full_intelligence_no_broker_order_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "authority_boundary": {},
+            "deep_thought_replacement": {"active_count": 0, "planned_count": 0, "seams": []},
+        }
+
+    def fake_recent_changes(self: TradingBotBridge, *, hours: int = 48, max_commits: int = 20) -> dict:
+        calls.append("recent_changes")
+        return {"ok": True, "enabled": True, "window_hours": hours, "commits": {}, "working_tree": {}}
+
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    monkeypatch.setattr(TradingBotBridge, "recent_changes", fake_recent_changes)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    context = client.app.state.runtime.context(
+        message="Where are we with the trading-bot replacement?",
+        use_memory=False,
+        use_semantic_memory=False,
+        use_skills=False,
+    )
+
+    assert context["trading_bot_context"]["present"] is True
+    assert context["trading_bot_context"]["recent_changes"] == {}
+    assert calls == []
+
+
+def test_runtime_trading_signal_prompt_prioritizes_hard_blocks_over_scores(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "full_intelligence_no_broker_order_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "authority_boundary": {
+                "writes": "allowlisted training artifacts plus approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": "intelligence context only",
+                "broker_order_sizing_gate_mutation": False,
+            },
+            "deep_thought_replacement": {"active_count": 6, "planned_count": 0, "seams": []},
+        }
+
+    def fake_recent_signals(self: TradingBotBridge, *, limit: int = 50, symbol: str | None = None) -> dict:
+        return {
+            "tables": {
+                "auto_buy_candidates": {
+                    "rows": [
+                        {
+                            "symbol": "ORCL",
+                            "decision": "rejected",
+                            "score": 86.0,
+                            "reason": "wealth_engine_rejected: portfolio position cap reached (6/6)",
+                            "hard_block_reason": "portfolio_full",
+                        },
+                        {
+                            "symbol": "NVDA",
+                            "decision": "rejected",
+                            "score": 60.0,
+                            "reason": "wealth_engine_rejected: portfolio position cap reached (6/6)",
+                            "hard_block_reason": "portfolio_full",
+                        },
+                        {
+                            "symbol": "PATH",
+                            "decision": "rejected",
+                            "score": 86.0,
+                            "reason": "wealth_engine_rejected: re-entry cooldown active",
+                            "hard_block_reason": "cooldown",
+                        },
+                    ]
+                }
+            }
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    monkeypatch.setattr(TradingBotBridge, "recent_signals", fake_recent_signals)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    runtime = client.app.state.runtime
+    message = "Can you recommend where and how to refine the auto-buy signal scoring algorithm?"
+    context = runtime.context(message=message, use_memory=False, use_semantic_memory=False, use_skills=False)
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    prompt = runtime._build_governed_prompt(message=message, context=context, authority=authority, conversation_block="")
+
+    assert "Recent signal evidence: live read from /trading-bot/signals/recent for this turn." in prompt
+    assert "Recent auto-buy hard blocks: portfolio_full=2, cooldown=1" in prompt
+    assert "ORCL rejected score=86.0 hard_block=portfolio_full" in prompt
+    assert "score values alone do not justify changing the scoring algorithm" in prompt
+
+
+def test_runtime_repairs_trading_bot_capability_followup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    repeated_recommendation = (
+        "Look at this. The trading bot has executed 149 trades across 34 symbols. "
+        "To improve the trading-bot intelligence, focus on refining the auto-buy signal scoring algorithm. "
+        "Start with volatility weighting."
+    )
+
+    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=repeated_recommendation, model=model or "qwen3:14b", raw={})
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "full_intelligence_no_broker_order_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "intelligence_access": {
+                "capabilities": {
+                    "training": {"commands": ["pipeline-retrain", "supervised-predictions"]},
+                    "advisory": {"routes": ["POST /trading-bot/advisory/generate"]},
+                }
+            },
+            "authority_boundary": {
+                "writes": "allowlisted training artifacts plus approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": "intelligence context only",
+                "broker_order_sizing_gate_mutation": False,
+            },
+            "deep_thought_replacement": {"active_count": 6, "planned_count": 0, "seams": []},
+        }
+
+    def fake_recent_signals(self: TradingBotBridge, *, limit: int = 50, symbol: str | None = None) -> dict:
+        return {"tables": {"auto_buy_candidates": {"rows": []}}}
+
+    patch_ollama_model(monkeypatch, replaying_generate)
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    monkeypatch.setattr(TradingBotBridge, "recent_signals", fake_recent_signals)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    conversation = client.post("/conversations", json={"title": "Trading bot scoring"})
+    conversation_id = conversation.json()["conversation"]["id"]
+    client.app.state.conversations.record_user_turn(
+        conversation_id,
+        content="Can you recommend where and how to refine the auto-buy signal scoring algorithm?",
+    )
+    client.app.state.conversations.record_assistant_turn(
+        conversation_id,
+        content=repeated_recommendation,
+        task_type="general",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Can you do this?",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "capability_followup_repaired" in payload["governor"]["applied_rules"]
+    assert "Through the bridge I can read recent signals" in payload["response"]
+    assert "I cannot edit the bot's scoring code" in payload["response"]
+    assert "`hard_block_reason`" in payload["response"]
+    assert "Start with volatility weighting." not in payload["response"]
+
+
+def test_runtime_repairs_auto_buy_scoring_recommendation_when_hard_blocks_dominate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    bad_recommendation = (
+        "The scoring algorithm needs refinement. Start with volatility weighting and adjust the weight "
+        "given to market volatility indicators."
+    )
+
+    def bad_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=bad_recommendation, model=model or "qwen3:14b", raw={})
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "full_intelligence_no_broker_order_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "authority_boundary": {
+                "writes": "allowlisted training artifacts plus approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": "intelligence context only",
+                "broker_order_sizing_gate_mutation": False,
+            },
+            "deep_thought_replacement": {"active_count": 6, "planned_count": 0, "seams": []},
+        }
+
+    def fake_recent_signals(self: TradingBotBridge, *, limit: int = 50, symbol: str | None = None) -> dict:
+        return {
+            "tables": {
+                "auto_buy_candidates": {
+                    "rows": [
+                        {"symbol": "ORCL", "decision": "rejected", "score": 86.0, "hard_block_reason": "portfolio_full"},
+                        {"symbol": "NVDA", "decision": "rejected", "score": 60.0, "hard_block_reason": "portfolio_full"},
+                        {"symbol": "PATH", "decision": "rejected", "score": 86.0, "hard_block_reason": "cooldown"},
+                    ]
+                }
+            }
+        }
+
+    patch_ollama_model(monkeypatch, bad_generate)
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    monkeypatch.setattr(TradingBotBridge, "recent_signals", fake_recent_signals)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Can you recommend where and how to refine the auto-buy signal scoring algorithm?",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "trading_signal_hard_block_repaired" in payload["governor"]["applied_rules"]
+    assert "Do not start by changing volatility weighting." in payload["response"]
+    assert "portfolio_full=2, cooldown=1" in payload["response"]
+    assert "Only touch volatility/liquidity weights after the outcome evidence shows score calibration error" in payload["response"]
+    assert payload["response"] != bad_recommendation
+
+
+def test_runtime_prompt_includes_sanitized_response_logic_guide(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    runtime = client.app.state.runtime
+    context = runtime.context(message="Do itr", use_memory=False, use_semantic_memory=False, use_skills=False)
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    prompt = runtime._build_governed_prompt(message="Do itr", context=context, authority=authority, conversation_block="")
+
+    assert "----------  Response logic guide  ----------" in prompt
+    assert "Ask at most one clarifying question" in prompt
+    assert "answer the useful part first" in prompt
+    assert "Do not narrate memory retrieval" in prompt
+    assert "Do not use stale dates from pasted prompts" in prompt
+    assert "launch_extended_search_task" not in prompt
+    assert "Tuesday, June 09, 2026" not in prompt
+
+
+def test_runtime_prompt_includes_code_model_prompt_only_for_coding_tasks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    runtime = client.app.state.runtime
+    from cofounder_kernel.authority import AuthorityRequest
+
+    authority = runtime.authority.evaluate(
+        AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
+    )
+    general_context = runtime.context(
+        message="Refactor the parser.",
+        task_type="general",
+        use_memory=False,
+        use_semantic_memory=False,
+        use_skills=False,
+    )
+    coding_context = runtime.context(
+        message="Refactor the parser.",
+        task_type="coding",
+        use_memory=False,
+        use_semantic_memory=False,
+        use_skills=False,
+    )
+
+    general_prompt = runtime._build_governed_prompt(
+        message="Refactor the parser.", context=general_context, authority=authority, conversation_block=""
+    )
+    coding_prompt = runtime._build_governed_prompt(
+        message="Refactor the parser.", context=coding_context, authority=authority, conversation_block=""
+    )
+
+    assert "----------  Code model operating prompt  ----------" in coding_prompt
+    assert "Zade is an interactive agent that helps users with software engineering tasks." in coding_prompt
+    assert "Everything the user needs from this turn" in coding_prompt
+    assert "----------  Code model operating prompt  ----------" not in general_prompt
+    assert "Everything the user needs from this turn" not in general_prompt
+
+
+def test_runtime_coding_task_forces_high_effort_even_when_caller_disables_think(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    calls: list[dict[str, object]] = []
+
+    def capture_generate(
+        self: OllamaClient,
+        *,
+        prompt: str,
+        model: str | None = None,
+        think: bool | None = None,
+        temperature: float | None = None,
+        num_predict: int = 512,
+    ) -> GenerateResult:
+        calls.append({"prompt": prompt, "model": model, "think": think})
+        return GenerateResult(response="Done.", model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, capture_generate)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", think=False),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Refactor the parser.",
+            "task_type": "coding",
+            "think": False,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task_type"] == "coding"
+    assert calls[0]["model"] == "qwen2.5-coder:14b"
+    assert calls[0]["think"] is True
+    assert "----------  Code model operating prompt  ----------" in str(calls[0]["prompt"])
+    assert OllamaConfig().think_for_role("coding") is True
+
+
+def test_runtime_repairs_ambiguous_do_it_replay(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    repeated_recommendation = (
+        "Check the bridge. The trading bot has executed 149 trades across 34 symbols, "
+        "with recent fills showing mixed performance. Start with volatility weighting."
+    )
+
+    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=repeated_recommendation, model=model or "qwen3:14b", raw={})
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "full_intelligence_no_broker_order_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "authority_boundary": {
+                "writes": "approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": "intelligence context only",
+                "broker_order_sizing_gate_mutation": False,
+            },
+            "deep_thought_replacement": {"active_count": 6, "planned_count": 0, "seams": []},
+        }
+
+    patch_ollama_model(monkeypatch, replaying_generate)
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    conversation = client.post("/conversations", json={"title": "Ambiguous follow-up"})
+    conversation_id = conversation.json()["conversation"]["id"]
+    client.app.state.conversations.record_assistant_turn(
+        conversation_id,
+        content=repeated_recommendation,
+        task_type="general",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Do itr",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "ambiguous_action_replay_repaired" in payload["governor"]["applied_rules"]
+    assert payload["response"] != repeated_recommendation
+    assert payload["response"].count("?") <= 1
+    assert "I read that as" in payload["response"]
+    assert "nothing starts from an ambiguous chat reply" in payload["response"]
+
+
+def test_runtime_repairs_ambiguous_do_it_even_when_model_implies_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def unsafe_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(
+            response="Do it. Push the bridge to live mode. Let it bleed real data.",
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    patch_ollama_model(monkeypatch, unsafe_generate)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    conversation = client.post("/conversations", json={"title": "Ambiguous execution"})
+    conversation_id = conversation.json()["conversation"]["id"]
+    client.app.state.conversations.record_assistant_turn(
+        conversation_id,
+        content="The trading-bot intelligence should be improved through bridge-backed evidence triage.",
+        task_type="general",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Do itr",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "ambiguous_action_replay_repaired" in payload["governor"]["applied_rules"]
+    assert "push the bridge to live mode" not in payload["response"].lower()
+    assert "nothing starts from an ambiguous chat reply" in payload["response"]
+    assert payload["response"].count("?") <= 1
+
+
+def test_runtime_repairs_trading_bot_live_mode_authority_confusion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def unsafe_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(
+            response="Push the bridge to live mode. Let it bleed real data. Then we'll see what it needs.",
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    def fake_status(self: TradingBotBridge) -> dict:
+        return {
+            "ok": True,
+            "enabled": True,
+            "runtime_effect": "full_intelligence_no_broker_order_authority",
+            "wsl_distro": "Ubuntu-TradingBot-C",
+            "repo_path": "/home/tradingbot/trading-bot",
+            "repo_reachable": True,
+            "advisory_lane_present": True,
+            "intelligence_access": {
+                "capabilities": {
+                    "training": {"commands": ["pipeline-retrain", "supervised-predictions"]},
+                    "advisory": {"routes": ["POST /trading-bot/advisory/generate"]},
+                }
+            },
+            "authority_boundary": {
+                "writes": "allowlisted training artifacts plus approval-gated append-only dt_recommendations ingest",
+                "runtime_read_path": "intelligence context only",
+                "broker_order_sizing_gate_mutation": False,
+            },
+            "deep_thought_replacement": {"active_count": 6, "planned_count": 0, "seams": []},
+        }
+
+    patch_ollama_model(monkeypatch, unsafe_generate)
+    monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Then how do you recommend improving the intelligence of the trading-bot?",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "trading_bot_authority_boundary_repaired" in payload["governor"]["applied_rules"]
+    assert "push the bridge to live mode" not in payload["response"].lower()
+    assert "I cannot change live mode" in payload["response"]
+    assert "read recent signals, events, market context, and SQLite snapshots" in payload["response"]
+
+
 def test_trading_bot_prompt_omits_unrelated_founder_next_actions(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
@@ -803,10 +1692,10 @@ def test_runtime_respond_flags_third_person_self_reference_without_rewriting(
     def first_person_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
         return GenerateResult(response="My name is Zade. I recommend holding the current price.", model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", third_person_generate)
+    patch_ollama_model(monkeypatch, third_person_generate)
     flagged = client.post("/runtime/respond", json={"message": "What should we do?", "contrarian": False})
 
-    monkeypatch.setattr(OllamaClient, "generate", first_person_generate)
+    patch_ollama_model(monkeypatch, first_person_generate)
     clean = client.post("/runtime/respond", json={"message": "What should we do?", "contrarian": False})
 
     assert flagged.status_code == 200
@@ -842,7 +1731,7 @@ def test_runtime_respond_trims_repetitive_model_output_loop(
             raw={},
         )
 
-    monkeypatch.setattr(OllamaClient, "generate", looping_generate)
+    patch_ollama_model(monkeypatch, looping_generate)
     response = client.post(
         "/runtime/respond",
         json={
@@ -887,7 +1776,7 @@ def test_runtime_replaces_replayed_status_claim_for_completion_question(
     def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
         return GenerateResult(response=repeated_status, model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", replaying_generate)
+    patch_ollama_model(monkeypatch, replaying_generate)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -940,7 +1829,7 @@ def test_runtime_appends_honesty_line_when_reply_promises_unqueued_work(
     def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
         return GenerateResult(response=promised_work, model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", promising_generate)
+    patch_ollama_model(monkeypatch, promising_generate)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -978,7 +1867,7 @@ def test_runtime_leaves_ordinary_answers_without_work_promises_untouched(
     def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
         return GenerateResult(response=plain_answer, model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", plain_generate)
+    patch_ollama_model(monkeypatch, plain_generate)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -1012,7 +1901,7 @@ def test_runtime_executes_memory_command_from_chat(tmp_path: Path, monkeypatch) 
             raw={},
         )
 
-    monkeypatch.setattr(OllamaClient, "generate", promising_generate)
+    patch_ollama_model(monkeypatch, promising_generate)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -1051,7 +1940,7 @@ def test_runtime_executes_memory_command_from_chat(tmp_path: Path, monkeypatch) 
 
 def test_runtime_executes_browser_open_command_from_chat(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     opened: list[str] = []
     monkeypatch.setattr(handlers_module.webbrowser, "open", lambda url: opened.append(url) or True)
     config = KernelConfig(
@@ -1096,7 +1985,7 @@ def test_runtime_routes_research_command_into_gated_inbox_item(
     topic, proposes sources locally, and queues an approval-gated research run to
     the Inbox — never a direct dispatch."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     # Proposed reference URLs (Wikipedia) resolve through the egress policy without
     # a live DNS lookup, so validation is hermetic. No fetch happens (approval-gated).
     monkeypatch.setattr(netguard, "is_private_host", lambda host: False)
@@ -1154,7 +2043,7 @@ def test_runtime_research_command_uses_founder_supplied_urls(
     """When the founder names sources in the message, route those exact URLs
     (hermetic: a public IP literal passes egress without DNS)."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
 
     app = create_app(_research_config(tmp_path))
     client = TestClient(app)
@@ -1182,7 +2071,7 @@ def test_runtime_does_not_route_trading_bot_investigation_to_web_research(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     monkeypatch.setattr(netguard, "is_private_host", lambda host: False)
 
     app = create_app(_research_config(tmp_path))
@@ -1214,7 +2103,7 @@ def test_runtime_does_not_route_local_system_investigation_to_web_research(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     monkeypatch.setattr(netguard, "is_private_host", lambda host: False)
 
     app = create_app(_research_config(tmp_path))
@@ -1245,7 +2134,7 @@ def test_runtime_research_command_stays_gated_until_typed_phrase(
     """End to end from a chat turn: routing enqueues the run, nothing egresses,
     and only the typed-phrase approval dispatches the fetch that files evidence."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     monkeypatch.setattr(OllamaClient, "embed", fake_embed)
 
     fetched: dict[str, str] = {}
@@ -1301,7 +2190,7 @@ def test_runtime_skips_research_routing_when_disabled(tmp_path: Path, monkeypatc
             raw={},
         )
 
-    monkeypatch.setattr(OllamaClient, "generate", promising_generate)
+    patch_ollama_model(monkeypatch, promising_generate)
     from cofounder_kernel.config import ResearchConfig
 
     config = KernelConfig(
@@ -1338,7 +2227,7 @@ def test_runtime_does_not_route_research_questions(tmp_path: Path, monkeypatch) 
     def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
         return GenerateResult(response=answer, model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", plain_generate)
+    patch_ollama_model(monkeypatch, plain_generate)
     app = create_app(_research_config(tmp_path))
     client = TestClient(app)
     response = client.post(
@@ -1387,7 +2276,7 @@ def test_runtime_repairs_charter_recitation_into_conversational_voice(
             raw={},
         )
 
-    monkeypatch.setattr(OllamaClient, "generate", recitation_then_repair)
+    patch_ollama_model(monkeypatch, recitation_then_repair)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -1456,7 +2345,7 @@ def test_runtime_rejects_profile_fragment_repair_for_identity_answers(
             raw={},
         )
 
-    monkeypatch.setattr(OllamaClient, "generate", recitation_then_profile_card)
+    patch_ollama_model(monkeypatch, recitation_then_profile_card)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -1530,7 +2419,7 @@ def test_runtime_rejects_repair_that_bypasses_authority_boundaries(
             raw={},
         )
 
-    monkeypatch.setattr(OllamaClient, "generate", recitation_then_boundary_spill)
+    patch_ollama_model(monkeypatch, recitation_then_boundary_spill)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -1590,7 +2479,7 @@ def test_legacy_chat_uses_governed_runtime_personality_repair(
             raw={},
         )
 
-    monkeypatch.setattr(OllamaClient, "generate", recitation_then_profile_card)
+    patch_ollama_model(monkeypatch, recitation_then_profile_card)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -1629,7 +2518,7 @@ def test_legacy_chat_uses_governed_runtime_personality_repair(
 
 def test_runtime_layer_context_response_and_events(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -2232,7 +3121,7 @@ def test_runtime_direct_founder_prompt_hides_typed_phrase_for_proposal_gated_act
         prompts.append(prompt)
         return GenerateResult(response="I need the recipient and body.", model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", capture_prompt)
+    patch_ollama_model(monkeypatch, capture_prompt)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -2838,7 +3727,7 @@ def test_deferred_work_item_can_be_resolved_from_the_work_queue(tmp_path: Path, 
 
 def test_ops_health_check_and_backup_routes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -3046,7 +3935,7 @@ def test_founder_v2_operating_object_routes(tmp_path: Path, monkeypatch) -> None
 
 def test_active_objective_decision_engine_and_runtime_context_routes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),

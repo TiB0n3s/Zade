@@ -61,6 +61,29 @@ def bad_generate(self, *, prompt, model=None, think=None, temperature=None, num_
     return GenerateResult(response="UNHELPFUL.", model=model or "qwen3:14b", raw={})
 
 
+def _messages_to_prompt(messages: object) -> str:
+    return "\n\n".join(str(getattr(message, "content", "")) for message in messages)
+
+
+def _chat_from_generate(generate_func):
+    def fake_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
+        return generate_func(
+            self,
+            prompt=_messages_to_prompt(messages),
+            model=model,
+            think=think,
+            temperature=temperature,
+            num_predict=num_predict,
+        )
+
+    return fake_chat
+
+
+def patch_ollama_model(monkeypatch, generate_func) -> None:
+    monkeypatch.setattr(OllamaClient, "generate", generate_func)
+    monkeypatch.setattr(OllamaClient, "chat", _chat_from_generate(generate_func))
+
+
 def _config(tmp_path: Path) -> KernelConfig:
     return KernelConfig(
         app=AppConfig(),
@@ -87,7 +110,7 @@ def test_default_golden_cases_are_seeded(tmp_path: Path, monkeypatch) -> None:
 
 def test_full_run_passes_persists_and_records_telemetry(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", good_generate)
+    patch_ollama_model(monkeypatch, good_generate)
     client = TestClient(create_app(_config(tmp_path)))
 
     run = client.post("/evals/run", json={"label": "baseline"})
@@ -121,11 +144,11 @@ def test_full_run_passes_persists_and_records_telemetry(tmp_path: Path, monkeypa
 
 def test_model_swap_regression_is_detected(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", good_generate)
+    patch_ollama_model(monkeypatch, good_generate)
     client = TestClient(create_app(_config(tmp_path)))
 
     baseline = client.post("/evals/run", json={"label": "baseline"})
-    monkeypatch.setattr(OllamaClient, "generate", bad_generate)
+    patch_ollama_model(monkeypatch, bad_generate)
     degraded = client.post("/evals/run", json={"label": "after-model-swap"})
 
     assert baseline.status_code == 200
@@ -144,7 +167,7 @@ def test_model_swap_regression_is_detected(tmp_path: Path, monkeypatch) -> None:
 
 def test_custom_case_upsert_validation_and_filtered_run(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", good_generate)
+    patch_ollama_model(monkeypatch, good_generate)
     client = TestClient(create_app(_config(tmp_path)))
 
     created = client.post(
@@ -187,7 +210,7 @@ def test_single_case_error_does_not_break_the_run(tmp_path: Path, monkeypatch) -
             raise OllamaError("coding model offline")
         return good_generate(self, prompt=prompt, model=model, think=think, temperature=temperature, num_predict=num_predict)
 
-    monkeypatch.setattr(OllamaClient, "generate", flaky_generate)
+    patch_ollama_model(monkeypatch, flaky_generate)
     client = TestClient(create_app(_config(tmp_path)))
 
     run = client.post("/evals/run", json={"label": "flaky"})

@@ -552,6 +552,52 @@ class TradingBotBridge:
             "deep_thought_replacement": self.deep_thought_replacement_map(),
         }
 
+    def recent_changes(self, *, hours: int = 48, max_commits: int = 20) -> dict[str, Any]:
+        """Read-only view of what changed in the bot repo recently.
+
+        Answers "what did I modify yesterday?" from the repo itself: commits inside
+        the window plus the current uncommitted working-tree state. No mutation —
+        git log/status/diff only.
+        """
+        cfg = self.config.trading_bot
+        if not cfg.enabled:
+            return {
+                "ok": False,
+                "enabled": False,
+                "runtime_effect": READ_ONLY_RUNTIME_EFFECT,
+                "reason": "trading-bot bridge disabled",
+            }
+        window_hours = max(1, min(int(hours), 24 * 14))
+        git = ["git", "-c", f"safe.directory={cfg.repo_path}"]
+        commits_probe = self._run_repo_shell(
+            _shell_join(
+                git
+                + [
+                    "log",
+                    f"--since={window_hours} hours ago",
+                    f"--max-count={max(1, int(max_commits))}",
+                    "--date=iso-local",
+                    "--pretty=format:%h %ad %s",
+                    "--stat",
+                ]
+            ),
+            timeout=30,
+        )
+        working_tree_probe = self._run_repo_shell(
+            f"{_shell_join(git + ['status', '--short', '--branch'])} && "
+            f"{_shell_join(git + ['diff', '--stat'])} && "
+            f"{_shell_join(git + ['diff', '--cached', '--stat'])}",
+            timeout=30,
+        )
+        return {
+            "ok": commits_probe["ok"] and working_tree_probe["ok"],
+            "enabled": True,
+            "runtime_effect": READ_ONLY_RUNTIME_EFFECT,
+            "window_hours": window_hours,
+            "commits": _compact_probe(commits_probe, limit=6000),
+            "working_tree": _compact_probe(working_tree_probe, limit=4000),
+        }
+
     def safe_ops_checks(self) -> list[dict[str, Any]]:
         return [
             {

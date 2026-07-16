@@ -6,6 +6,7 @@ from typing import Any
 from .config import KernelConfig
 from .db import KernelDatabase, utc_now
 from .ollama import OllamaClient
+from .prompts import ModelMessage
 
 
 class ConversationService:
@@ -118,7 +119,13 @@ class ConversationService:
         Returns an empty block when no conversation is in play, so callers can
         always splice ``result["block"]`` into the prompt unconditionally.
         """
-        empty = {"block": "No prior conversation in this thread.", "state": {"conversation_id": None}, "conversation": None}
+        empty = {
+            "block": "No prior conversation in this thread.",
+            "system_block": "No prior conversation in this thread.",
+            "messages": [],
+            "state": {"conversation_id": None},
+            "conversation": None,
+        }
         if not conversation_id:
             return empty
         conversation = self.db.get_conversation(conversation_id)
@@ -129,20 +136,28 @@ class ConversationService:
         summary = conversation["summary"].strip()
         assistant_name = self.config.identity.name
         lines = [
+            f"Conversation continuity (id {conversation['id']}, {conversation['turn_count']} prior turn(s)):",
+            f"Earlier summary: {summary or 'No earlier summary yet.'}",
+        ]
+        legacy_lines = [
             f'Conversation continuity (id {conversation["id"]} — "{conversation["title"] or "untitled"}", '
             f"{conversation['turn_count']} prior turn(s)):",
             f"Earlier summary: {summary or 'No earlier summary yet.'}",
         ]
         if recent:
-            lines.append("Recent exchange:")
+            lines.append("Recent exchange is supplied as structured provider messages below.")
+            legacy_lines.append("Recent exchange:")
             for turn in recent:
                 speaker = "Founder" if turn["role"] == "user" else assistant_name
                 text = _truncate(turn["content"], self.TURN_PROMPT_CHARS)
-                lines.append(f"[{speaker}] {text}")
+                legacy_lines.append(f"[{speaker}] {text}")
         else:
             lines.append("No recorded turns yet.")
+            legacy_lines.append("No recorded turns yet.")
         return {
-            "block": "\n".join(lines),
+            "block": "\n".join(legacy_lines),
+            "system_block": "\n".join(lines),
+            "messages": _turn_messages(recent, self.TURN_PROMPT_CHARS),
             "state": {
                 "conversation_id": conversation["id"],
                 "title": conversation["title"],
@@ -384,6 +399,20 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _turn_messages(turns: list[dict[str, Any]], limit: int) -> list[ModelMessage]:
+    messages: list[ModelMessage] = []
+    for turn in turns:
+        role = str(turn.get("role") or "").strip()
+        content = _truncate(str(turn.get("content", "")), limit)
+        if role == "assistant":
+            messages.append(ModelMessage(role="assistant", content=content))
+        elif role == "tool":
+            messages.append(ModelMessage(role="tool", content=content))
+        else:
+            messages.append(ModelMessage(role="user", content=content))
+    return messages
 
 
 def _fallback_summary(existing_summary: str, turns: list[dict[str, Any]], assistant_name: str) -> str:

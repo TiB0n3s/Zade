@@ -136,6 +136,7 @@ from .models import (
 )
 from .ollama import OllamaClient, OllamaError
 from .ops import KernelOpsService
+from .prompts import PromptProfileRegistry
 from .actions import ActionPipelineService
 from .commitments import CommitmentLedger
 from .notify import NotificationBus
@@ -369,6 +370,10 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             "cold_raw_ingest": str(cfg.paths.cold_raw_ingest_dir),
             "ollama": ollama_status,
             "model_roles": cfg.ollama.roles(),
+            "prompt_profiles": {
+                "default": runtime.default_prompt_profile_id(),
+                "available": [item["id"] for item in runtime.available_prompt_profiles()],
+            },
             "work_queue": db.work_queue_counts(),
             "authority": {
                 "policy_version": authority.summary()["policy_version"],
@@ -575,29 +580,45 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     def runtime_charter_stack() -> dict[str, Any]:
         return runtime.charter_stack()
 
+    @app.get("/runtime/profiles")
+    def runtime_profiles() -> dict[str, Any]:
+        return {
+            "default_profile": runtime.default_prompt_profile_id(),
+            "profiles": runtime.available_prompt_profiles(),
+            "precedence": ["request.profile", "conversation.metadata.prompt_profile", "config.prompt_profiles.default"],
+        }
+
     @app.get("/runtime/context")
     def runtime_context(
         message: str = "",
         task_type: str = "general",
+        profile: str | None = None,
         use_memory: bool = True,
         use_semantic_memory: bool = True,
         semantic_limit: int = 4,
         use_skills: bool = True,
         skill_limit: int = 3,
     ) -> dict[str, Any]:
-        return runtime.context(
-            message=message,
-            task_type=task_type,  # type: ignore[arg-type]
-            use_memory=use_memory,
-            use_semantic_memory=use_semantic_memory,
-            semantic_limit=semantic_limit,
-            use_skills=use_skills,
-            skill_limit=skill_limit,
-        )
+        try:
+            return runtime.context(
+                message=message,
+                task_type=task_type,  # type: ignore[arg-type]
+                profile=profile,
+                use_memory=use_memory,
+                use_semantic_memory=use_semantic_memory,
+                semantic_limit=semantic_limit,
+                use_skills=use_skills,
+                skill_limit=skill_limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/runtime/context")
     def runtime_context_post(payload: RuntimeContextRequest) -> dict[str, Any]:
-        return runtime.context(**payload.model_dump())
+        try:
+            return runtime.context(**payload.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/runtime/respond")
     def runtime_respond(payload: RuntimeRespondRequest) -> dict[str, Any]:
@@ -2032,6 +2053,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
                 message=payload.message,
                 task_type=payload.task_type,
                 model=payload.model,
+                profile=payload.profile,
                 use_memory=payload.use_memory,
                 use_semantic_memory=payload.use_semantic_memory,
                 semantic_limit=payload.semantic_limit,
@@ -2049,6 +2071,8 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
                 details={"error": str(exc), "task_type": payload.task_type},
             )
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         audit_id = db.audit(
             actor="api",
@@ -2513,6 +2537,7 @@ def _inventory_payload(
     inventory["runtime_layer"] = {
         "routes": [
             "GET /runtime/charter-stack",
+            "GET /runtime/profiles",
             "GET /runtime/context",
             "POST /runtime/context",
             "POST /runtime/respond",
@@ -2538,6 +2563,8 @@ def _inventory_payload(
         ],
         "operating_rules": [
             "Assemble identity, relationship, voice, authority, founder, memory, and queue context before responding.",
+            "Prompt profile precedence is request.profile, then conversation.metadata.prompt_profile, then config.prompt_profiles.default.",
+            "Source prompt tool lists are excluded from active prompts; runtime capabilities come from the local registry.",
             "Use decisive style without false certainty.",
             "Apply authority policy before implying action.",
             "Keep voice charter read-only unless explicitly updated through /identity/voice.",
@@ -2549,6 +2576,10 @@ def _inventory_payload(
             "model_role": "reasoning",
             "artifact": "contrarian_reviews (subject_type runtime_event)",
             "non_blocking": True,
+        },
+        "prompt_profiles": {
+            "default": cfg.prompt_profiles.default,
+            "available": [item["id"] for item in PromptProfileRegistry().list_profiles()],
         },
     }
     inventory["voice_layer"] = {

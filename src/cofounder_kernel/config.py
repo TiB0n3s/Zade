@@ -65,7 +65,7 @@ class OllamaConfig:
     chat_temperature: float = 0.65
 
     def think_for_role(self, role: ModelRole) -> bool:
-        return role == "reasoning"
+        return role in {"reasoning", "coding"}
 
     def model_for_role(self, role: ModelRole) -> str:
         if role == "reasoning":
@@ -284,6 +284,11 @@ class ScreenConfig:
 
 
 @dataclass(frozen=True)
+class PromptProfileConfig:
+    default: str = "general"
+
+
+@dataclass(frozen=True)
 class KernelConfig:
     app: AppConfig = AppConfig()
     identity: IdentityConfig = IdentityConfig()
@@ -301,6 +306,7 @@ class KernelConfig:
     roles: RolesConfig = RolesConfig()
     delegation: DelegationConfig = DelegationConfig()
     screen: ScreenConfig = ScreenConfig()
+    prompt_profiles: PromptProfileConfig = PromptProfileConfig()
 
 
 def _read_toml(path: Path) -> dict:
@@ -466,6 +472,11 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         keep_last=int(screen_raw.get("keep_last", 20)),
         max_windows=int(screen_raw.get("max_windows", 60)),
     )
+    prompt_profiles_raw = raw.get("prompt_profiles", {})
+    prompt_profiles = PromptProfileConfig(
+        default=str(os.getenv("ZADE_PROMPT_PROFILE", prompt_profiles_raw.get("default", "general"))).strip()
+        or "general",
+    )
     return KernelConfig(
         app=app,
         identity=identity,
@@ -483,6 +494,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         roles=roles,
         delegation=delegation,
         screen=screen,
+        prompt_profiles=prompt_profiles,
     )
 
 

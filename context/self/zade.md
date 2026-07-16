@@ -59,35 +59,35 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Operating Skills
 
 <!-- AUTO-START: skills -->
-- Registered skills: 119 total, 119 enabled.
-- Risk tiers: approval_gated=71, local_write=43, read_only=5.
+- Registered skills: 147 total, 147 enabled.
+- Risk tiers: approval_gated=80, local_write=56, read_only=11.
 | Name | Enabled | Description |
 | --- | --- | --- |
 | `ai-seo` | yes | When the user wants to optimize content for AI search engines, get cited by LLMs, or appear in AI-generated answers. Also use when the user mentions 'AI SEO,... |
 | `analytics` | yes | When the user wants to set up, improve, or audit analytics tracking and measurement. Also use when the user mentions "set up tracking," "GA4," "Google Analyt... |
+| `artifact-design` | yes | Design polished, subject-specific artifacts, pages, apps, docs, and visual outputs with deliberate palette, typography, and layout instead of template defaults. |
+| `batch` | yes | Orchestrate a large, parallelizable change across the codebase by decomposing it into independent units and spawning parallel worker agents in isolated workt... |
 | `brainstorming` | yes | You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requi... |
 | `brand-guidelines` | yes | Applies Anthropic's official brand colors and typography to any sort of artifact that may benefit from having Anthropic's look-and-feel. Use it when brand co... |
 | `churn-prevention` | yes | When the user wants to reduce churn, build cancellation flows, set up save offers, recover failed payments, or implement retention strategies. Also use when... |
-| `code-review` | yes | Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes — Standards (does the code follow this repo's documented coding st... |
+| `claude-api` | yes | Build, debug, and optimize Claude API / Anthropic SDK apps. Apps built with this skill should include prompt caching. Also handles migrating existing Claude... |
+| `code-review` | yes | Review the current diff at maximum effort for correctness bugs and reuse/simplification/efficiency cleanups. Use for code review, current-branch review, PR r... |
+| `compact` | yes | Compact or summarize a long coding conversation into a continuation handoff. Use when the user asks to compact, summarize context, or prepare a handoff after... |
 | `competitor-profiling` | yes | When the user wants to research, profile, or analyze competitors from their URLs. Also use when the user mentions 'competitor profile,' 'competitor research,... |
 | `content-strategy` | yes | When the user wants to plan a content strategy, decide what content to create, or figure out what topics to cover. Also use when the user mentions "content s... |
 | `copywriting` | yes | When the user wants to write, rewrite, or improve marketing copy for any page — including homepage, landing pages, pricing pages, feature pages, about pages,... |
 | `cro` | yes | When the user wants to optimize, improve, or increase conversions on any marketing page or form — including homepage, landing pages, pricing pages, feature p... |
 | `customer-research` | yes | When the user wants to conduct, analyze, or synthesize customer research. Use when the user mentions "customer research," "ICP research," "talk to customers,... |
+| `debug` | yes | Debug an issue in the current Claude Code session by enabling debug logging, reading logs, and suggesting fixes. |
+| `deep-research` | yes | Deep research harness for deep, multi-source, fact-checked research reports on any topic. Use when the user asks for deep research, a multi-source cited repo... |
 | `diagnosing-bugs` | yes | Diagnosis loop for hard bugs and performance regressions. Use when the user says "diagnose"/"debug this", or reports something broken/throwing/failing/slow. |
 | `domain-modeling` | yes | Build and sharpen a project's domain model. Use when the user wants to pin down domain terminology or a ubiquitous language, record an architectural decision... |
 | `executing-plans` | yes | Use when you have a written implementation plan to execute in a separate session with review checkpoints |
+| `fewer-permission-prompts` | yes | Scan your transcripts for common read-only Bash and MCP tool calls, then add a prioritized allowlist to project .claude/settings.json to reduce permission pr... |
 | `frontend-design` | yes | Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making... |
 | `handoff` | yes | Compact the current conversation into a handoff document for another agent to pick up. |
-| `launch` | yes | When the user wants to plan a product launch, feature announcement, or release strategy. Also use when the user mentions 'launch,' 'Product Hunt,' 'feature r... |
-| `marketing-psychology` | yes | When the user wants to apply psychological principles, mental models, or behavioral science to marketing. Also use when the user mentions 'psychology,' 'ment... |
-| `pricing` | yes | When the user wants help with pricing decisions, packaging, or monetization strategy. Also use when the user mentions 'pricing,' 'pricing tiers,' 'freemium,'... |
-| `sales-enablement` | yes | When the user wants to create sales collateral, pitch decks, one-pagers, objection handling docs, or demo scripts. Also use when the user mentions 'sales dec... |
-| `seo-audit` | yes | When the user wants to audit, review, or diagnose SEO issues on their site. Also use when the user mentions "SEO audit," "technical SEO," "why am I not ranki... |
-| `systematic-debugging` | yes | Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes |
-| `test-driven-development` | yes | Use when implementing any feature or bugfix, before writing implementation code |
-| `verification-before-completion` | yes | Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output... |
-| `webapp-testing` | yes | Toolkit for interacting with and testing local web applications using Playwright. Supports verifying frontend functionality, debugging UI behavior, capturing... |
+| `init` | yes | Initialize a new CLAUDE.md file with codebase documentation. |
+| `keybindings-help` | yes | Customize keyboard shortcuts, rebind keys, add chord bindings, or modify ~/.claude/keybindings.json. |
 <!-- AUTO-END: skills -->
 
 ## Integrations
@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `8bf34d0` 2026-07-15 - v1 - update
 - `f6a3cdd` 2026-07-15 - Finish index.html relativization for Option B (nav links)
 - `cb27d4e` 2026-07-15 - Fix Zade home page asset paths for Option B (relativize index.html)
 - `9b35d85` 2026-07-15 - Merge pull request #1 from TiB0n3s/feat/phase3-swarm-screen
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `18587ad` 2026-07-15 - Render the disambiguation into the prompt so Zade actually reads it
 - `6fed106` 2026-07-15 - Generate Zade self-knowledge blocks
 - `feb48c2` 2026-07-15 - Fix Zade conflating its bridge's read-only ceiling with the bot's authority
-- `fbbe590` 2026-07-15 - Add Zade self-knowledge scaffold
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

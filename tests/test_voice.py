@@ -42,6 +42,29 @@ def fake_generate(self, *, prompt, model=None, think=None, temperature=None, num
     return GenerateResult(response="Prioritize evidence intake this week.", model=model or "qwen3:14b", raw={})
 
 
+def _messages_to_prompt(messages: object) -> str:
+    return "\n\n".join(str(getattr(message, "content", "")) for message in messages)
+
+
+def _chat_from_generate(generate_func):
+    def fake_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
+        return generate_func(
+            self,
+            prompt=_messages_to_prompt(messages),
+            model=model,
+            think=think,
+            temperature=temperature,
+            num_predict=num_predict,
+        )
+
+    return fake_chat
+
+
+def patch_ollama_model(monkeypatch, generate_func) -> None:
+    monkeypatch.setattr(OllamaClient, "generate", generate_func)
+    monkeypatch.setattr(OllamaClient, "chat", _chat_from_generate(generate_func))
+
+
 def _voice_config() -> VoiceConfig:
     return VoiceConfig(
         stt_command=(sys.executable, "-c", STT_SCRIPT, "{audio}", "{transcript}"),
@@ -105,7 +128,7 @@ def test_transcribe_and_speak_run_real_engine_subprocesses(tmp_path: Path, monke
 
 def test_converse_runs_governed_loop_with_memory_and_contrarian(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     client = TestClient(create_app(_config(tmp_path, _voice_config())))
 
     conversation = client.post("/conversations", json={"title": "Voice thread"})
@@ -140,7 +163,7 @@ def test_converse_runs_governed_loop_with_memory_and_contrarian(tmp_path: Path, 
 
 def test_converse_returns_tier1_latency_timing_breakdown(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     client = TestClient(create_app(_config(tmp_path, _voice_config())))
 
     converse = client.post(
@@ -200,7 +223,7 @@ def test_converse_prompt_carries_personality_contract(tmp_path: Path, monkeypatc
             return GenerateResult(response=CRITIC_JSON, model=model, raw={})
         return GenerateResult(response="Review the gate. Then move.", model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", capturing_generate)
+    patch_ollama_model(monkeypatch, capturing_generate)
     client = TestClient(create_app(_config(tmp_path, _voice_config())))
     client.post("/identity/charter", json={
         "name": "Zade",
@@ -233,7 +256,7 @@ def test_converse_prompt_carries_personality_contract(tmp_path: Path, monkeypatc
 
 def test_converse_speak_full_includes_contrarian_block(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     client = TestClient(create_app(_config(tmp_path, _voice_config())))
 
     converse = client.post(
@@ -358,7 +381,7 @@ def test_browser_webm_mime_reaches_deepgram(tmp_path: Path, monkeypatch) -> None
 
 def test_cloud_converse_end_to_end_and_http_errors(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-key")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
 
@@ -393,7 +416,7 @@ def test_cloud_converse_end_to_end_and_http_errors(tmp_path: Path, monkeypatch) 
 
 def test_engine_failure_and_tts_degradation_are_handled(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setattr(OllamaClient, "generate", fake_generate)
+    patch_ollama_model(monkeypatch, fake_generate)
     broken_stt = VoiceConfig(
         stt_command=(sys.executable, "-c", FAILING_SCRIPT, "{audio}", "{transcript}"),
         tts_command=(sys.executable, "-c", TTS_SCRIPT, "{output}"),

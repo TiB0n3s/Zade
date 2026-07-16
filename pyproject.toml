@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28",
+  "PyYAML>=6.0",
   "pytest>=8.4",
 ]
 browser = [
@@ -34,6 +35,9 @@ zade-tray = "cofounder_kernel.tray:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"cofounder_kernel.prompt_assets.zade" = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

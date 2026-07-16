@@ -26,6 +26,9 @@ chat_model = "qwen3:14b"
 embedding_model = "nomic-embed-text"
 think = false
 temperature = 0.1
+
+[prompt_profiles]
+default = "build"
 """,
         encoding="utf-8",
     )
@@ -46,3 +49,4 @@ temperature = 0.1
     assert config.ollama.model_for_role("coding") == "qwen2.5-coder:14b"
     assert config.ollama.think_for_role("general") is False
     assert config.ollama.think_for_role("reasoning") is True
+    assert config.prompt_profiles.default == "build"

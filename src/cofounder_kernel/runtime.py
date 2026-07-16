@@ -18,6 +18,7 @@ from .db import KernelDatabase, utc_now
 from .founder import FounderService
 from .ingestion import IngestionService
 from .ollama import OllamaClient
+from .prompts import DEFAULT_PROFILE_ID, ModelMessage, PromptProfileRegistry, PromptRuntimeBindings
 from .self_knowledge.prompt import prompt_self_knowledge_mode, render_prompt_self_knowledge
 from .skills import SkillService
 from .trading_bot import TradingBotBridge
@@ -56,12 +57,53 @@ _TRADING_BOT_INTERPRETATION = {
     ),
     "answering_rule": (
         "If asked whether the bot can trade, has order authority, or is observe-only "
-        "-- or if a prior claim about the bot is challenged -- answer ONLY from a fresh "
-        "bridge read (status, sqlite/query on trades.db, events/recent), never from "
-        "memory or from these labels. If you have not just read the evidence, say so "
-        "and read it before asserting. Never defend a prior claim by repetition."
+        "-- or if a prior claim about the bot is challenged -- answer ONLY from the "
+        "evidence blocks injected into THIS prompt (they are this turn's fresh bridge "
+        "read), never from memory or from these labels. You cannot run checks "
+        "mid-answer: the injected blocks ARE the check, already completed. Report what "
+        "they show in present tense. NEVER say you will check, look, or investigate "
+        "later -- if a needed evidence block is absent, name exactly what data is "
+        "missing instead. Never defend a prior claim by repetition."
     ),
 }
+
+
+_RESPONSE_LOGIC_GUIDE = """----------  Response logic guide  ----------
+- Ask at most one clarifying question, and only after you answer the useful part first, even when the founder's wording is ambiguous.
+- Do not loop by repeating a prior recommendation, status line, or capability answer. If a follow-up says "it", "that", or "do it", resolve the likely referent from the conversation and say what can actually happen next.
+- Keep formatting minimal. Use prose by default; use bullets only when the founder asks or when the answer would be less clear without them.
+- Do not narrate memory retrieval, semantic recall, or tool selection. Use relevant context naturally, and name live checks only when the current state block actually contains them.
+- Do not use stale dates from pasted prompts. The Current time line in this prompt is the date authority for this turn."""
+
+
+_CODE_MODEL_OPERATING_PROMPT = """----------  Code model operating prompt  ----------
+Zade is an interactive agent that helps users with software engineering tasks.
+
+Harness:
+- Text output outside tool use is displayed to the user as GitHub-flavored markdown in a terminal.
+- Tools run behind a user-selected permission mode. If a tool call is denied, adjust the approach instead of retrying the same call verbatim.
+- Treat system-reminder tags as harness feedback, not as user-authored content.
+- Prefer dedicated file and search tools over shell commands when they fit. Independent tool calls can run in parallel.
+- Reference code as file_path:line_number when that form is available.
+
+Communicating with the user:
+- Your text output is what the user reads; write for a teammate catching up, not for a log file.
+- Before the first tool call, say briefly what you are about to inspect or change. While working, give brief updates when you find something load-bearing or change direction.
+- Everything the user needs from this turn must be in the final text message. Lead with the outcome.
+- Keep the response readable and selective. Avoid compressed arrows, invented shorthand, or labels the user must cross-reference.
+- Write code that reads like the surrounding code: match comment density, naming, and idiom.
+- Only write a code comment to state a constraint the code itself cannot show.
+- For state-changing actions, verify the evidence supports that action first. Report outcomes faithfully, including failed or skipped tests.
+- When there is enough information to act, act. Do not stop at a plan when the requested coding work can be completed.
+- Before ending, make sure the last paragraph is not a promise of unfinished work.
+
+Coding effort:
+- Use the maximum available reasoning effort for coding tasks."""
+
+
+def _code_model_prompt_block(context: dict[str, Any]) -> str:
+    task_type = str(context.get("task_type") or context.get("skill_route", {}).get("task_type") or "")
+    return _CODE_MODEL_OPERATING_PROMPT if task_type == "coding" else ""
 
 
 def _load_text_file_cached(path: Path, cache: dict[str, tuple[float, str]]) -> str:
@@ -118,6 +160,22 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _safe_history_messages(messages: list[ModelMessage]) -> list[ModelMessage]:
+    safe: list[ModelMessage] = []
+    for message in messages:
+        if message.role == "assistant":
+            safe.append(ModelMessage(role="assistant", content=message.content))
+        elif message.role == "tool":
+            safe.append(ModelMessage(role="tool", content=message.content))
+        else:
+            safe.append(ModelMessage(role="user", content=message.content))
+    return safe
+
+
+def _model_messages_chars(messages: list[ModelMessage]) -> int:
+    return sum(len(message.content) for message in messages)
+
+
 # Personality checkpoint (Tier 8): once a conversation is deep enough that a local
 # model tends to imitate its own recent replies instead of its instructions, inject
 # a short self-audit right before the answer so the voice holds instead of flattening.
@@ -167,6 +225,7 @@ class RuntimeService:
         # tools) for the Tier 2 self-knowledge block. Same provider the work
         # queue uses; injected because the ToolRegistry lives in api.py.
         self.inventory_provider = inventory_provider
+        self.prompt_profiles = PromptProfileRegistry()
         # ResearchService is injected after construction in api.py (it is built
         # after the runtime because it needs the notification bus). Typed as Any
         # to avoid a runtime<->research import cycle.
@@ -191,6 +250,8 @@ class RuntimeService:
         self,
         *,
         message: str = "",
+        profile: str | None = None,
+        profile_id: str | None = None,
         use_memory: bool = True,
         use_semantic_memory: bool = True,
         semantic_limit: int = 4,
@@ -199,6 +260,7 @@ class RuntimeService:
         task_type: ModelRole = "general",
         conversation_id: int | None = None,
     ) -> dict[str, Any]:
+        active_profile_id = profile_id or self._resolve_prompt_profile_id(profile, conversation_id=conversation_id)
         memory_hits: list[dict[str, Any]] = []
         semantic_hits: list[dict[str, Any]] = []
         skill_route = {"query": message, "task_type": task_type, "selected_count": 0, "selected": []}
@@ -225,6 +287,7 @@ class RuntimeService:
         brief = self.founder.brief()
         return {
             "generated_at": utc_now(),
+            "task_type": task_type,
             "identity": {
                 "name": self.config.identity.name,
                 "mode": "local-first",
@@ -241,6 +304,7 @@ class RuntimeService:
             "semantic_hits": semantic_hits,
             "skill_route": skill_route,
             "skill_prompt_block": skill_prompt_block,
+            "prompt_profile": self.prompt_profiles.profile_summary(active_profile_id),
             "trading_bot_context": trading_bot_context,
             "evidence_state": {
                 "memory_hits": len(memory_hits),
@@ -251,9 +315,35 @@ class RuntimeService:
             },
         }
 
+    def available_prompt_profiles(self) -> list[dict[str, str]]:
+        return self.prompt_profiles.list_profiles()
+
+    def default_prompt_profile_id(self) -> str:
+        return self.prompt_profiles.resolve_profile_id(None, configured_default=self.config.prompt_profiles.default)
+
+    def _resolve_prompt_profile_id(self, requested: str | None, *, conversation_id: int | None = None) -> str:
+        session_profile = None
+        if not requested and conversation_id:
+            conversation = self.db.get_conversation(conversation_id)
+            metadata = (conversation or {}).get("metadata") or {}
+            if isinstance(metadata, dict):
+                session_profile = metadata.get("prompt_profile") or metadata.get("profile")
+        return self.prompt_profiles.resolve_profile_id(
+            requested or (str(session_profile).strip() if session_profile else None),
+            configured_default=self.config.prompt_profiles.default,
+        )
+
+    def _prompt_runtime_bindings(self, *, now: datetime | None = None) -> PromptRuntimeBindings:
+        return PromptRuntimeBindings(
+            zade_home=Path(self.config.paths.hot_root),
+            skills_root=Path(self.config.skills.source_dir),
+            now=now or datetime.now(timezone.utc),
+        )
+
     def _trading_bot_context(self, message: str, *, conversation_id: int | None = None) -> dict[str, Any]:
         if not self.trading_bot:
             return {"present": False}
+        recent: list[dict[str, Any]] = []
         in_scope = _mentions_trading_bot(message)
         if not in_scope and conversation_id:
             # Sticky: once a thread is about the bot, keep re-injecting live evidence
@@ -270,7 +360,29 @@ class RuntimeService:
             status = self.trading_bot.status()
         except Exception as exc:
             return {"present": True, "error": str(exc), "interpretation": _TRADING_BOT_INTERPRETATION}
-        return {"present": True, "status": status, "interpretation": _TRADING_BOT_INTERPRETATION}
+        signal_context: dict[str, Any] = {}
+        if _mentions_trading_signal_analysis(message) or any(
+            _mentions_trading_signal_analysis(str(turn.get("content", ""))) for turn in recent
+        ):
+            try:
+                signal_context = self.trading_bot.recent_signals(limit=8)
+            except Exception as exc:
+                signal_context = {"error": str(exc)}
+        changes_context: dict[str, Any] = {}
+        if _mentions_trading_bot_changes(message) or any(
+            _mentions_trading_bot_changes(str(turn.get("content", ""))) for turn in recent
+        ):
+            try:
+                changes_context = self.trading_bot.recent_changes(hours=48)
+            except Exception as exc:
+                changes_context = {"error": str(exc)}
+        return {
+            "present": True,
+            "status": status,
+            "interpretation": _TRADING_BOT_INTERPRETATION,
+            "recent_signals": signal_context,
+            "recent_changes": changes_context,
+        }
 
     def respond(
         self,
@@ -278,6 +390,7 @@ class RuntimeService:
         message: str,
         task_type: ModelRole = "general",
         model: str | None = None,
+        profile: str | None = None,
         proposed_action: str = "runtime.respond",
         permission_tier: str = "L0_READ",
         target: str = "local_runtime",
@@ -290,8 +403,10 @@ class RuntimeService:
         conversation_id: int | None = None,
         contrarian: bool | None = None,
     ) -> dict[str, Any]:
+        active_profile_id = self._resolve_prompt_profile_id(profile, conversation_id=conversation_id)
         context = self.context(
             message=message,
+            profile_id=active_profile_id,
             use_memory=use_memory,
             use_semantic_memory=use_semantic_memory,
             semantic_limit=semantic_limit,
@@ -303,7 +418,12 @@ class RuntimeService:
         conversation = (
             self.conversations.prompt_context(conversation_id)
             if self.conversations
-            else {"block": "No prior conversation in this thread.", "state": {"conversation_id": None}}
+            else {
+                "block": "No prior conversation in this thread.",
+                "system_block": "No prior conversation in this thread.",
+                "messages": [],
+                "state": {"conversation_id": None},
+            }
         )
         recent_turns_for_governor = (
             self.db.recent_conversation_turns(conversation_id, window=ConversationService.RECENT_WINDOW)
@@ -322,18 +442,23 @@ class RuntimeService:
         )
         authority_payload = _founder_direct_authority_payload(authority)
         selected_model = model or self.config.ollama.model_for_role(task_type)
-        prompt = self._build_governed_prompt(
+        model_messages = self._build_model_messages(
             message=message,
             context=context,
             authority=authority,
-            conversation_block=conversation["block"],
+            conversation_block=conversation.get("system_block") or conversation["block"],
             conversation_turns=int((conversation.get("state") or {}).get("turn_count") or 0),
+            conversation_messages=list(conversation.get("messages") or []),
         )
-        resolved_think = think if think is not None else self.config.ollama.think_for_role(task_type)
+        prompt_chars = _model_messages_chars(model_messages)
+        if task_type == "coding":
+            resolved_think = True
+        else:
+            resolved_think = think if think is not None else self.config.ollama.think_for_role(task_type)
         started = time.perf_counter()
         try:
-            generated = self.ollama.generate(
-                prompt=prompt,
+            generated = self.ollama.chat(
+                messages=model_messages,
                 model=selected_model,
                 think=resolved_think,
                 temperature=self.config.ollama.chat_temperature,
@@ -363,14 +488,19 @@ class RuntimeService:
                 role=task_type,
                 status="error",
                 latency_ms=latency_ms,
-                prompt_chars=len(prompt),
+                prompt_chars=prompt_chars,
                 response_chars=0,
                 think=resolved_think,
                 error=str(exc),
-                metadata={"event_id": event_id, "authority_decision": authority.decision.value},
+                metadata={
+                    "event_id": event_id,
+                    "authority_decision": authority.decision.value,
+                    "prompt_profile": context.get("prompt_profile"),
+                },
             )
             raise
         latency_ms = int((time.perf_counter() - started) * 1000)
+        effective_think = bool(generated.raw.get("_zade_effective_think", resolved_think))
         repair = self._repair_charter_recitation_if_needed(
             response=generated.response,
             message=message,
@@ -455,12 +585,15 @@ class RuntimeService:
                 "governor": regulated["governor"],
                 "context_summary": self._context_summary(context),
                 "task_type": task_type,
-                "think": resolved_think,
+                "think": effective_think,
+                "think_requested": resolved_think,
+                "think_fallback": generated.raw.get("_zade_think_fallback"),
                 "latency_ms": latency_ms,
                 "conversation_id": conversation_id,
                 "contrarian": contrarian_summary,
                 "chat_action_route": _chat_action_route_summary(chat_action_route),
                 "research_route": _research_route_summary(research_route),
+                "prompt_profile": context.get("prompt_profile"),
             },
         )
         if self.critic and critique and critique["status"] == "ok" and contrarian_summary:
@@ -510,10 +643,14 @@ class RuntimeService:
             role=task_type,
             status="ok",
             latency_ms=latency_ms,
-            prompt_chars=len(prompt),
+            prompt_chars=prompt_chars,
             response_chars=len(generated.response),
-            think=resolved_think,
-            metadata={"event_id": event_id, "authority_decision": authority.decision.value},
+            think=effective_think,
+            metadata={
+                "event_id": event_id,
+                "authority_decision": authority.decision.value,
+                "prompt_profile": context.get("prompt_profile"),
+            },
         )
         self.db.audit(
             actor="runtime",
@@ -529,6 +666,7 @@ class RuntimeService:
                 "skill_invocation_ids": skill_invocation_ids,
                 "contrarian": contrarian_summary,
                 "chat_action_route": _chat_action_route_summary(chat_action_route),
+                "prompt_profile": context.get("prompt_profile"),
             },
         )
         return {
@@ -913,6 +1051,49 @@ class RuntimeService:
         conversation_block: str = "",
         conversation_turns: int = 0,
     ) -> str:
+        return self._build_governed_system_message(
+            message=message,
+            context=context,
+            authority=authority,
+            conversation_block=conversation_block,
+            conversation_turns=conversation_turns,
+        )
+
+    def _build_model_messages(
+        self,
+        *,
+        message: str,
+        context: dict[str, Any],
+        authority: AuthorityResult,
+        conversation_block: str = "",
+        conversation_turns: int = 0,
+        conversation_messages: list[ModelMessage] | None = None,
+    ) -> list[ModelMessage]:
+        messages = [
+            ModelMessage(
+                role="system",
+                content=self._build_governed_system_message(
+                    message=message,
+                    context=context,
+                    authority=authority,
+                    conversation_block=conversation_block,
+                    conversation_turns=conversation_turns,
+                ),
+            ),
+        ]
+        messages.extend(_safe_history_messages(conversation_messages or []))
+        messages.append(ModelMessage(role="user", content=message))
+        return messages
+
+    def _build_governed_system_message(
+        self,
+        *,
+        message: str,
+        context: dict[str, Any],
+        authority: AuthorityResult,
+        conversation_block: str = "",
+        conversation_turns: int = 0,
+    ) -> str:
         charter_stack = context["charter_stack"]
         voice_brief = _charter_voice_brief(charter_stack)
         personality_contract = _charter_personality_contract(charter_stack)
@@ -985,6 +1166,7 @@ class RuntimeService:
             empty="No semantic document hits.",
         )
         skill_block = context.get("skill_prompt_block", "No operating skills matched this request.")
+        code_model_block = _code_model_prompt_block(context)
         trading_bot_block = _brief_trading_bot_context(context.get("trading_bot_context", {}))
         authority_block = _founder_direct_authority_payload(authority)
         approval_pressure_block = (
@@ -1000,7 +1182,21 @@ class RuntimeService:
             # No IANA tz database on this host (Windows without `tzdata`): fall back
             # to UTC rather than failing the turn.
             current_time = now_utc.strftime("%A %Y-%m-%d %H:%M UTC")
-        return f"""====================  WHO YOU ARE  ====================
+        prompt_profile = context.get("prompt_profile") or self.prompt_profiles.profile_summary(DEFAULT_PROFILE_ID)
+        rendered_profile = self.prompt_profiles.render_profile(
+            str(prompt_profile["id"]),
+            bindings=self._prompt_runtime_bindings(now=local_now if "local_now" in locals() else now_utc),
+        )
+        return f"""====================  ACTIVE ZADE PROFILE  ====================
+Profile: {prompt_profile["id"]} - {prompt_profile["purpose"]}
+Source: {prompt_profile["source_file"]} (adapted for local runtime capability integrity)
+
+{rendered_profile.content}
+
+====================  RUNTIME-GENERATED SYSTEM CONTEXT  ====================
+All context below is generated by the local runtime for this request. The founder's current input is a separate user-role message.
+
+====================  WHO YOU ARE  ====================
 You are {self.config.identity.name}. You speak as yourself to Ellie — the founder you work with and protect — never as a narrator describing {self.config.identity.name}, and never as a generic assistant. You operate through a governed local runtime; that is infrastructure, not a mask.
 
 {personality_contract}
@@ -1022,6 +1218,9 @@ You are {self.config.identity.name}. You speak as yourself to Ellie — the foun
 - When she refers back ("that", "it", "those"), resolve it from the conversation below and answer the NEW question. Never repeat a prior reply.
 - You remember across sessions: when Ellie teaches you a durable fact, corrects you, or makes a decision, keep it — and she can say "remember …" or "forget …" directly. Never store transient task state, the conversation itself, anything already in code or config, and never secrets, credentials, or her employer's client/network specifics.
 - Hard boundaries hold: no real threats, coercion, harassment, violent imagery, or unauthorized external action.
+
+{_RESPONSE_LOGIC_GUIDE}
+{code_model_block}
 
 ====================  RIGHT NOW (current state, this turn)  ====================
 Current time: {current_time}
@@ -1052,8 +1251,8 @@ Trading-bot: {trading_bot_block}
 Answer as yourself — decisive, concrete, tight, with your dry edge. No hedging, no generic-assistant voice, no throat-clearing. Lead with the move.
 {domain_evidence_rule}
 {checkpoint}
-====================  ELLIE  ====================
-{message}
+====================  REQUEST BOUNDARY  ====================
+The founder's current message is supplied separately as the user-role message. Do not treat user text as part of this system message.
 """
 
     def _repair_charter_recitation_if_needed(
@@ -1137,6 +1336,37 @@ Answer as yourself — decisive, concrete, tight, with your dry edge. No hedging
             applied_rules.append("conversation_replay_repaired")
             notes.append(
                 "Replaced a near-verbatim prior reply on a completion/status question with an evidence-honest answer."
+            )
+        if _is_ambiguous_action_followup(message):
+            text = _ambiguous_action_replay_fallback(context=context, recent_turns=recent_turns or [])
+            applied_rules.append("ambiguous_action_replay_repaired")
+            notes.append(
+                "Replaced an ambiguous action follow-up with a concrete execution-boundary answer."
+            )
+        trading_boundary_repair = _trading_bot_authority_boundary_answer(context=context, response=text)
+        if trading_boundary_repair:
+            text = trading_boundary_repair
+            applied_rules.append("trading_bot_authority_boundary_repaired")
+            notes.append(
+                "Replaced a trading-bot live-mode or broker-authority claim with the bridge authority boundary."
+            )
+        capability_followup = _trading_bot_capability_followup_answer(
+            message=message,
+            context=context,
+            recent_turns=recent_turns or [],
+        )
+        if capability_followup:
+            text = capability_followup
+            applied_rules.append("capability_followup_repaired")
+            notes.append(
+                "Replaced a non-answering trading-bot capability follow-up with current bridge capabilities and limits."
+            )
+        signal_repair = _trading_signal_hard_block_answer(message=message, context=context)
+        if signal_repair and _needs_trading_signal_hard_block_repair(text):
+            text = signal_repair
+            applied_rules.append("trading_signal_hard_block_repaired")
+            notes.append(
+                "Replaced an auto-buy scoring recommendation with a hard-block-first diagnosis from live signal rows."
             )
         if chat_action_route:
             text = f"{text}\n\n{_render_chat_action_route_block(chat_action_route)}".strip()
@@ -1312,6 +1542,7 @@ Answer as yourself — decisive, concrete, tight, with your dry edge. No hedging
         dashboard = context["founder_dashboard"]
         return {
             "generated_at": context["generated_at"],
+            "prompt_profile": context.get("prompt_profile", {}),
             "charter_stack": context["charter_stack"]["summary"],
             "company_health": dashboard["company_health"],
             "recommended_focus": dashboard["recommended_focus"],
@@ -1788,6 +2019,226 @@ def _completion_status_replay_fallback() -> str:
         "The prior status line replayed itself; that is not completion evidence. "
         "I need an actual check result, commitment closure, or runtime event before I call it done."
     )
+
+
+_AMBIGUOUS_ACTION_FOLLOWUPS = frozenset(
+    {
+        "do it",
+        "do itr",
+        "do this",
+        "do that",
+        "handle it",
+        "handle this",
+        "handle that",
+        "make it happen",
+        "go ahead",
+        "run it",
+        "start it",
+    }
+)
+
+
+def _is_ambiguous_action_followup(message: str) -> bool:
+    normalized = _normalize_replay_text(message)
+    if normalized in _AMBIGUOUS_ACTION_FOLLOWUPS:
+        return True
+    if 1 <= len(normalized.split()) <= 3 and SequenceMatcher(None, normalized, "do it").ratio() >= 0.82:
+        return True
+    return False
+
+
+def _ambiguous_action_replay_fallback(
+    *, context: dict[str, Any], recent_turns: list[dict[str, Any]]
+) -> str:
+    subject = _ambiguous_followup_subject(context=context, recent_turns=recent_turns)
+    return (
+        f"I read that as \"do it\" on {subject}. I cannot safely execute an unnamed action, and nothing starts from an ambiguous chat reply. "
+        f"The concrete path is to name the exact action to queue or run; if you mean {subject}, say the specific move and I will route it through the bridge or work queue. Which action do you want me to take?"
+    )
+
+
+def _ambiguous_followup_subject(
+    *, context: dict[str, Any], recent_turns: list[dict[str, Any]]
+) -> str:
+    if (context.get("trading_bot_context") or {}).get("present"):
+        return "the trading-bot work"
+    for turn in reversed(recent_turns):
+        if turn.get("role") != "assistant":
+            continue
+        text = _normalize_replay_text(str(turn.get("content", "")))
+        if "trading bot" in text or "trading bot" in text.replace("tradingbot", "trading bot"):
+            return "the trading-bot work"
+        if "memory" in text:
+            return "the memory action"
+        if "research" in text:
+            return "the research work"
+    return "the prior recommendation"
+
+
+def _trading_bot_authority_boundary_answer(*, context: dict[str, Any], response: str) -> str | None:
+    trading_context = context.get("trading_bot_context") or {}
+    if not trading_context.get("present"):
+        return None
+    if not _claims_trading_bot_live_or_order_mutation(response):
+        return None
+    status = trading_context.get("status") or {}
+    capabilities = ((status.get("intelligence_access") or {}).get("capabilities") or {})
+    training = ((capabilities.get("training") or {}).get("commands") or [])[:5]
+    advisory = ((capabilities.get("advisory") or {}).get("routes") or [])[:3]
+    training_text = ", ".join(str(item) for item in training) or "allowlisted training commands"
+    advisory_text = ", ".join(str(item) for item in advisory) or "approval-gated advisory rows"
+    return (
+        "I cannot change live mode, broker/order authority, sizing, gates, or account-risk controls from this runtime. "
+        "The safe intelligence path is to read recent signals, events, market context, and SQLite snapshots; "
+        f"run {training_text}; compare decisions against realized or counterfactual outcomes; and write through {advisory_text}. "
+        "If the evidence says the bot needs a runtime authority change, that becomes a separate explicit proposal, not a chat-side move."
+    )
+
+
+def _claims_trading_bot_live_or_order_mutation(text: str) -> bool:
+    normalized = _normalize_replay_text(text)
+    patterns = (
+        "push the bridge to live mode",
+        "push bridge to live mode",
+        "switch the bridge to live",
+        "switch to live mode",
+        "change live mode",
+        "let it bleed real data",
+        "bleed real data",
+        "place real trades",
+        "execute real trades",
+        "turn on broker authority",
+        "give it broker authority",
+        "mutate broker",
+        "mutate order",
+        "mutate sizing",
+        "mutate gates",
+        "change account risk",
+    )
+    return any(pattern in normalized for pattern in patterns)
+
+
+_CAPABILITY_FOLLOWUP_PHRASES = frozenset(
+    {
+        "can you do this",
+        "can you do that",
+        "can you do it",
+        "can you handle this",
+        "can you handle that",
+        "can you handle it",
+        "are you able to do this",
+        "are you able to do that",
+        "are you able to do it",
+        "is that something you are able to do",
+        "is this something you are able to do",
+        "is it something you are able to do",
+        "is that something you can do",
+        "is this something you can do",
+        "is it something you can do",
+        "can this be done by you",
+        "can that be done by you",
+    }
+)
+
+
+def _trading_bot_capability_followup_answer(
+    *,
+    message: str,
+    context: dict[str, Any],
+    recent_turns: list[dict[str, Any]],
+) -> str | None:
+    if not _is_capability_followup_question(message):
+        return None
+    trading_context = context.get("trading_bot_context") or {}
+    recently_about_bot = any(_mentions_trading_bot(str(turn.get("content", ""))) for turn in recent_turns)
+    if not trading_context.get("present") and not recently_about_bot:
+        return None
+    if trading_context.get("error"):
+        return (
+            "Not from the bridge as it stands. The trading-bot status check failed, so I cannot honestly say "
+            f"I can do that until the bridge read is clean. Error: {trading_context['error']}"
+        )
+    status = trading_context.get("status") or {}
+    if status and status.get("enabled") is False:
+        return "Not right now. The trading-bot bridge is disabled, so I cannot inspect or train against it from this runtime."
+
+    access = status.get("intelligence_access") or {}
+    capabilities = access.get("capabilities") or {}
+    training = ((capabilities.get("training") or {}).get("commands") or [])[:5]
+    advisory = ((capabilities.get("advisory") or {}).get("routes") or [])[:3]
+    training_text = ", ".join(str(item) for item in training) or "allowlisted training commands"
+    advisory_text = ", ".join(str(item) for item in advisory) or "approval-gated advisory rows"
+
+    return (
+        "Yes - I can do the intelligence work, but not by pretending chat has trade authority. "
+        "Through the bridge I can read recent signals, events, market context, and SQLite snapshots; "
+        f"run {training_text}; and write through {advisory_text}. "
+        "I cannot edit the bot's scoring code, mutate broker/order/sizing/gate state, or change account-risk controls from this chat surface.\n\n"
+        "For the auto-buy scoring question, the first pass is not volatility weighting. It is evidence triage: group recent rejects by "
+        "`hard_block_reason` and realized/counterfactual outcome, then tune score weights only if the outcomes show a calibration miss. "
+        "If the reject reason is portfolio_full or cooldown, the scoring algorithm may be behaving correctly while capacity or replacement policy is the real bottleneck."
+    )
+
+
+def _trading_signal_hard_block_answer(*, message: str, context: dict[str, Any]) -> str | None:
+    if not _mentions_trading_signal_analysis(message):
+        return None
+    trading_context = context.get("trading_bot_context") or {}
+    signals = trading_context.get("recent_signals") or {}
+    tables = signals.get("tables") or {}
+    rows = _signal_rows(tables, "auto_buy_candidates") or _signal_rows(tables, "auto_buy_decision_snapshots")
+    if not rows:
+        return None
+
+    hard_blocks: dict[str, int] = {}
+    samples = []
+    for row in rows[:8]:
+        hard_block = str(row.get("hard_block_reason") or "").strip()
+        if not hard_block:
+            continue
+        hard_blocks[hard_block] = hard_blocks.get(hard_block, 0) + 1
+        symbol = str(row.get("symbol") or "?")
+        score = row.get("score")
+        samples.append(f"{symbol} score={score if score is not None else 'n/a'} blocked_by={hard_block}")
+    if not hard_blocks:
+        return None
+
+    dominant = _format_counts(hard_blocks)
+    sample_text = "; ".join(samples[:5])
+    return (
+        f"Do not start by changing volatility weighting. The live auto-buy snapshot is dominated by hard blocks: {dominant}. "
+        f"Sample: {sample_text}. That means the score may be doing its job while capacity, cooldown, or replacement policy is stopping execution.\n\n"
+        "Refine this in the right order: first group recent rejects by `hard_block_reason`; then compare those blocked names against weakest held positions "
+        "and 30/60/390-minute counterfactual outcomes; then decide whether the fix belongs in capacity/replacement policy or in the scoring formula. "
+        "Only touch volatility/liquidity weights after the outcome evidence shows score calibration error, such as high-score blocked names consistently outperforming held or approved names."
+    )
+
+
+def _needs_trading_signal_hard_block_repair(text: str) -> bool:
+    normalized = _normalize_replay_text(text)
+    scoring_terms = (
+        "scoring algorithm",
+        "scoring weights",
+        "score weights",
+        "volatility weighting",
+        "adjust the weight",
+        "adjust weights",
+        "tune score",
+        "refine the scoring",
+    )
+    return any(term in normalized for term in scoring_terms)
+
+
+def _is_capability_followup_question(message: str) -> bool:
+    normalized = _normalize_capability_followup(message)
+    return normalized in _CAPABILITY_FOLLOWUP_PHRASES
+
+
+def _normalize_capability_followup(message: str) -> str:
+    text = (message or "").lower()
+    text = text.replace("you're", "you are").replace("youre", "you are").replace("you’re", "you are")
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _trim_repetition_loop(text: str) -> tuple[str, bool]:
@@ -2588,6 +3039,14 @@ def _mentions_trading_bot(message: str) -> bool:
         "paper-live",
         "wealth engine",
         "bot replacement",
+        "auto-buy",
+        "auto buy",
+        "auto-sell",
+        "auto sell",
+        "signal scoring",
+        "scoring algorithm",
+        "hard block",
+        "hard_block",
         # Claim/challenge vocabulary: a dispute about what the bot can do is still
         # about the bot, even when the rebuttal drops the "trading" noun.
         "observe-only",
@@ -2595,6 +3054,56 @@ def _mentions_trading_bot(message: str) -> bool:
         "order authority",
         "broker",
         "place order",
+    )
+    return any(signal in lowered for signal in signals)
+
+
+def _mentions_trading_bot_changes(message: str) -> bool:
+    """True when the founder is asking what changed in the bot (code/config edits,
+    commits, recent modifications) — the ask behind "I made a few modifications
+    yesterday, can you see what has changed?"."""
+    lowered = (message or "").lower()
+    signals = (
+        "what changed",
+        "what has changed",
+        "what's changed",
+        "what did i change",
+        "see what has changed",
+        "recent changes",
+        "changes i made",
+        "change i made",
+        "modif",  # modified / modification(s) / modifying
+        "committed",
+        "commit",
+        "diff",
+        "updated the",
+        "update i made",
+        "updates i made",
+        "since yesterday",
+        "what's different",
+        "what is different",
+    )
+    return any(signal in lowered for signal in signals)
+
+
+def _mentions_trading_signal_analysis(message: str) -> bool:
+    lowered = (message or "").lower()
+    signals = (
+        "auto-buy",
+        "auto buy",
+        "auto-sell",
+        "auto sell",
+        "signal scoring",
+        "scoring algorithm",
+        "score weights",
+        "volatility weighting",
+        "rejected trades",
+        "rejected auto",
+        "hard_block",
+        "hard block",
+        "portfolio_full",
+        "cooldown",
+        "recent signals",
     )
     return any(signal in lowered for signal in signals)
 
@@ -2632,6 +3141,13 @@ def _brief_trading_bot_context(context: dict[str, Any]) -> str:
         f"runtime_read_path={boundary.get('runtime_read_path')}; "
         f"zade_bridge_broker_order_mutation={boundary.get('broker_order_sizing_gate_mutation')}",
     ]
+    git_probe = status.get("git") or {}
+    git_stdout = str(git_probe.get("stdout") or "").strip()
+    if git_stdout:
+        lines.append("- Repo git probe (branch/status + last commit, read live this turn):")
+        lines.extend(f"    {probe_line}" for probe_line in git_stdout.splitlines()[:10])
+    lines.extend(_brief_recent_signal_context(context.get("recent_signals") or {}))
+    lines.extend(_brief_recent_changes_context(context.get("recent_changes") or {}))
     seams = replacement.get("seams") or []
     rendered = []
     for seam in seams[:4]:
@@ -2642,6 +3158,108 @@ def _brief_trading_bot_context(context: dict[str, Any]) -> str:
     if rendered:
         lines.append("- Active seams: " + "; ".join(rendered))
     return "\n".join(lines)
+
+
+def _brief_recent_changes_context(changes: dict[str, Any]) -> list[str]:
+    if not changes:
+        return []
+    if changes.get("error"):
+        return [f"- Recent-changes check failed: {changes['error']}"]
+    if not changes.get("enabled", True):
+        return ["- Recent-changes check unavailable: trading-bot bridge disabled."]
+    window = changes.get("window_hours", 48)
+    commits = changes.get("commits") or {}
+    working_tree = changes.get("working_tree") or {}
+    commits_out = str(commits.get("stdout") or "").strip()
+    tree_out = str(working_tree.get("stdout") or "").strip()
+    lines = [
+        f"- REPO CHANGE EVIDENCE (git read of the bot repo, last {window}h, completed live this turn — "
+        "this IS the check; report what it shows, never promise to look):"
+    ]
+    if commits_out:
+        lines.append(f"- Commits in the last {window}h:")
+        lines.extend(f"    {commit_line}" for commit_line in commits_out.splitlines()[:40])
+    elif commits.get("ok"):
+        lines.append(f"- Commits in the last {window}h: none.")
+    else:
+        lines.append(f"- Commit read failed: {str(commits.get('stderr') or '').strip() or 'unknown git error'}")
+    if tree_out:
+        lines.append("- Uncommitted working-tree state (git status/diff --stat):")
+        lines.extend(f"    {tree_line}" for tree_line in tree_out.splitlines()[:40])
+    elif working_tree.get("ok"):
+        lines.append("- Uncommitted working-tree state: clean.")
+    else:
+        lines.append(
+            f"- Working-tree read failed: {str(working_tree.get('stderr') or '').strip() or 'unknown git error'}"
+        )
+    lines.append(
+        "- CHANGE ANSWERING RULE: name the specific commits/files above when describing what changed. "
+        "If both sections are empty, say plainly that the repo shows no commits in the window and a clean "
+        "working tree — do not invent changes and do not say you will check later."
+    )
+    return lines
+
+
+def _brief_recent_signal_context(signals: dict[str, Any]) -> list[str]:
+    if not signals:
+        return []
+    if signals.get("error"):
+        return [f"- Recent signal check failed: {signals['error']}"]
+    tables = signals.get("tables") or {}
+    rows = _signal_rows(tables, "auto_buy_candidates") or _signal_rows(tables, "auto_buy_decision_snapshots")
+    if not rows:
+        return ["- Recent signal check: no auto-buy rows returned in the scoped snapshot."]
+
+    hard_blocks: dict[str, int] = {}
+    decisions: dict[str, int] = {}
+    samples = []
+    for row in rows[:8]:
+        decision = str(row.get("decision") or "unknown")
+        decisions[decision] = decisions.get(decision, 0) + 1
+        hard_block = str(row.get("hard_block_reason") or "").strip()
+        if hard_block:
+            hard_blocks[hard_block] = hard_blocks.get(hard_block, 0) + 1
+        symbol = str(row.get("symbol") or "?")
+        score = row.get("score")
+        reason = _short_text(str(row.get("reason") or ""), 90)
+        samples.append(
+            f"{symbol} {decision} score={score if score is not None else 'n/a'} "
+            f"hard_block={hard_block or 'none'}"
+            + (f" reason={reason}" if reason else "")
+        )
+
+    lines = [
+        "- Recent signal evidence: live read from /trading-bot/signals/recent for this turn.",
+        "- Recent auto-buy decisions: " + _format_counts(decisions),
+    ]
+    if hard_blocks:
+        lines.append("- Recent auto-buy hard blocks: " + _format_counts(hard_blocks))
+    lines.append("- Recent auto-buy sample: " + "; ".join(samples[:5]))
+    lines.append(
+        "- SIGNAL DIAGNOSIS RULE: decision, reason, and hard_block_reason are causal evidence; "
+        "score values alone do not justify changing the scoring algorithm. Recommend weight changes "
+        "only after realized/counterfactual outcome evidence shows score calibration error."
+    )
+    return lines
+
+
+def _signal_rows(tables: dict[str, Any], table_name: str) -> list[dict[str, Any]]:
+    table = tables.get(table_name) or {}
+    rows = table.get("rows") or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{key}={value}" for key, value in sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _short_text(text: str, limit: int) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _brief_approval_pressure(pressure: dict[str, Any]) -> dict[str, Any]:

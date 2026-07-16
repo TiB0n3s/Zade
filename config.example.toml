@@ -36,6 +36,12 @@ lock_file = "C:\\LocalAICofounder\\skills-lock.json"
 enable_defaults = true
 max_prompt_chars = 1800
 
+[prompt_profiles]
+# Active Zade prompt profile when a request or conversation does not override it.
+# Valid: general, build, expert, account, api, companion, dark-comedian,
+# loyal-confidant, study-mentor, medical-information, therapeutic-support.
+default = "general"
+
 [voice]
 # Engines: "command" runs local argv arrays (no shell); "deepgram" (STT) and
 # "elevenlabs" (TTS) call your cloud speech APIs. Selecting a cloud engine is a

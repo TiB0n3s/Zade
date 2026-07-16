@@ -879,3 +879,64 @@ def test_daily_brief_can_export_to_vault_raw_folder(tmp_path: Path, monkeypatch)
     assert response.status_code == 200
     assert path == tmp_path / "hot" / "Trading Project" / "01-raw" / "zade-trading-brief-2026-07-12.md"
     assert "Zade Trading Brief - 2026-07-12" in path.read_text(encoding="utf-8")
+
+
+def test_trading_bot_recent_changes_reads_git_history_and_working_tree(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    commands: list[str] = []
+
+    def fake_run(self: TradingBotBridge, script: str, *, timeout: float | None = None) -> dict:
+        commands.append(script)
+        if "log" in script:
+            return {
+                "ok": True,
+                "exit_code": 0,
+                "stdout": (
+                    "a1b2c3d 2026-07-15 14:02:11 -0500 Tighten auto-buy scoring threshold\n"
+                    " src/trading_bot/scoring.py | 12 ++++++------\n"
+                    " 1 file changed, 6 insertions(+), 6 deletions(-)\n"
+                ),
+                "stderr": "",
+            }
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "stdout": "## main\n M config/wealth_engine.yaml\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "_run_repo_shell", fake_run)
+    client = TestClient(create_app(_config(tmp_path)))
+    bridge = client.app.state.runtime.trading_bot
+
+    result = bridge.recent_changes(hours=48)
+
+    assert result["ok"] is True
+    assert result["window_hours"] == 48
+    assert result["runtime_effect"] == "read_only_diagnostic_no_trade_authority"
+    assert "Tighten auto-buy scoring threshold" in result["commits"]["stdout"]
+    assert "config/wealth_engine.yaml" in result["working_tree"]["stdout"]
+    log_command = next(cmd for cmd in commands if "log" in cmd)
+    assert "--since=48 hours ago" in log_command or "'--since=48 hours ago'" in log_command
+    status_command = next(cmd for cmd in commands if "status" in cmd)
+    assert "--short" in status_command and "diff" in status_command
+
+
+def test_trading_bot_recent_changes_disabled_bridge_reports_reason(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        trading_bot=TradingBotConfig(
+            enabled=False, wsl_distro="TestDistro", repo_path="/tmp/trading-bot", python="python3"
+        ),
+    )
+    client = TestClient(create_app(config))
+    bridge = client.app.state.runtime.trading_bot
+
+    result = bridge.recent_changes()
+
+    assert result["ok"] is False
+    assert result["enabled"] is False
+    assert result["reason"] == "trading-bot bridge disabled"

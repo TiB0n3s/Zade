@@ -228,6 +228,7 @@ class RuntimeRespondRequest(BaseModel):
     message: str = Field(min_length=1)
     model: str | None = None
     task_type: ModelRole = "general"
+    profile: str | None = Field(default=None, max_length=80)
     proposed_action: str = Field(default="runtime.respond", min_length=1, max_length=240)
     permission_tier: str = Field(default="L0_READ", min_length=1, max_length=80)
     target: str = Field(default="local_runtime", max_length=1000)
@@ -382,6 +383,7 @@ class EvalRunRequest(BaseModel):
 class RuntimeContextRequest(BaseModel):
     message: str = ""
     task_type: ModelRole = "general"
+    profile: str | None = Field(default=None, max_length=80)
     use_memory: bool = True
     use_semantic_memory: bool = True
     semantic_limit: int = Field(default=4, ge=0, le=12)
@@ -875,6 +877,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     model: str | None = None
     task_type: ModelRole = "general"
+    profile: str | None = Field(default=None, max_length=80)
     use_memory: bool = True
     use_semantic_memory: bool = True
     semantic_limit: int = Field(default=4, ge=0, le=12)

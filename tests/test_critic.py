@@ -39,10 +39,33 @@ def _generate_stub(critic_response: str, calls: list[dict]):
     return fake_generate
 
 
+def _messages_to_prompt(messages: object) -> str:
+    return "\n\n".join(str(getattr(message, "content", "")) for message in messages)
+
+
+def _chat_from_generate(generate_func):
+    def fake_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
+        return generate_func(
+            self,
+            prompt=_messages_to_prompt(messages),
+            model=model,
+            think=think,
+            temperature=temperature,
+            num_predict=num_predict,
+        )
+
+    return fake_chat
+
+
+def patch_ollama_model(monkeypatch, generate_func) -> None:
+    monkeypatch.setattr(OllamaClient, "generate", generate_func)
+    monkeypatch.setattr(OllamaClient, "chat", _chat_from_generate(generate_func))
+
+
 def test_recommendation_message_triggers_contrarian_pass(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     calls: list[dict] = []
-    monkeypatch.setattr(OllamaClient, "generate", _generate_stub(CRITIC_JSON, calls))
+    patch_ollama_model(monkeypatch, _generate_stub(CRITIC_JSON, calls))
     client = TestClient(create_app(_config(tmp_path)))
 
     response = client.post(
@@ -88,7 +111,7 @@ def test_recommendation_message_triggers_contrarian_pass(tmp_path: Path, monkeyp
 def test_plain_message_skips_contrarian_pass(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     calls: list[dict] = []
-    monkeypatch.setattr(OllamaClient, "generate", _generate_stub(CRITIC_JSON, calls))
+    patch_ollama_model(monkeypatch, _generate_stub(CRITIC_JSON, calls))
     client = TestClient(create_app(_config(tmp_path)))
 
     response = client.post(
@@ -106,7 +129,7 @@ def test_plain_message_skips_contrarian_pass(tmp_path: Path, monkeypatch) -> Non
 def test_explicit_flag_overrides_heuristic_both_ways(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     calls: list[dict] = []
-    monkeypatch.setattr(OllamaClient, "generate", _generate_stub(CRITIC_JSON, calls))
+    patch_ollama_model(monkeypatch, _generate_stub(CRITIC_JSON, calls))
     client = TestClient(create_app(_config(tmp_path)))
 
     forced = client.post(
@@ -138,7 +161,7 @@ def test_critic_failure_is_non_blocking(tmp_path: Path, monkeypatch) -> None:
             raise OllamaError("reasoning model offline")
         return GenerateResult(response="Prioritize evidence intake.", model=model or "qwen3:14b", raw={})
 
-    monkeypatch.setattr(OllamaClient, "generate", failing_generate)
+    patch_ollama_model(monkeypatch, failing_generate)
     client = TestClient(create_app(_config(tmp_path)))
 
     response = client.post(
@@ -163,11 +186,7 @@ def test_critic_failure_is_non_blocking(tmp_path: Path, monkeypatch) -> None:
 def test_unparseable_critique_attaches_raw_text(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     calls: list[dict] = []
-    monkeypatch.setattr(
-        OllamaClient,
-        "generate",
-        _generate_stub("The draft is directionally fine but thin on retention proof.", calls),
-    )
+    patch_ollama_model(monkeypatch, _generate_stub("The draft is directionally fine but thin on retention proof.", calls))
     client = TestClient(create_app(_config(tmp_path)))
 
     response = client.post(
@@ -186,7 +205,7 @@ def test_unparseable_critique_attaches_raw_text(tmp_path: Path, monkeypatch) -> 
 def test_empty_unparseable_critique_is_not_attached_to_response(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     calls: list[dict] = []
-    monkeypatch.setattr(OllamaClient, "generate", _generate_stub("", calls))
+    patch_ollama_model(monkeypatch, _generate_stub("", calls))
     client = TestClient(create_app(_config(tmp_path)))
 
     response = client.post(
@@ -206,9 +225,8 @@ def test_empty_unparseable_critique_is_not_attached_to_response(tmp_path: Path, 
 def test_malformed_json_critique_fragment_is_not_attached_to_response(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     calls: list[dict] = []
-    monkeypatch.setattr(
-        OllamaClient,
-        "generate",
+    patch_ollama_model(
+        monkeypatch,
         _generate_stub('```json\n{"verdict": "proceed_with_changes", "weakest_assumption": "cut off', calls),
     )
     client = TestClient(create_app(_config(tmp_path)))

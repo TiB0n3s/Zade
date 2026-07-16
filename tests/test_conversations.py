@@ -33,13 +33,13 @@ def _config(tmp_path: Path) -> KernelConfig:
 
 def test_governed_respond_persists_and_recalls_conversation(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    prompts: list[str] = []
+    submitted: list[list[object]] = []
 
-    def capturing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
-        prompts.append(prompt)
-        return GenerateResult(response=f"Reply {len(prompts)}.", model=model or "qwen3:14b", raw={"prompt": prompt})
+    def capturing_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
+        submitted.append(list(messages))
+        return GenerateResult(response=f"Reply {len(submitted)}.", model=model or "qwen3:14b", raw={"messages": messages})
 
-    monkeypatch.setattr(OllamaClient, "generate", capturing_generate)
+    monkeypatch.setattr(OllamaClient, "chat", capturing_chat)
     client = TestClient(create_app(_config(tmp_path)))
 
     created = client.post("/conversations", json={"title": ""})
@@ -50,6 +50,7 @@ def test_governed_respond_persists_and_recalls_conversation(tmp_path: Path, monk
         json={
             "message": "We should price Zade at $99 per month for solo founders.",
             "conversation_id": conversation_id,
+            "use_memory": False,
             "use_semantic_memory": False,
         },
     )
@@ -58,6 +59,7 @@ def test_governed_respond_persists_and_recalls_conversation(tmp_path: Path, monk
         json={
             "message": "Remind me what price we landed on.",
             "conversation_id": conversation_id,
+            "use_memory": False,
             "use_semantic_memory": False,
         },
     )
@@ -71,12 +73,17 @@ def test_governed_respond_persists_and_recalls_conversation(tmp_path: Path, monk
     assert "episodic_conversation_memory" in first.json()["governor"]["applied_rules"]
     assert second.status_code == 200
 
-    # Turn 1 has no prior context; turn 2 must recall the first full exchange.
-    assert "No recorded turns yet." in prompts[0]
-    assert "Recent exchange:" in prompts[1]
-    assert "$99 per month" in prompts[1]  # prior user turn recalled
-    assert "Reply 1." in prompts[1]  # prior assistant turn recalled
-    assert "Remind me what price we landed on." in prompts[1]  # current message
+    # Turn 1 has no prior context; turn 2 sends prior turns as native provider messages.
+    assert [message.role for message in submitted[0]] == ["system", "user"]
+    assert "No recorded turns yet." in submitted[0][0].content
+    assert submitted[0][1].content == "We should price Zade at $99 per month for solo founders."
+    assert [message.role for message in submitted[1]] == ["system", "user", "assistant", "user"]
+    assert "Recent exchange is supplied as structured provider messages below." in submitted[1][0].content
+    assert "$99 per month" not in submitted[1][0].content
+    assert "Reply 1." not in submitted[1][0].content
+    assert submitted[1][1].content == "We should price Zade at $99 per month for solo founders."
+    assert submitted[1][2].content == "Reply 1."
+    assert submitted[1][3].content == "Remind me what price we landed on."
 
     # Four turns recorded in order: user, assistant, user, assistant.
     turn_list = turns.json()["turns"]
