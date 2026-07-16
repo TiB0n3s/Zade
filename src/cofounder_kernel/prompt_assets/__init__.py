@@ -1,0 +1,1 @@
+"""Embedded runtime prompt assets."""

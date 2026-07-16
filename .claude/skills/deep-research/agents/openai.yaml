@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Research"
+  short_description: "Run a multi-source adversarial research workflow."
+  default_prompt: "Run deep research on"

@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `c7268aa` 2026-07-16 - Add investigation tool loop: Zade now runs real reads instead of narrating them
 - `2062f37` 2026-07-16 - Merge fix/zade-live-trading-data: live trade/PnL data + repo change evidence together
 - `3088714` 2026-07-16 - Session work: what-changed investigation fix + accumulated kernel/UI changes
 - `8bf34d0` 2026-07-15 - v1 - update
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `5000405` 2026-07-15 - Inject living self-knowledge into runtime prompt
 - `81f21ab` 2026-07-15 - Install self-knowledge pre-commit automation
 - `5ddb0b2` 2026-07-15 - Relocate Zade UI to bundled Tauri assets (Option B) + frameless chrome, dev loop, native toasts
-- `b65143a` 2026-07-15 - Add Zade self-knowledge drift checks
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
