@@ -156,7 +156,8 @@ class DelegationService:
                 "Engine 'native' (default): Zade's own coding loop on the LOCAL Ollama model — no external agent process, no cloud.",
                 "Engine 'bridge': the configured CLI runs as a LOCAL COMPATIBILITY BRIDGE — under a local provider policy its environment is forced to the loopback Ollama Anthropic-compatible API with no inherited keys.",
                 "There is no automatic fallback between engines or to any cloud provider; failures fail closed and are reported.",
-                "Invoking a delegated build is an L3 action. Auto-invoke runs it without asking up to the daily budget; past that it requires the typed confirmation phrase.",
+                "Invoking a delegated build is an L3 action. A DIRECT founder command runs at full auto — immediately, including into a named project workspace — up to the daily budget. Autonomous (non-directed) runs auto-invoke only in the default delegation workspace; a workspace-targeted autonomous run always waits for the founder.",
+                "When the agent hits a genuine decision it cannot make safely, it stops and files a founder decision item instead of guessing; the run resumes when the founder answers or clears the item.",
                 "Every invocation is audited and its artifact filed as delegated-work evidence — a sourced claim, never native certainty.",
             ],
         }
@@ -209,7 +210,17 @@ class DelegationService:
         acceptance: str = "",
         auto_invoke: bool | None = None,
         workspace: str = "",
+        directed: bool = False,
     ) -> dict[str, Any]:
+        """Queue (and, when authorized, immediately run) a delegated build.
+
+        ``directed=True`` marks a DIRECT founder command from chat: the command
+        itself is the authorization, so the run executes at full auto — including
+        into a founder-named project workspace — bounded only by the daily budget
+        and the engine actually being able to run. Non-directed (autonomous) runs
+        keep the conservative posture: a workspace target always waits for
+        founder approval.
+        """
         self._require_enabled()
         workspace = (workspace or "").strip()
         brief = (brief or "").strip() or self.build_brief(task=task, context=context, acceptance=acceptance)
@@ -217,11 +228,17 @@ class DelegationService:
             # The approval item must show exactly where the agent will operate.
             brief = f"{brief}\n\n## Target project\nRun inside this existing project directory: {workspace}"
         want_auto = self.config.delegation.auto_invoke if auto_invoke is None else bool(auto_invoke)
-        if workspace:
-            # A run aimed at a founder-named project directory (outside the
-            # default delegation workspace) always waits for the typed phrase.
+        if workspace and not directed:
+            # An AUTONOMOUS run aimed at a founder-named project directory
+            # (outside the default delegation workspace) always waits for the
+            # founder. A directed command already carries that authorization.
             want_auto = False
 
+        metadata: dict[str, Any] = {"task": task.strip(), "brief": brief, "workspace": workspace}
+        if directed:
+            # Founder-implied approval: the work queue marks the item approved
+            # with no typed-phrase request — she already gave the word in chat.
+            metadata["founder_command"] = True
         result = self.work_queue.enqueue(
             kind="delegation_run",
             title=f"Delegate: {task.strip()[:80]}",
@@ -230,8 +247,8 @@ class DelegationService:
             target="external-agent",
             permission_tier="L3_EXTERNAL_ACTION",
             priority=60,
-            source="delegation",
-            metadata={"task": task.strip(), "brief": brief, "workspace": workspace},
+            source="founder.delegation" if directed else "delegation",
+            metadata=metadata,
             unique_key=f"{DELEGATION_RUN_ACTION}:{utc_now()}",
         )
         payload = result.as_dict()
@@ -239,7 +256,7 @@ class DelegationService:
         # Budgeted auto-invoke: the authorized bypass. Only when auto is on, an
         # engine can actually run (native agent wired, or a bridge command
         # configured), and we're under today's cap. Otherwise it stays a gated
-        # work item waiting on the typed phrase.
+        # work item waiting on the founder.
         engine = getattr(self.config.delegation, "engine", "native")
         engine_ready = (
             (engine == "native" and self.coding_agent is not None)
@@ -253,14 +270,38 @@ class DelegationService:
         if can_auto:
             item = self.db.get_work_item(result.item_id)
             if item is not None:
-                dispatch = self.run_from_work_item(item)
+                try:
+                    dispatch = self.run_from_work_item(item)
+                except Exception as exc:  # noqa: BLE001 - an exploding run is a flow error, not a 500
+                    dispatch = {
+                        "handler": DELEGATION_RUN_ACTION,
+                        "status": "flow_error",
+                        "ok": False,
+                        "task": task.strip(),
+                        "error": str(exc)[:400],
+                    }
+                # Close the loop on the item itself — an auto-invoked run must
+                # never leave a stale "waiting for approval" entry in the Inbox
+                # for work that already happened.
+                self._finalize_auto_invoked_item(item.id, dispatch)
                 return payload | {"auto_invoked": True, "dispatch": dispatch}
         reason = (
             "auto-invoke disabled" if not want_auto
             else "engine cannot run (native agent not wired / no agent command configured)" if not engine_ready
-            else "daily budget reached — requires typed-phrase approval"
+            else "daily budget reached — waiting on you in the Inbox"
         )
         return payload | {"auto_invoked": False, "reason": reason}
+
+    def _finalize_auto_invoked_item(self, item_id: int, dispatch: dict[str, Any]) -> None:
+        """Record the auto-invoked run's outcome on its own work item."""
+        try:
+            ok = bool(dispatch.get("ok"))
+            status = str(dispatch.get("status") or "")
+            item_status = "done" if ok or status == "needs_decision" else "error"
+            error = "" if item_status == "done" else str(dispatch.get("error") or status)[:400]
+            self.db.update_work_item(item_id, status=item_status, result=dispatch, error=error)
+        except Exception:  # noqa: BLE001 - bookkeeping must not discard the dispatch result
+            pass
 
     # ---- dispatch handler ----
     def run_from_work_item(self, item: WorkItem) -> dict[str, Any]:
@@ -401,6 +442,13 @@ class DelegationService:
         """Delegated build via the native local coding agent (no subprocess)."""
         assert self.coding_agent is not None  # guarded by run_from_work_item
         result = self.coding_agent.run(task=task, context=brief, workspace=workspace or None)
+        if str(result.get("status")) == "needs_decision":
+            # The agent stopped on a genuine founder decision. That is a
+            # successful outcome of the run — the pending work moves to a
+            # decision item in the Inbox instead of being guessed at.
+            return self._file_founder_decision(
+                item=item, task=task, brief=brief, workspace=workspace, result=result
+            )
         artifact = str(result.get("response") or "")
         unverified_claims = find_unverified_claims(artifact, result.get("steps"))
         evidence_id = None
@@ -467,6 +515,87 @@ class DelegationService:
             "artifact": artifact,
             "evidence_id": evidence_id,
             "error": error or str(result.get("error") or ""),
+        }
+
+    def _file_founder_decision(
+        self,
+        *,
+        item: WorkItem,
+        task: str,
+        brief: str,
+        workspace: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """File the agent's blocking question as a founder decision item.
+
+        The decision item carries a resume brief: clearing it re-runs the
+        delegation with the question surfaced, and an answer given in chat
+        routes as a fresh directed command. Either way the work is queued, not
+        lost — and nothing was guessed at."""
+        question_info = result.get("founder_question") or {}
+        question = str(question_info.get("question") or "").strip() or "The agent needs your direction to continue."
+        options = [str(o) for o in (question_info.get("options") or []) if str(o).strip()]
+        options_block = ("\nOptions:\n" + "\n".join(f"- {o}" for o in options)) if options else ""
+        resume_brief = (
+            f"{brief}\n\n## Founder decision\n"
+            f"The previous run stopped on this question:\n{question}{options_block}\n"
+            "If the founder cleared this item without a written answer, choose the safest "
+            "reasonable option, state which you chose, and complete the task end to end."
+        )
+        decision_item_id = None
+        error = ""
+        try:
+            queued = self.work_queue.enqueue(
+                kind="founder_decision",
+                title=f"Decision needed: {question[:70]}",
+                detail=(
+                    f"The delegated run for '{task}' is paused on a decision.\n\n"
+                    f"Question: {question}{options_block}\n\n"
+                    "Clearing this item resumes the run (best safe judgment); answering in chat "
+                    "with direction starts a fresh directed run."
+                ),
+                action=DELEGATION_RUN_ACTION,
+                target="native-coding-agent",
+                permission_tier="L3_EXTERNAL_ACTION",
+                priority=70,
+                source="delegation",
+                metadata={"task": task, "brief": resume_brief, "workspace": workspace},
+                unique_key=f"{DELEGATION_RUN_ACTION}:decision:{utc_now()}",
+            )
+            decision_item_id = queued.item_id
+        except Exception as exc:  # noqa: BLE001 - the question must still reach the founder via the reply
+            error = f"decision filing error: {str(exc)[:200]}"
+        self.db.audit(
+            actor="approved-handler",
+            action=DELEGATION_RUN_ACTION,
+            target="native-coding-agent",
+            permission_tier=item.permission_tier,
+            status="needs_decision",
+            details={
+                "work_item_id": item.id,
+                "task": task,
+                "engine": "native",
+                "question": question,
+                "options": options,
+                "decision_item_id": decision_item_id,
+                "rounds": result.get("rounds"),
+                "changed_files": result.get("changed_files", []),
+            },
+        )
+        return {
+            "handler": DELEGATION_RUN_ACTION,
+            "status": "needs_decision",
+            "ok": True,
+            "task": task,
+            "engine": "native",
+            "model": result.get("model"),
+            "rounds": result.get("rounds"),
+            "steps": result.get("steps", []),
+            "changed_files": result.get("changed_files", []),
+            "founder_question": {"question": question, "options": options},
+            "decision_item_id": decision_item_id,
+            "artifact": str(result.get("response") or ""),
+            "error": error,
         }
 
     def _bridge_environment(self) -> tuple[dict[str, str], dict[str, Any]]:
@@ -549,7 +678,7 @@ class DelegationService:
             if (
                 event.get("action") == DELEGATION_RUN_ACTION
                 and str(event.get("created_at", "")).startswith(today)
-                and event.get("status") in {"ok", "flow_error"}
+                and event.get("status") in {"ok", "flow_error", "needs_decision"}
             ):
                 count += 1
         return count

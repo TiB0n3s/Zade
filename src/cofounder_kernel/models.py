@@ -350,8 +350,12 @@ class DelegationQueueRequest(BaseModel):
     acceptance: str = Field(default="", max_length=2000)
     auto_invoke: bool | None = None
     # Existing project directory the run targets; empty = the default
-    # delegation workspace. A named target always stays approval-gated.
+    # delegation workspace. A named target stays approval-gated unless the
+    # run is a DIRECTED founder command.
     workspace: str = Field(default="", max_length=500)
+    # True = a direct founder command: the command itself is the authorization,
+    # so the run executes at full auto (bounded by the daily budget).
+    directed: bool = False
 
 
 class ScreenCaptureRequest(BaseModel):

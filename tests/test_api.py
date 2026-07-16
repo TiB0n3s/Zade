@@ -687,13 +687,15 @@ def test_runtime_respond_auto_uses_build_profile_for_app_build_requests(
     assert captured_calls[0]["model"] == "qwen2.5-coder:14b"
     assert captured_calls[0]["think"] is True
     assert "Profile: build" in captured_calls[0]["messages"][0].content
-    assert payload["build"]["status"] == "queued"
+    # A directed build command executes immediately; with no reachable local
+    # model in this hermetic test the run fails and is reported honestly.
+    assert payload["build"]["status"] == "run_failed"
     assert payload["build"]["item_id"]
     # Native engine + wired coding agent = the build can actually run locally.
     assert payload["build"]["agent_configured"] is True
     assert "build_work_routed" in payload["governor"]["applied_rules"]
     assert "Would you like me" not in payload["response"]
-    assert "Queued the build -" in payload["response"]
+    assert "Took the build -" in payload["response"]
 
 
 def test_runtime_respond_auto_uses_build_profile_for_app_build_followup(
@@ -741,7 +743,8 @@ def test_runtime_respond_auto_uses_build_profile_for_app_build_followup(
     assert payload["task_type"] == "coding"
     assert payload["context"]["prompt_profile"]["id"] == "build"
     assert captured_calls[0]["model"] == "qwen2.5-coder:14b"
-    assert payload["build"]["status"] == "queued"
+    # Directed command → immediate execution; no reachable model here → honest failure.
+    assert payload["build"]["status"] == "run_failed"
     assert payload["build"]["item_id"]
     # Native engine + wired coding agent = the build can actually run locally.
     assert payload["build"]["agent_configured"] is True
@@ -2393,12 +2396,13 @@ def test_runtime_does_not_route_research_questions(tmp_path: Path, monkeypatch) 
     assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
 
 
-def test_runtime_routes_build_command_into_gated_delegation(
+def test_runtime_routes_build_command_into_directed_delegation(
     tmp_path: Path, monkeypatch
 ) -> None:
     """A founder build command must stop being generate-only: it packages a scoped
-    delegation brief and queues an approval-gated external-agent run to the Inbox —
-    never a text-only architecture outline."""
+    delegation brief and executes it immediately as a DIRECTED run — never a
+    text-only architecture outline, and never parked behind a typed phrase. In
+    this hermetic test no local model is reachable, so the run fails honestly."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     patch_ollama_model(monkeypatch, fake_generate)
 
@@ -2419,20 +2423,23 @@ def test_runtime_routes_build_command_into_gated_delegation(
     payload = response.json()
     route = payload["build"]
     assert route is not None
-    assert route["status"] == "queued"
+    assert route["status"] == "run_failed"
     assert "book cataloguing mobile app" in route["task"]
     assert "build_work_routed" in payload["governor"]["applied_rules"]
     item_id = route["item_id"]
     assert f"#{item_id}" in payload["response"]
 
-    # The item is really in the queue as a gated delegation run, never dispatched.
-    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
-    match = next((item for item in queued if item["id"] == item_id), None)
+    # The directed run really dispatched and the item carries the honest outcome
+    # (no dangling approval_required entry for work that already ran).
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    failed = client.get("/work/queue", params={"status": "error"}).json()["items"]
+    match = next((item for item in failed if item["id"] == item_id), None)
     assert match is not None
     assert match["kind"] == "delegation_run"
     assert match["action"] == "external.delegation.run"
     assert match["permission_tier"] == "L3_EXTERNAL_ACTION"
     assert "book cataloguing mobile app" in match["metadata"]["brief"]
+    assert match["metadata"]["founder_command"] is True
 
 
 def test_runtime_anaphoric_build_command_uses_conversation_scope(
@@ -2480,12 +2487,13 @@ def test_runtime_anaphoric_build_command_uses_conversation_scope(
     payload = response.json()
     route = payload["build"]
     assert route is not None
-    assert route["status"] == "queued"
+    # Directed command → immediate execution; no reachable model here → honest failure.
+    assert route["status"] == "run_failed"
     assert route["anaphoric"] is True
     assert "catalogue the books" in route["task"]
 
-    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
-    match = next((item for item in queued if item["id"] == route["item_id"]), None)
+    failed = client.get("/work/queue", params={"status": "error"}).json()["items"]
+    match = next((item for item in failed if item["id"] == route["item_id"]), None)
     assert match is not None
     assert match["kind"] == "delegation_run"
     # The brief context carries the conversation scoping, not just the command.
@@ -2524,13 +2532,14 @@ def test_runtime_does_not_route_build_questions_or_metaphors(
     assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
 
 
-def test_runtime_maintenance_command_routes_gated_delegation_with_target(
+def test_runtime_maintenance_command_routes_directed_delegation_with_target(
     tmp_path: Path, monkeypatch
 ) -> None:
     """"Resolve the vulnerabilities on your own" is a maintenance command: it
-    queues a gated delegation aimed at the project directory the founder named
-    in the thread — never a narrated fix. The terminal paste itself does not
-    route (it is evidence, not a command)."""
+    executes a directed delegation aimed at the project directory the founder
+    named in the thread — never a narrated fix. The terminal paste itself does
+    not route (it is evidence, not a command). No reachable model here, so the
+    dispatched run fails honestly with the target recorded."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     patch_ollama_model(monkeypatch, fake_generate)
 
@@ -2578,7 +2587,9 @@ def test_runtime_maintenance_command_routes_gated_delegation_with_target(
     payload = response.json()
     route = payload["build"]
     assert route is not None
-    assert route["status"] == "queued"
+    # A directed maintenance command dispatches immediately, even into the
+    # founder-named project; with no reachable model it fails honestly.
+    assert route["status"] == "run_failed"
     assert route["kind"] == "maintenance"
     assert route["workspace"] == str(target.resolve())
     assert "maintenance_work_routed" in payload["governor"]["applied_rules"]
@@ -2586,10 +2597,10 @@ def test_runtime_maintenance_command_routes_gated_delegation_with_target(
     assert f"#{item_id}" in payload["response"]
     assert str(target.resolve()) in payload["response"]
 
-    # The queued item carries the target project so the approval shows exactly
-    # where the agent will operate, and it stays gated (never auto-dispatched).
-    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
-    match = next((item for item in queued if item["id"] == item_id), None)
+    # The item carries the target project and the honest outcome — no stale
+    # approval_required entry for a run that already dispatched.
+    failed = client.get("/work/queue", params={"status": "error"}).json()["items"]
+    match = next((item for item in failed if item["id"] == item_id), None)
     assert match is not None
     assert match["kind"] == "delegation_run"
     assert match["permission_tier"] == "L3_EXTERNAL_ACTION"
@@ -2667,13 +2678,14 @@ def _step_then_inability_generate(
     return GenerateResult(response=response, model=model or "qwen3:14b", raw={"prompt": prompt})
 
 
-def test_runtime_step_execution_command_routes_gated_delegation(
+def test_runtime_step_execution_command_routes_directed_delegation(
     tmp_path: Path, monkeypatch
 ) -> None:
     """"Perform all tasks related to step 5" executes the step Zade itself laid
-    out in the thread: the resolved instructions become the brief, the run is
-    queued gated, and it targets the project directory named in the thread. A
-    drafted body that denies execution ability is replaced by the route block."""
+    out in the thread: the resolved instructions become the brief, the run
+    dispatches immediately (directed), and it targets the project directory
+    named in the thread. A drafted body that denies execution ability is
+    replaced by the route block."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     patch_ollama_model(monkeypatch, _step_then_inability_generate)
 
@@ -2714,7 +2726,8 @@ def test_runtime_step_execution_command_routes_gated_delegation(
     payload = response.json()
     route = payload["build"]
     assert route is not None
-    assert route["status"] == "queued"
+    # Directed step command → immediate dispatch; no reachable model → honest failure.
+    assert route["status"] == "run_failed"
     assert route["kind"] == "step"
     assert "step 5" in route["task"].lower()
     assert route["workspace"] == str(target.resolve())
@@ -2722,11 +2735,11 @@ def test_runtime_step_execution_command_routes_gated_delegation(
     assert "routed_reply_body_replaced" in payload["governor"]["applied_rules"]
     # The contradictory draft is gone; the route block IS the reply.
     assert "not able to execute" not in payload["response"].lower()
-    assert payload["response"].startswith("Queued the step run")
+    assert payload["response"].startswith("Took the step run")
     assert f"#{route['item_id']}" in payload["response"]
 
-    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
-    match = next((item for item in queued if item["id"] == route["item_id"]), None)
+    failed = client.get("/work/queue", params={"status": "error"}).json()["items"]
+    match = next((item for item in failed if item["id"] == route["item_id"]), None)
     assert match is not None
     assert match["kind"] == "delegation_run"
     assert match["metadata"]["workspace"] == str(target.resolve())
@@ -2774,7 +2787,8 @@ def test_runtime_bare_do_it_after_step_layout_routes_instead_of_asking(
     payload = response.json()
     route = payload["build"]
     assert route is not None
-    assert route["status"] == "queued"
+    # Directed "do it" → immediate dispatch; no reachable model → honest failure.
+    assert route["status"] == "run_failed"
     assert route["kind"] == "step"
     rules = payload["governor"]["applied_rules"]
     assert "step_work_routed" in rules
@@ -4604,3 +4618,123 @@ def test_active_objective_decision_engine_and_runtime_context_routes(tmp_path: P
     assert metrics.json()["counts"]["active_objectives"] == 1
     assert metrics.json()["counts"]["decision_recommendations"] == 1
     assert "POST /founder/decision-engine/recommend" in inventory.json()["founder_operating_layer"]["routes"]
+
+
+def test_runtime_directed_build_executes_and_reports_real_outcome(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The full-auto path end to end: a founder build command dispatches the
+    native coding agent THIS turn and the reply reports what actually happened —
+    files changed, artifact filed — not an Inbox pointer."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 3,
+            "used_tools": True,
+            "steps": [
+                {"tool": "write_file", "arguments": {"path": "src/app.py"}, "ok": True},
+                {"tool": "run_command", "arguments": {"argv": ["python", "-m", "pytest", "-q"]},
+                 "ok": True, "auto_verify": True},
+            ],
+            "changed_files": ["src/app.py"],
+            "response": "Built the scanner module; tests pass.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Build me a book cataloguing mobile app with barcode scanning",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["status"] == "executed"
+    assert route["dispatch"]["changed_files"] == ["src/app.py"]
+    assert "Ran the build -" in payload["response"]
+    assert "src/app.py" in payload["response"]
+    assert "Kernel-run verification passed" in payload["response"]
+    # The run item is closed; nothing waits on approval.
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    done = client.get("/work/queue", params={"status": "done"}).json()["items"]
+    assert any(item["id"] == route["item_id"] for item in done)
+    # The artifact was filed as delegated-work evidence.
+    evidence = client.get("/founder/evidence").json()["items"]
+    assert any(item["evidence_type"] == "delegated_work" for item in evidence)
+
+
+def test_runtime_directed_build_surfaces_founder_decision(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Queue-only-when-unsure: when the agent stops on a genuine decision, the
+    reply asks the question directly and points at the filed decision item."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": False,
+            "status": "needs_decision",
+            "error": "",
+            "founder_question": {
+                "question": "Native camera API or a scanning library for barcodes?",
+                "options": ["react-native-vision-camera", "expo-barcode-scanner"],
+            },
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 1,
+            "used_tools": True,
+            "steps": [{"tool": "list_files", "arguments": {}, "ok": True}],
+            "changed_files": [],
+            "response": "Paused on the scanner choice.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Build me a book cataloguing mobile app with barcode scanning",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["status"] == "needs_decision"
+    assert route["decision_item_id"]
+    assert "Native camera API or a scanning library" in payload["response"]
+    assert f"#{route['decision_item_id']}" in payload["response"]
+    # The decision item waits for the founder; the run item is closed.
+    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    assert any(item["id"] == route["decision_item_id"] and item["kind"] == "founder_decision"
+               for item in queued)

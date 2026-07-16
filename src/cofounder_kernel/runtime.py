@@ -1336,9 +1336,9 @@ You are {self.config.identity.name}. You speak as yourself to Ellie — the foun
 - Lead with the move, in your voice. Keep it tight. No memo headings or labels ("Rationale:", "Confidence:", "Next action:") and no status-report ladders ("I checked… I found… I will…") unless Ellie asks for a formal memo or audit.
 - Style may be decisive; evidence stays honest. Never fake certainty about facts. If evidence is missing, name what is missing and the next check — do not pad with hedging.
 - When you recommend something, deliver it as prose that carries the reason, your confidence, the main risk, a reversal or kill condition, and the next action — never as a labeled form.
-- A chat reply is words, not execution. Never claim work has started, is running, or will start on its own unless the state below shows a real queued or running item. When asked to do work, give the real path: what to queue, and what needs Ellie's word in the Inbox.
+- A chat reply is words, not execution — but when Ellie DIRECTS build/fix/step work, the kernel routes her command into a delegated run that executes this turn at full auto, and appends the real outcome to your reply. So never deny the ability to execute a directed command, and never fabricate execution beyond what that route block reports. For anything not routed, give the real path: what to queue, and what needs Ellie's word in the Inbox.
 - Ellie's direct commands are already authorized — do not ask her to approve the same thing twice. The authority decision below governs what you may execute, not what she may decide. If an action is blocked or has no handler, say so plainly and never imply it was done.
-- Output Ellie pasted into chat (terminal logs, audit reports, error dumps) is HER evidence: refer to it as what she pasted, never as the result of a check or fetch you ran. You cannot run shell or npm commands from a chat reply — fixes happen only through a routed, approved delegated run. Never narrate step-by-step command execution as if it happened.
+- Output Ellie pasted into chat (terminal logs, audit reports, error dumps) is HER evidence: refer to it as what she pasted, never as the result of a check or fetch you ran. You cannot run shell or npm commands from a chat reply — fixes happen through a routed delegated run, which executes immediately when Ellie directs it. Never narrate step-by-step command execution as if it happened.
 - When she refers back ("that", "it", "those"), resolve it from the conversation below and answer the NEW question. Never repeat a prior reply.
 - You remember across sessions: when Ellie teaches you a durable fact, corrects you, or makes a decision, keep it — and she can say "remember …" or "forget …" directly. Never store transient task state, the conversation itself, anything already in code or config, and never secrets, credentials, or her employer's client/network specifics.
 - Hard boundaries hold: no real threats, coercion, harassment, violent imagery, or unauthorized external action.
@@ -1514,7 +1514,7 @@ The founder's current message is supplied separately as the user-role message. D
             # this turn. State exactly what was queued (or why it couldn't be) so
             # the reply points at a real item instead of narrating construction.
             text = _remove_build_deferral_question(text)
-            if build_route.get("status") == "queued" and (
+            if build_route.get("status") in {"queued", "executed", "needs_decision", "run_failed"} and (
                 build_route.get("kind") == "step" or _EXECUTION_INABILITY_RE.search(text)
             ):
                 # The drafted body either denies an execution that actually
@@ -1702,16 +1702,18 @@ The founder's current message is supplied separately as the user-role message. D
         authority: AuthorityResult,
         conversation_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        """Turn a founder build or maintenance *command* into a real, gated delegation.
+        """Turn a founder build or maintenance *command* into a directed delegated run.
 
         A chat turn only generates text; before this route, "build this out for
         me" could only ever produce an architecture outline. When the founder
         commands a build, we package a scoped brief (task + recent conversation
-        context + acceptance criteria) and enqueue it through
-        ``DelegationService.queue_delegation`` as an L3 external action. Chat
-        stays synchronous: auto-invoke is deliberately off on this path, so the
-        agent run happens when the founder clears the item in the Inbox — the
-        typed phrase stays the gate, and the reply points at the queued item.
+        context + acceptance criteria) and hand it to
+        ``DelegationService.queue_delegation`` as a DIRECTED run: the command is
+        the authorization, so the engine executes immediately (full auto, founder
+        decision 2026-07-16) up to the daily budget, and the reply carries the
+        real outcome. The agent queues the founder only when it hits a decision
+        it cannot make safely (a filed founder_decision item), or when the
+        budget/engine forces the item to wait in the Inbox.
         Best-effort: any failure returns a structured note, never breaks the reply.
         """
         if authority.decision == AuthorityDecision.DENY:
@@ -1792,8 +1794,9 @@ The founder's current message is supplied separately as the user-role message. D
                 task=task,
                 context=context_text,
                 acceptance=acceptance,
-                auto_invoke=False,
+                auto_invoke=None,
                 workspace=workspace,
+                directed=True,
             )
         except Exception as exc:  # noqa: BLE001 - routing must never break the chat reply
             return {
@@ -1808,7 +1811,7 @@ The founder's current message is supplied separately as the user-role message. D
         engine_ready = (
             engine == "native" and getattr(delegation, "coding_agent", None) is not None
         ) or (engine == "bridge" and bool(self.config.delegation.agent_command))
-        return {
+        route: dict[str, Any] = {
             "status": "queued",
             "kind": kind,
             "task": task,
@@ -1819,6 +1822,37 @@ The founder's current message is supplied separately as the user-role message. D
             "agent_configured": engine_ready,
             "engine": engine,
         }
+        if queued.get("auto_invoked"):
+            # The directed run already executed this turn — report what really
+            # happened instead of pointing at an Inbox item.
+            dispatch = queued.get("dispatch") or {}
+            route["dispatch"] = {
+                "status": dispatch.get("status"),
+                "ok": dispatch.get("ok"),
+                "engine": dispatch.get("engine"),
+                "model": dispatch.get("model"),
+                "rounds": dispatch.get("rounds"),
+                "changed_files": dispatch.get("changed_files", []),
+                "unverified_claims": dispatch.get("unverified_claims", []),
+                "evidence_id": dispatch.get("evidence_id"),
+                "error": dispatch.get("error", ""),
+            }
+            if str(dispatch.get("status")) == "needs_decision":
+                route["status"] = "needs_decision"
+                route["question"] = dispatch.get("founder_question") or {}
+                route["decision_item_id"] = dispatch.get("decision_item_id")
+            elif dispatch.get("ok"):
+                route["status"] = "executed"
+                route["auto_verified"] = any(
+                    isinstance(step, dict) and step.get("auto_verify") and step.get("ok")
+                    for step in dispatch.get("steps") or []
+                )
+            else:
+                route["status"] = "run_failed"
+                route["error"] = str(dispatch.get("error") or dispatch.get("status") or "run failed")[:400]
+        else:
+            route["reason"] = str(queued.get("reason") or "")
+        return route
 
     def _context_summary(self, context: dict[str, Any]) -> dict[str, Any]:
         dashboard = context["founder_dashboard"]
@@ -3166,7 +3200,7 @@ def _extract_maintenance_task(message: str) -> tuple[str, bool] | None:
     stripped = _POLITENESS_PREFIX_RE.sub("", text, count=1).strip()
     if not stripped or stripped.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
         return None
-    if not _MAINTENANCE_VERB_RE.search(stripped):
+    if not _maintenance_verb_is_commanded(stripped):
         return None
     subject_in_message = bool(_MAINTENANCE_SUBJECT_RE.search(stripped))
     if not subject_in_message and not _MAINTENANCE_ANAPHORA_RE.search(stripped):
@@ -3175,6 +3209,26 @@ def _extract_maintenance_task(message: str) -> tuple[str, bool] | None:
     if len(task) < 5:
         return None
     return task[:300], subject_in_message
+
+
+# Determiners/possessives in front of a maintenance word mean it is being used
+# as a NOUN ("outline the fix", "review your patch") — a request for prose, not
+# an execution command. With directed runs executing at full auto, a noun-usage
+# false positive would launch real work, so it must not route.
+_MAINTENANCE_NOUN_PRECEDERS = frozenset(
+    {"the", "a", "an", "this", "that", "these", "those", "my", "your", "our", "his", "her", "their", "its"}
+)
+
+
+def _maintenance_verb_is_commanded(text: str) -> bool:
+    """True when at least one maintenance verb appears in verb position (not
+    directly preceded by a determiner/possessive)."""
+    for match in _MAINTENANCE_VERB_RE.finditer(text):
+        before = text[: match.start()].rstrip()
+        preceding_word = re.split(r"[^\w']+", before)[-1].lower() if before else ""
+        if preceding_word not in _MAINTENANCE_NOUN_PRECEDERS:
+            return True
+    return False
 
 
 def _thread_names_maintenance_subject(turns: list[Any]) -> bool:
@@ -3335,19 +3389,71 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
     kind = str(route.get("kind") or "build")
     noun = {"maintenance": "fix", "step": "step run"}.get(kind, "build")
     task = str(route.get("task") or f"the requested {noun}").strip(" \t\r\n.,;:!?\"'-")
-    if status == "queued":
-        item_id = route.get("item_id")
-        target_line = ""
-        if kind in {"maintenance", "step"}:
-            workspace = str(route.get("workspace") or "").strip()
-            target_line = (
-                f" Target project: {workspace}."
-                if workspace
-                else (
-                    " No project directory is named in this thread, so it would run in my "
-                    "delegation workspace — give me the project path if that's wrong."
-                )
+    item_id = route.get("item_id")
+    target_line = ""
+    if kind in {"maintenance", "step"}:
+        workspace = str(route.get("workspace") or "").strip()
+        target_line = (
+            f" Target project: {workspace}."
+            if workspace
+            else (
+                " No project directory is named in this thread, so the run uses my "
+                "delegation workspace — give me the project path if that's wrong."
             )
+        )
+    if status == "executed":
+        dispatch = route.get("dispatch") or {}
+        changed = [str(f) for f in dispatch.get("changed_files") or []]
+        changed_line = (
+            f" Changed {len(changed)} file(s): {', '.join(changed[:5])}"
+            + ("…" if len(changed) > 5 else "")
+            + "."
+            if changed
+            else " No files needed changing."
+        )
+        verify_line = (
+            " Kernel-run verification passed on real output."
+            if route.get("auto_verified")
+            else (
+                " Heads up: it asserted checks it never ran — treat those as unconfirmed."
+                if dispatch.get("unverified_claims")
+                else ""
+            )
+        )
+        evidence_line = (
+            f" Artifact filed as delegated-work evidence (item #{item_id})."
+            if dispatch.get("evidence_id")
+            else f" Full detail is on item #{item_id}."
+        )
+        return (
+            f"Ran the {noun} - {task}.{target_line} Executed just now by my local coding agent "
+            f"({dispatch.get('model') or 'local model'}).{changed_line}{verify_line}{evidence_line}"
+        )
+    if status == "needs_decision":
+        question = route.get("question") or {}
+        q_text = str(question.get("question") or "").strip() or "I need your direction to continue."
+        options = [str(o) for o in question.get("options") or []]
+        options_line = f" Options: {'; '.join(options)}." if options else ""
+        decision_id = route.get("decision_item_id")
+        inbox_line = (
+            f" It's also in your Inbox as item #{decision_id} — clear it and I proceed on best safe judgment."
+            if decision_id
+            else ""
+        )
+        return (
+            f"Started the {noun} - {task} - and stopped on one call that's yours to make: "
+            f"{q_text}{options_line} Answer here and I'll run it through.{inbox_line}"
+        )
+    if status == "run_failed":
+        return (
+            f"Took the {noun} - {task} - straight to execution and it failed: "
+            f"{str(route.get('error') or 'unknown error')[:300]}{target_line} "
+            f"Nothing papered over — the run and its error are on item #{item_id}. "
+            "Fix or redirect and tell me to go again."
+        )
+    if status == "queued":
+        reason = str(route.get("reason") or "").strip()
+        reason_line = f" I couldn't run it immediately ({reason})." if reason else ""
         if route.get("agent_configured"):
             engine_label = (
                 "my local coding agent (loopback Ollama)"
@@ -3355,10 +3461,9 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
                 else "the local compatibility bridge"
             )
             return (
-                f"Queued the {noun} - {task}.{target_line} I packaged a scoped brief with our conversation as context "
-                f"and dropped it in your Inbox (item #{item_id}) behind the typed-phrase approval. "
-                f"Clear it and {engine_label} runs the {noun} and files the artifact "
-                "back as delegated-work evidence. That's the word I need from you."
+                f"Queued the {noun} - {task}.{target_line}{reason_line} The scoped brief is in your Inbox "
+                f"(item #{item_id}), pre-approved by your command — dispatch it and {engine_label} runs the "
+                f"{noun} and files the artifact back as delegated-work evidence."
             )
         return (
             f"Queued the {noun} - {task}.{target_line} I packaged a scoped brief (item #{item_id}), but no build "
@@ -3414,10 +3519,25 @@ def _build_route_note(route: dict[str, Any]) -> str:
     kind = str(route.get("kind") or "build")
     if kind not in {"maintenance", "step"}:
         kind = "build"
+    if status == "executed":
+        return (
+            f"Detected a directed {kind} command; the delegated run executed immediately at full auto "
+            "(founder command is the authorization) and the real outcome is in the reply."
+        )
+    if status == "needs_decision":
+        return (
+            f"Detected a directed {kind} command; the run started and paused on a genuine founder "
+            "decision, filed as a founder_decision Inbox item and surfaced in the reply."
+        )
+    if status == "run_failed":
+        return (
+            f"Detected a directed {kind} command; the delegated run executed immediately and failed — "
+            "the failure is reported honestly in the reply."
+        )
     if status == "queued":
         return (
-            f"Detected a {kind} command; packaged a delegation brief from the conversation and queued an "
-            "approval-gated external-agent run to the Inbox (invocation stays behind the typed-phrase approval)."
+            f"Detected a directed {kind} command; it could not run immediately "
+            f"({route.get('reason') or 'engine/budget'}), so a pre-approved delegation brief waits in the Inbox."
         )
     if status == "no_task":
         return f"Detected a {kind} command but no target in the thread; asked the founder to scope it."
@@ -3434,12 +3554,23 @@ def _build_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
         "anaphoric": route.get("anaphoric", False),
         "workspace": route.get("workspace", ""),
     }
-    if route.get("status") == "queued":
+    if route.get("status") in {"queued", "executed", "needs_decision", "run_failed"}:
         summary |= {
             "item_id": route.get("item_id"),
             "queue_status": route.get("queue_status"),
             "agent_configured": route.get("agent_configured", False),
         }
+        if route.get("status") == "queued":
+            summary["reason"] = route.get("reason", "")
+        if "dispatch" in route:
+            summary["dispatch"] = route.get("dispatch")
+        if route.get("status") == "needs_decision":
+            summary |= {
+                "question": route.get("question"),
+                "decision_item_id": route.get("decision_item_id"),
+            }
+        if route.get("status") == "run_failed":
+            summary["error"] = route.get("error", "")
     elif route.get("status") == "error":
         summary["error"] = route.get("error", "")
     return summary

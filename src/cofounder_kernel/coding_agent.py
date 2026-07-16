@@ -117,7 +117,7 @@ class CodingAgentService:
         root = self._workspace_root(workspace)
         try:
             selected_model = (model or "").strip() or self.resolve_model()
-        except ModelInventoryError as exc:
+        except (ModelInventoryError, OllamaError) as exc:
             return {
                 "ok": False,
                 "status": "capability_error",
@@ -128,7 +128,8 @@ class CodingAgentService:
                 "changed_files": [],
                 "response": "",
             }
-        tools = self._build_tools(root)
+        question_box: dict[str, Any] = {}
+        tools = self._build_tools(root, question_box=question_box)
         schemas = _tool_schemas(tools)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_message(root, tools)},
@@ -209,6 +210,11 @@ class CodingAgentService:
                 messages.append(
                     {"role": "tool", "tool_name": name, "content": _render_result(result)}
                 )
+            if question_box.get("question"):
+                # The model raised a genuine founder decision: stop cleanly.
+                # The delegation layer files the question; nothing is guessed.
+                status = "needs_decision"
+                break
             dropped = len(tool_calls) - min(len(tool_calls), MAX_CALLS_PER_ROUND)
             if dropped > 0:
                 messages.append(
@@ -256,6 +262,14 @@ class CodingAgentService:
             "ok": status == "ok",
             "status": status,
             "error": error,
+            "founder_question": (
+                {
+                    "question": str(question_box.get("question") or ""),
+                    "options": [str(o) for o in (question_box.get("options") or [])],
+                }
+                if status == "needs_decision"
+                else None
+            ),
             "model": selected_model,
             "provider": self.ollama.provider_info(),
             "workspace": str(root),
@@ -371,6 +385,14 @@ class CodingAgentService:
                 "summary of what changed and the test result. Never claim an action you did not "
                 "perform with a tool. When you are done, reply with plain text and no tool calls."
             ),
+            (
+                "You are pre-authorized to complete this task end to end — never stop to ask "
+                "whether to proceed, and never end with a plan instead of the work. Resolve "
+                "ordinary ambiguity with the safest reasonable choice and keep going. Only if "
+                "you hit a decision you truly cannot make safely (missing requirement, "
+                "irreversible choice, materially different options) call ask_founder once with "
+                "one precise question, then stop."
+            ),
         ]
         if instructions:
             parts.append("----------  Workspace instructions  ----------\n" + instructions)
@@ -390,11 +412,44 @@ class CodingAgentService:
         return "\n\n".join(chunks)[: 2 * _MAX_INSTRUCTION_CHARS]
 
     # ---- tools -----------------------------------------------------------------
-    def _build_tools(self, root: Path) -> dict[str, AgentTool]:
+    def _build_tools(
+        self, root: Path, *, question_box: dict[str, Any] | None = None
+    ) -> dict[str, AgentTool]:
         tools: dict[str, AgentTool] = {}
 
         def add(tool: AgentTool) -> None:
             tools[tool.name] = tool
+
+        if question_box is not None:
+            add(
+                AgentTool(
+                    name="ask_founder",
+                    description=(
+                        "Stop and queue a decision question to the founder. Use ONLY when you "
+                        "genuinely cannot proceed safely without their input: a missing requirement, "
+                        "an irreversible or destructive choice, or materially different implementations "
+                        "with real trade-offs. Never use it to ask permission to do the task you were "
+                        "given — that is already granted. Calling this ends the run; it resumes after "
+                        "the founder answers."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "One precise, answerable question for the founder.",
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional concrete options, best default first.",
+                            },
+                        },
+                        "required": ["question"],
+                    },
+                    handler=lambda args: self._tool_ask_founder(question_box, args),
+                )
+            )
 
         add(
             AgentTool(
@@ -547,6 +602,21 @@ class CodingAgentService:
             pass
 
     # ---- tool implementations ---------------------------------------------------
+    def _tool_ask_founder(self, question_box: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+        question = str(args.get("question") or "").strip()
+        if not question:
+            return {"ok": False, "error": "question is required"}
+        options = args.get("options")
+        question_box["question"] = question[:600]
+        question_box["options"] = [str(o)[:200] for o in options[:6]] if isinstance(options, list) else []
+        return {
+            "ok": True,
+            "note": (
+                "Question queued for the founder. Stop working now — reply with a one-line "
+                "summary of the state you are leaving things in, and no further tool calls."
+            ),
+        }
+
     def _tool_list_files(self, root: Path, args: dict[str, Any]) -> dict[str, Any]:
         base = self._resolve_in_workspace(root, str(args.get("path") or "."))
         if not base.exists():

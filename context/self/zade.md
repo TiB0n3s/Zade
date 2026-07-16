@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `e131e20` 2026-07-16 - Update Zade autonomous execution policy
 - `465a5e8` 2026-07-16 - Delegated artifacts cannot carry unexecuted verification claims
 - `d80dc8f` 2026-07-16 - Routed replies drop contradictory "I cannot execute" bodies
 - `ba0255f` 2026-07-16 - Step-execution route: "perform the tasks in step 5" / "do it" now executes
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `c7268aa` 2026-07-16 - Add investigation tool loop: Zade now runs real reads instead of narrating them
 - `2062f37` 2026-07-16 - Merge fix/zade-live-trading-data: live trade/PnL data + repo change evidence together
 - `3088714` 2026-07-16 - Session work: what-changed investigation fix + accumulated kernel/UI changes
-- `8bf34d0` 2026-07-15 - v1 - update
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

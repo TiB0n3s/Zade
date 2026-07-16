@@ -550,3 +550,128 @@ def test_workspace_target_dispatch_refuses_bad_targets(tmp_path: Path, monkeypat
         assert dispatch["ok"] is False, bad_target
         assert dispatch["status"] == "flow_error"
         assert expected in dispatch["error"]
+
+
+# ---- directed runs: full auto on a founder command ------------------------------
+
+def _fake_native_ok(workspace_holder: dict):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        workspace_holder["workspace"] = workspace
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 2,
+            "used_tools": True,
+            "steps": [{"tool": "write_file", "arguments": {"path": "src/app.py"}, "ok": True}],
+            "changed_files": ["src/app.py"],
+            "response": "Built it.",
+        }
+
+    return fake_agent_run
+
+
+def test_directed_workspace_run_auto_invokes_and_completes_item(tmp_path: Path, monkeypatch) -> None:
+    """A DIRECTED founder command runs at full auto even into a founder-named
+    project workspace, and the work item is closed with the outcome — no stale
+    approval entry for work that already ran."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    target = tmp_path / "SomeProject"
+    target.mkdir()
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    captured: dict = {}
+    monkeypatch.setattr(CodingAgentService, "run", _fake_native_ok(captured))
+    config = _config(tmp_path, enabled=True, auto_invoke=True, engine="native")
+    client = TestClient(create_app(config))
+
+    result = client.post(
+        "/delegation/run",
+        json={"task": "build the feature", "workspace": str(target), "directed": True},
+    ).json()
+
+    assert result["auto_invoked"] is True
+    assert result["dispatch"]["ok"] is True
+    assert captured["workspace"] == str(target)
+    # The item is finalized, and nothing waits on an approval.
+    done = client.get("/work/queue", params={"status": "done"}).json()["items"]
+    assert any(item["id"] == result["item_id"] for item in done)
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+
+
+def test_undirected_workspace_run_still_waits_for_founder(tmp_path: Path, monkeypatch) -> None:
+    """Without the directed flag, a workspace-targeted run keeps the conservative
+    posture: queued for the founder, never auto-dispatched."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    target = tmp_path / "SomeProject"
+    target.mkdir()
+    config = _config(tmp_path, enabled=True, auto_invoke=True, engine="native")
+    client = TestClient(create_app(config))
+
+    result = client.post(
+        "/delegation/run",
+        json={"task": "build the feature", "auto_invoke": True, "workspace": str(target)},
+    ).json()
+
+    assert result["auto_invoked"] is False
+
+
+def test_directed_needs_decision_files_founder_question(tmp_path: Path, monkeypatch) -> None:
+    """When the agent stops on a genuine decision, the run comes back as
+    needs_decision (not an error) and a founder_decision item carrying the
+    question and a resume brief lands in the Inbox."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": False,
+            "status": "needs_decision",
+            "error": "",
+            "founder_question": {
+                "question": "SQLite or Postgres for persistence?",
+                "options": ["SQLite", "Postgres"],
+            },
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 1,
+            "used_tools": True,
+            "steps": [{"tool": "list_files", "arguments": {}, "ok": True}],
+            "changed_files": [],
+            "response": "Paused: persistence engine is the founder's call.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    config = _config(tmp_path, enabled=True, auto_invoke=True, engine="native")
+    client = TestClient(create_app(config))
+
+    result = client.post(
+        "/delegation/run", json={"task": "add persistence", "directed": True}
+    ).json()
+
+    assert result["auto_invoked"] is True
+    dispatch = result["dispatch"]
+    assert dispatch["status"] == "needs_decision"
+    assert dispatch["ok"] is True  # the run's outcome IS the filed question
+    assert dispatch["founder_question"]["question"] == "SQLite or Postgres for persistence?"
+    assert dispatch["decision_item_id"]
+
+    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    decision = next(item for item in queued if item["id"] == dispatch["decision_item_id"])
+    assert decision["kind"] == "founder_decision"
+    assert "SQLite or Postgres" in decision["detail"]
+    # The resume brief keeps the original task and surfaces the question.
+    assert "## Founder decision" in decision["metadata"]["brief"]
+    assert decision["metadata"]["task"] == "add persistence"
+    # The original run item is closed (its outcome is the decision item).
+    done = client.get("/work/queue", params={"status": "done"}).json()["items"]
+    assert any(item["id"] == result["item_id"] for item in done)

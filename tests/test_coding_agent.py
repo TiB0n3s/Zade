@@ -398,3 +398,39 @@ def test_tool_executions_are_audited(tmp_path: Path, fixture_repo: Path) -> None
     events = [e for e in db.recent_audit_events(limit=20) if e.get("action") == "coding_agent.tool_call"]
     assert events, "tool executions must be audited"
     assert events[0]["actor"] == "coding_agent"
+
+
+# ask_founder: the queue-only-when-unsure channel --------------------------------
+
+def test_ask_founder_ends_run_with_needs_decision(tmp_path: Path, fixture_repo: Path) -> None:
+    """A genuine founder decision stops the loop cleanly: no guessing, no more
+    tool rounds, and the question travels back structured for the delegation
+    layer to file."""
+    script = [
+        {"tool_calls": [_call("ask_founder", question="SQLite or Postgres for persistence?",
+                              options=["SQLite (local, zero-config)", "Postgres"])]},
+        {"content": "should never be requested"},  # loop must stop before this
+    ]
+    svc, ollama = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="Add persistence to the app")
+
+    assert result["status"] == "needs_decision"
+    assert result["ok"] is False  # the task itself is not complete
+    assert result["founder_question"]["question"] == "SQLite or Postgres for persistence?"
+    assert result["founder_question"]["options"] == ["SQLite (local, zero-config)", "Postgres"]
+    # The loop stopped immediately after the question round.
+    assert len(ollama.calls) == 1
+    assert result["changed_files"] == []
+
+
+def test_ask_founder_tool_is_offered_with_guardrails(tmp_path: Path, fixture_repo: Path) -> None:
+    """The tool is in the belt with its only-when-blocked contract, and the
+    system message carries the pre-authorization posture."""
+    svc, ollama = _service(tmp_path, fixture_repo, [{"content": "done"}])
+    svc.run(task="anything")
+    first_call = ollama.calls[0]
+    tool_names = {t["function"]["name"] for t in first_call["tools"]}
+    assert "ask_founder" in tool_names
+    system = first_call["messages"][0]["content"]
+    assert "pre-authorized" in system
+    assert "never stop to ask" in system
