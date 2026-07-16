@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `3088714` 2026-07-16 - Session work: what-changed investigation fix + accumulated kernel/UI changes
 - `8bf34d0` 2026-07-15 - v1 - update
 - `f6a3cdd` 2026-07-15 - Finish index.html relativization for Option B (nav links)
 - `cb27d4e` 2026-07-15 - Fix Zade home page asset paths for Option B (relativize index.html)
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `b65143a` 2026-07-15 - Add Zade self-knowledge drift checks
 - `18587ad` 2026-07-15 - Render the disambiguation into the prompt so Zade actually reads it
 - `6fed106` 2026-07-15 - Generate Zade self-knowledge blocks
-- `feb48c2` 2026-07-15 - Fix Zade conflating its bridge's read-only ceiling with the bot's authority
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

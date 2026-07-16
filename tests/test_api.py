@@ -16,6 +16,33 @@ def fake_health(self: OllamaClient) -> dict:
     return {"version": "test"}
 
 
+def fake_activity_snapshot(self: TradingBotBridge, **_: object) -> dict:
+    """Deterministic live-trading snapshot so prompt tests stay hermetic (the real
+    method shells into WSL)."""
+    return {
+        "ok": True,
+        "runtime_effect": "read_only_sqlite_no_trade_authority",
+        "trades": {
+            "today_total": 139,
+            "buys": 72,
+            "sells": 67,
+            "symbols": 32,
+            "recent_fills": [
+                {"symbol": "AAPL", "action": "buy", "qty": 54, "fill_price": 327.64, "order_status": "filled"},
+            ],
+        },
+        "equity": {
+            "latest_equity": 88419.57,
+            "session_date": "2026-07-15",
+            "intraday_change": -865.39,
+            "change_vs_prior_close": -871.59,
+            "samples_today": 302,
+        },
+        "signals": [{"symbol": "RKLB", "decision": "avoid", "score": -4}],
+        "errors": [],
+    }
+
+
 def fake_tags(self: OllamaClient) -> dict:
     return {
         "models": [
@@ -883,6 +910,7 @@ def test_runtime_respond_prompt_includes_trading_bot_context_for_trading_questio
         }
 
     monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    monkeypatch.setattr(TradingBotBridge, "activity_snapshot", fake_activity_snapshot)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -923,6 +951,12 @@ def test_runtime_respond_prompt_includes_trading_bot_context_for_trading_questio
     assert "do not pivot to approval pressure unless the approval directly gates this domain." in prompt
     assert "Approval pressure: Omitted for this domain-status answer" in prompt
     assert "Bridge status: ok; enabled=True" in prompt
+    # Live trading data is injected so PnL/trade/signal questions answer from real
+    # rows, and the anti-fabrication guardrail is present.
+    assert "LIVE TRADING DATA -- today: 139 trades" in prompt
+    assert "Account equity: $88419.57" in prompt
+    assert "DATA DISCIPLINE" in prompt
+    assert "NEVER invent a symbol" in prompt
     assert "Ubuntu-TradingBot-C:/home/tradingbot/trading-bot; reachable=True" in prompt
     assert "Replacement seams: active=6; planned=0" in prompt
     assert "approval-gated append-only dt_recommendations ingest" in prompt
@@ -1629,6 +1663,7 @@ def test_trading_bot_prompt_omits_unrelated_founder_next_actions(tmp_path: Path,
         }
 
     monkeypatch.setattr(TradingBotBridge, "status", fake_status)
+    monkeypatch.setattr(TradingBotBridge, "activity_snapshot", fake_activity_snapshot)
     config = KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -1660,6 +1695,12 @@ def test_trading_bot_prompt_omits_unrelated_founder_next_actions(tmp_path: Path,
     assert context["evidence_state"]["trading_bot_context_present"] is True
     assert "Trading-bot:" in prompt
     assert "Bridge status: ok; enabled=True" in prompt
+    # Live trading data is injected so PnL/trade/signal questions answer from real
+    # rows, and the anti-fabrication guardrail is present.
+    assert "LIVE TRADING DATA -- today: 139 trades" in prompt
+    assert "Account equity: $88419.57" in prompt
+    assert "DATA DISCIPLINE" in prompt
+    assert "NEVER invent a symbol" in prompt
     assert "POST /trading-bot/daily-brief (active, local_memory_write_no_trade_authority)" in prompt
     assert "Active objective: Omitted for this domain-status answer" in prompt
     assert "One thing that matters most: Omitted for this domain-status answer" in prompt
