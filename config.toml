@@ -13,6 +13,18 @@ cors_dev_origins = ["http://localhost:5173"]
 # the charter voice has room for texture and doesn't repeat the same phrasing.
 temperature = 0.6
 
+[delegation]
+# External coding agent for delegated build work (chat "build X" routes here as
+# an approval-gated brief). Claude Code headless: reads the brief on stdin,
+# prints the result. acceptEdits lets it write files without interactive
+# prompts; riskier tool calls fail closed and get reported in the artifact.
+agent_command = ["claude", "-p", "--permission-mode", "acceptEdits"]
+# Delegated builds run HERE, never inside the kernel repo.
+workspace_root = "C:\\Users\\TiBon\\ZadeWorkspace"
+# Real builds need more than 10 minutes.
+timeout_seconds = 1800
+max_output_chars = 40000
+
 [voice]
 # Cloud speech engines (standing grant: audio and reply text leave the machine).
 # API keys are read from the DEEPGRAM_API_KEY and ELEVENLABS_API_KEY environment

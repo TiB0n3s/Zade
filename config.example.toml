@@ -92,3 +92,18 @@ timeout_seconds = 120.0
 workspace_root = "C:\\LocalAICofounder"
 default_branch = "main"
 command_timeout_seconds = 300.0
+
+[delegation]
+# Delegated build work (swarm, frontier half). A founder chat command like
+# "build me a book-cataloguing app" or "build this out for me" packages a
+# scoped brief and queues an approval-gated external-agent run; approving the
+# Inbox item invokes agent_command with the brief on stdin. Empty command =
+# brief-only (prepare-not-send). workspace_root confines where the agent runs —
+# keep it OUTSIDE this repo.
+enabled = true
+auto_invoke = true
+agent_command = ["claude", "-p", "--permission-mode", "acceptEdits"]
+daily_budget = 25
+timeout_seconds = 1800
+max_output_chars = 40000
+workspace_root = "C:\\Users\\you\\ZadeWorkspace"

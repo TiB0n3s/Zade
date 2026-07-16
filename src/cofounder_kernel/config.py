@@ -276,6 +276,10 @@ class DelegationConfig:
     timeout_seconds: float = 600.0
     max_output_chars: int = 20_000
     default_reliability: str = "C"
+    # Directory the external agent runs in (created on first use). Empty = the
+    # kernel's own working directory. Point it OUTSIDE this repo so delegated
+    # builds can never write into Zade's own code.
+    workspace_root: str = ""
 
 
 @dataclass(frozen=True)
@@ -472,6 +476,9 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         timeout_seconds=float(delegation_raw.get("timeout_seconds", 600.0)),
         max_output_chars=int(delegation_raw.get("max_output_chars", 20_000)),
         default_reliability=str(delegation_raw.get("default_reliability", "C")).strip() or "C",
+        workspace_root=str(
+            os.getenv("ZADE_DELEGATION_WORKSPACE_ROOT", delegation_raw.get("workspace_root", ""))
+        ).strip(),
     )
     screen_raw = raw.get("screen", {})
     screen = ScreenConfig(

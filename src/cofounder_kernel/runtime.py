@@ -99,7 +99,48 @@ Communicating with the user:
 - Before ending, make sure the last paragraph is not a promise of unfinished work.
 
 Coding effort:
-- Use the maximum available reasoning effort for coding tasks."""
+- Use the maximum available reasoning effort for coding tasks.
+
+App and SaaS build requests:
+- Treat app, SaaS, mobile, and store-shipping requests as product implementation work.
+- Do not answer a build request by recommending an existing app unless the founder explicitly asks for alternatives.
+- Pick a concrete implementation path before giving steps: mobile framework, backend/sync layer, local storage, barcode/camera package when relevant, and the first reviewable deliverable.
+- For Google Play or Apple App Store targets, account for mobile permissions, offline behavior, privacy disclosures, account/delete-data flows, subscriptions or payments only when requested, and release/build signing as implementation constraints.
+- If this local kernel cannot edit files or invoke an external builder for the requested artifact, say that exact limitation and provide the next concrete artifact Zade can produce in-chat."""
+
+
+_SOFTWARE_BUILD_ACTION_RE = re.compile(
+    r"\b(build(?:\s+out)?|create|develop|implement|code|ship|make|design)\b",
+    re.IGNORECASE,
+)
+_SOFTWARE_BUILD_SUBJECT_RE = re.compile(
+    r"\b("
+    r"mobile\s+app|web\s+app|phone\s+app|ios|android|iphone|app\s+store|apple\s+store|google\s+play|"
+    r"application|app|software|frontend|backend|api|react\s+native|expo|flutter|"
+    r"saas\s+(?:app|application|product|platform|tool|software)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _infer_runtime_defaults(
+    *,
+    message: str,
+    task_type: ModelRole,
+    profile: str | None,
+) -> tuple[ModelRole, str | None]:
+    if not _looks_like_software_build_request(message):
+        return task_type, profile
+    inferred_task_type = "coding" if task_type == "general" else task_type
+    inferred_profile = profile or "build"
+    return inferred_task_type, inferred_profile
+
+
+def _looks_like_software_build_request(message: str) -> bool:
+    text = re.sub(r"\s+", " ", (message or "").strip())
+    if not text:
+        return False
+    return bool(_SOFTWARE_BUILD_ACTION_RE.search(text) and _SOFTWARE_BUILD_SUBJECT_RE.search(text))
 
 
 def _code_model_prompt_block(context: dict[str, Any]) -> str:
@@ -231,6 +272,10 @@ class RuntimeService:
         # after the runtime because it needs the notification bus). Typed as Any
         # to avoid a runtime<->research import cycle.
         self.research = research
+        # DelegationService is likewise injected after construction in api.py.
+        # It is the chat's only path to real build work: a founder "build X"
+        # command routes here as a gated delegation brief for an external agent.
+        self.delegation: Any | None = None
         # Agentic investigation loop: whitelisted read-only tools the chat model
         # can call before answering, so "can you look at X?" runs real reads
         # instead of narrating a check the turn cannot perform.
@@ -270,6 +315,12 @@ class RuntimeService:
         task_type: ModelRole = "general",
         conversation_id: int | None = None,
     ) -> dict[str, Any]:
+        if profile_id is None:
+            task_type, profile = _infer_runtime_defaults(
+                message=self._runtime_mode_inference_text(message=message, conversation_id=conversation_id),
+                task_type=task_type,
+                profile=profile,
+            )
         active_profile_id = profile_id or self._resolve_prompt_profile_id(profile, conversation_id=conversation_id)
         memory_hits: list[dict[str, Any]] = []
         semantic_hits: list[dict[str, Any]] = []
@@ -330,6 +381,20 @@ class RuntimeService:
 
     def default_prompt_profile_id(self) -> str:
         return self.prompt_profiles.resolve_profile_id(None, configured_default=self.config.prompt_profiles.default)
+
+    def _runtime_mode_inference_text(self, *, message: str, conversation_id: int | None) -> str:
+        if not conversation_id:
+            return message
+        try:
+            turns = self.db.recent_conversation_turns(conversation_id, window=ConversationService.RECENT_WINDOW)
+        except Exception:
+            return message
+        prior_user_turns = [
+            str(turn.get("content", ""))
+            for turn in turns[-6:]
+            if str(turn.get("role", "")).lower() == "user" and str(turn.get("content", "")).strip()
+        ]
+        return "\n".join([message, *prior_user_turns])
 
     def _resolve_prompt_profile_id(self, requested: str | None, *, conversation_id: int | None = None) -> str:
         session_profile = None
@@ -423,6 +488,11 @@ class RuntimeService:
         contrarian: bool | None = None,
         use_tools: bool | None = None,
     ) -> dict[str, Any]:
+        task_type, profile = _infer_runtime_defaults(
+            message=self._runtime_mode_inference_text(message=message, conversation_id=conversation_id),
+            task_type=task_type,
+            profile=profile,
+        )
         active_profile_id = self._resolve_prompt_profile_id(profile, conversation_id=conversation_id)
         context = self.context(
             message=message,
@@ -544,6 +614,17 @@ class RuntimeService:
         response_for_governor = repair.get("response", generated.response)
         chat_action_route = self._maybe_route_chat_action(message=message, authority=authority)
         research_route = self._maybe_route_research_work(message=message, authority=authority)
+        # One routed action per turn: a message that already queued a chat action
+        # or research run is not also a build command.
+        build_route = (
+            None
+            if (chat_action_route or research_route)
+            else self._maybe_route_build_work(
+                message=message,
+                authority=authority,
+                conversation_messages=list(conversation.get("messages") or []),
+            )
+        )
         regulated = self._regulate_response(
             response_for_governor,
             message=message,
@@ -552,6 +633,7 @@ class RuntimeService:
             context=context,
             chat_action_route=chat_action_route,
             research_route=research_route,
+            build_route=build_route,
         )
         if repair["status"] == "repaired":
             regulated["governor"]["applied_rules"].append("charter_recitation_repaired")
@@ -627,6 +709,7 @@ class RuntimeService:
                 "contrarian": contrarian_summary,
                 "chat_action_route": _chat_action_route_summary(chat_action_route),
                 "research_route": _research_route_summary(research_route),
+                "build_route": _build_route_summary(build_route),
                 "prompt_profile": context.get("prompt_profile"),
                 "investigation": investigation_summary,
             },
@@ -718,6 +801,7 @@ class RuntimeService:
             "contrarian": contrarian_summary,
             "chat_action": _chat_action_route_summary(chat_action_route),
             "research": _research_route_summary(research_route),
+            "build": _build_route_summary(build_route),
             "investigation": investigation_summary,
         }
 
@@ -1343,6 +1427,7 @@ The founder's current message is supplied separately as the user-role message. D
         context: dict[str, Any],
         chat_action_route: dict[str, Any] | None = None,
         research_route: dict[str, Any] | None = None,
+        build_route: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         text = response.strip()
         notes = []
@@ -1416,9 +1501,17 @@ The founder's current message is supplied separately as the user-role message. D
             text = f"{text}\n\n{_render_research_route_block(research_route)}".strip()
             applied_rules.append("research_work_routed")
             notes.append(_research_route_note(research_route))
+        if build_route:
+            # A build command was routed into the work queue as a delegation brief
+            # this turn. State exactly what was queued (or why it couldn't be) so
+            # the reply points at a real item instead of narrating construction.
+            text = f"{text}\n\n{_render_build_route_block(build_route)}".strip()
+            applied_rules.append("build_work_routed")
+            notes.append(_build_route_note(build_route))
         if (
             not chat_action_route
             and not research_route
+            and not build_route
             and authority.decision != AuthorityDecision.DENY
             and _claims_background_work_start(text)
         ):
@@ -1573,6 +1666,65 @@ The founder's current message is supplied separately as the user-role message. D
             "urls": urls,
             "queued": queued,
             "related": [item.get("question") for item in related][:3],
+        }
+
+    def _maybe_route_build_work(
+        self,
+        *,
+        message: str,
+        authority: AuthorityResult,
+        conversation_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Turn a founder build *command* into a real, gated delegation.
+
+        A chat turn only generates text; before this route, "build this out for
+        me" could only ever produce an architecture outline. When the founder
+        commands a build, we package a scoped brief (task + recent conversation
+        context + acceptance criteria) and enqueue it through
+        ``DelegationService.queue_delegation`` as an L3 external action. Chat
+        stays synchronous: auto-invoke is deliberately off on this path, so the
+        agent run happens when the founder clears the item in the Inbox — the
+        typed phrase stays the gate, and the reply points at the queued item.
+        Best-effort: any failure returns a structured note, never breaks the reply.
+        """
+        if authority.decision == AuthorityDecision.DENY:
+            return None
+        delegation = getattr(self, "delegation", None)
+        if delegation is None:
+            return None
+        if not getattr(self.config, "delegation", None) or not self.config.delegation.enabled:
+            return None
+        extracted = _extract_build_task(message)
+        if extracted is None:
+            return None
+        task, anaphoric = extracted
+        turns = conversation_messages or []
+        if anaphoric:
+            task = _anaphoric_build_task(turns, current_message=message)
+            if not task:
+                return {"status": "no_task", "task": "", "anaphoric": True}
+        context_text = _conversation_build_context(turns, current_message=message)
+        acceptance = (
+            "A runnable scaffold or concrete artifact the founder can open and iterate on, "
+            "with a short README covering what was built and how to run it. "
+            "If something blocks completion, state precisely what and why."
+        )
+        try:
+            queued = delegation.queue_delegation(
+                task=task,
+                context=context_text,
+                acceptance=acceptance,
+                auto_invoke=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - routing must never break the chat reply
+            return {"status": "error", "task": task, "anaphoric": anaphoric, "error": str(exc)[:200]}
+        return {
+            "status": "queued",
+            "task": task,
+            "anaphoric": anaphoric,
+            "item_id": queued.get("item_id"),
+            "queue_status": queued.get("status"),
+            "agent_configured": bool(self.config.delegation.agent_command),
         }
 
     def _context_summary(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -2789,6 +2941,178 @@ def _research_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | No
             "url_count": queued.get("url_count", len(route.get("urls", []))),
             "urls": route.get("urls", []),
             "action": queued.get("action"),
+        }
+    elif route.get("status") == "error":
+        summary["error"] = route.get("error", "")
+    return summary
+
+
+# ---- build-command routing (chat -> delegation) ----
+
+# The whole message is an anaphoric build command ("build this out for me",
+# "help me build this", "let's build it") — the task lives in the conversation,
+# not the message. Politeness prefixes are stripped before this is applied.
+_BUILD_ANAPHORIC_RE = re.compile(
+    r"""(?ix)^\s*
+    (?:help\s+me\s+|help\s+us\s+|let'?s\s+|go\s+ahead\s+and\s+|start\s+|just\s+)*
+    build(?:ing)?
+    (?:\s+(?:this|it|that))?
+    (?:\s+out)?
+    (?:\s+(?:for\s+me|for\s+us|together|now|please))?
+    \s*[.!]*\s*$"""
+)
+
+# An explicit build command with the task in the message ("build me a book
+# cataloguing app", "scaffold a billing service", "prototype an MVP for X").
+# Anchored to the start of the politeness-stripped message so metaphorical
+# uses mid-sentence ("we should build trust with customers") never route.
+_BUILD_VERB_RE = re.compile(
+    r"""(?ix)^\s*
+    (?:help\s+me\s+|let'?s\s+|start\s+|i\s+(?:want|need)\s+to\s+|i'?d\s+like\s+to\s+)?
+    (?:build|scaffold|prototype|code\s+up)\s+
+    (?:me\s+|us\s+|out\s+)?
+    (?P<task>.+)
+    """
+)
+
+# "create/make/spin up" only counts as a build command when it names an
+# app-shaped deliverable — otherwise it collides with ordinary chat verbs.
+_BUILD_CREATE_RE = re.compile(
+    r"""(?ix)^\s*
+    (?:help\s+me\s+|let'?s\s+|i\s+(?:want|need)\s+to\s+|i'?d\s+like\s+to\s+)?
+    (?:create|make|spin\s+up|stand\s+up)\s+
+    (?:me\s+|us\s+)?
+    (?P<task>(?:a|an|the|another)\s+(?:new\s+)?(?:[\w-]+\s+){0,4}?
+        (?:app|apps|application|applications|mvp|saas|prototype|website|web\s*site|
+           web\s+app|mobile\s+app|service|tool|bot|dashboard|api)\b.*)
+    """
+)
+
+# Residual anaphora once the verb is stripped ("build this", "build it out").
+_BUILD_TASK_STOPWORDS = {
+    "this", "it", "that", "this out", "it out", "that out", "this for me",
+    "it for me", "this out for me", "one", "something", "me", "us",
+}
+
+
+def _extract_build_task(message: str) -> tuple[str, bool] | None:
+    """Return (task, anaphoric) for a founder build *command*, or None when the
+    message is not one (a design question, or no buildable target)."""
+    text = (message or "").strip()
+    if not text:
+        return None
+    if text.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
+        return None
+    stripped = _POLITENESS_PREFIX_RE.sub("", text, count=1).strip()
+    if stripped.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
+        return None
+    if _BUILD_ANAPHORIC_RE.match(stripped):
+        return "", True
+    match = _BUILD_VERB_RE.search(stripped) or _BUILD_CREATE_RE.search(stripped)
+    if not match:
+        return None
+    task = match.group("task").strip(" \t\r\n.,;:!?\"'-")
+    if len(task) < 5 or task.lower() in _BUILD_TASK_STOPWORDS:
+        # "build this ..." variants that slipped past the anaphoric form.
+        return "", True
+    return task[:300], False
+
+
+def _anaphoric_build_task(
+    turns: list[Any], *, current_message: str = ""
+) -> str:
+    """Resolve "build this" against the conversation: the task is the most recent
+    substantive founder turn that is not itself a build command."""
+    current = (current_message or "").strip().lower()
+    for turn in reversed(turns or []):
+        if str(_turn_field(turn, "role")).lower() != "user":
+            continue
+        content = re.sub(r"\s+", " ", str(_turn_field(turn, "content")).strip())
+        if not content or content.lower() == current:
+            continue
+        if _extract_build_task(content) == ("", True):
+            continue
+        if len(content) >= 20:
+            return content[:300]
+    return ""
+
+
+def _conversation_build_context(
+    turns: list[Any], *, current_message: str = "", max_chars: int = 2400
+) -> str:
+    """Pack the recent conversation into the delegation brief's context section so
+    the external agent sees the same scoping the founder and Zade just did."""
+    lines: list[str] = []
+    for turn in (turns or [])[-10:]:
+        role = str(_turn_field(turn, "role")).strip() or "user"
+        content = re.sub(r"\s+", " ", str(_turn_field(turn, "content")).strip())
+        if content:
+            lines.append(f"{role}: {content[:600]}")
+    if current_message.strip():
+        lines.append(f"user: {re.sub(r'\\s+', ' ', current_message.strip())[:600]}")
+    text = "\n".join(lines)
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
+def _turn_field(turn: Any, field: str) -> Any:
+    if isinstance(turn, dict):
+        return turn.get(field, "")
+    return getattr(turn, field, "")
+
+
+def _render_build_route_block(route: dict[str, Any]) -> str:
+    status = route.get("status")
+    task = route.get("task", "")
+    if status == "queued":
+        item_id = route.get("item_id")
+        if route.get("agent_configured"):
+            return (
+                f"Queued the build - {task}. I packaged a scoped brief with our conversation as context "
+                f"and dropped it in your Inbox (item #{item_id}) behind the typed-phrase approval. "
+                "Clear it and I hand the brief to the configured coding agent and file its artifact "
+                "back as delegated-work evidence. That's the word I need from you."
+            )
+        return (
+            f"Queued the build - {task}. I packaged a scoped brief (item #{item_id}), but no external "
+            "coding agent is configured ([delegation] agent_command in config.toml), so approving it "
+            "hands you the brief to run manually. Set the agent command and I can run this end to end."
+        )
+    if status == "no_task":
+        return (
+            "You told me to build, but this thread hasn't scoped a target yet. "
+            "Give me one line on what it is and I'll queue the delegated build."
+        )
+    return (
+        f"Tried to queue the build on {task or 'that'} and hit a snag: {route.get('error', 'unknown error')}. "
+        "Nothing was dispatched. Give me the word and I'll retry."
+    )
+
+
+def _build_route_note(route: dict[str, Any]) -> str:
+    status = route.get("status")
+    if status == "queued":
+        return (
+            "Detected a build command; packaged a delegation brief from the conversation and queued an "
+            "approval-gated external-agent run to the Inbox (invocation stays behind the typed-phrase approval)."
+        )
+    if status == "no_task":
+        return "Detected a build command but no buildable target in the thread; asked the founder to scope it."
+    return "Detected a build command but failed to queue the delegation; surfaced the failure honestly."
+
+
+def _build_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not route:
+        return None
+    summary: dict[str, Any] = {
+        "status": route.get("status"),
+        "task": route.get("task"),
+        "anaphoric": route.get("anaphoric", False),
+    }
+    if route.get("status") == "queued":
+        summary |= {
+            "item_id": route.get("item_id"),
+            "queue_status": route.get("queue_status"),
+            "agent_configured": route.get("agent_configured", False),
         }
     elif route.get("status") == "error":
         summary["error"] = route.get("error", "")

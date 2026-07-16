@@ -259,6 +259,9 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     roles = RolePassService(config=cfg, db=db, ollama=ollama)
     delegation = DelegationService(config=cfg, db=db, founder=founder, work_queue=work_queue)
     delegation.register_into(handlers)
+    # Let the chat runtime route founder build commands ("build this out for me")
+    # into a gated delegation brief instead of a text-only architecture outline.
+    runtime.delegation = delegation
     screen = ScreenService(config=cfg, db=db)
 
     # Tier 4: keep the semantic memory index current. Incremental + best-effort —

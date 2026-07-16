@@ -646,6 +646,100 @@ def test_runtime_respond_sends_default_general_profile_to_provider(
     assert "GENERAL_SENTINEL web_search" in user_message
 
 
+def test_runtime_respond_auto_uses_build_profile_for_app_build_requests(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    captured_calls: list[dict[str, object]] = []
+
+    def capture_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
+        captured_calls.append({"messages": list(messages), "model": model, "think": think})
+        return GenerateResult(response="Build mode active.", model=model or "qwen3:14b", raw={"messages": messages})
+
+    monkeypatch.setattr(OllamaClient, "chat", capture_chat)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Build this SaaS app so it can ship on Google Play and the Apple App Store.",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "use_tools": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["task_type"] == "coding"
+    assert payload["context"]["prompt_profile"]["id"] == "build"
+    assert captured_calls[0]["model"] == "qwen2.5-coder:14b"
+    assert captured_calls[0]["think"] is True
+    assert "Profile: build" in captured_calls[0]["messages"][0].content
+    assert payload["build"]["status"] == "queued"
+    assert payload["build"]["item_id"]
+    assert payload["build"]["agent_configured"] is False
+    assert "build_work_routed" in payload["governor"]["applied_rules"]
+
+
+def test_runtime_respond_auto_uses_build_profile_for_app_build_followup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    captured_calls: list[dict[str, object]] = []
+
+    def capture_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
+        captured_calls.append({"messages": list(messages), "model": model, "think": think})
+        return GenerateResult(response="Build follow-up active.", model=model or "qwen3:14b", raw={"messages": messages})
+
+    monkeypatch.setattr(OllamaClient, "chat", capture_chat)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+    conversation_id = client.post(
+        "/conversations",
+        json={"title": "mobile app"},
+    ).json()["conversation"]["id"]
+    client.app.state.conversations.record_user_turn(
+        conversation_id,
+        content="I want to catalogue my books in a mobile app with barcode scanning on my phone.",
+        task_type="general",
+    )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Build this out for me.",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "use_tools": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["task_type"] == "coding"
+    assert payload["context"]["prompt_profile"]["id"] == "build"
+    assert captured_calls[0]["model"] == "qwen2.5-coder:14b"
+    assert payload["build"]["status"] == "queued"
+    assert payload["build"]["item_id"]
+    assert payload["build"]["agent_configured"] is False
+    assert "build_work_routed" in payload["governor"]["applied_rules"]
+
+
 def test_runtime_profile_precedence_request_then_conversation_then_config(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1401,6 +1495,7 @@ def test_runtime_prompt_includes_code_model_prompt_only_for_coding_tasks(
     assert "----------  Code model operating prompt  ----------" in coding_prompt
     assert "Zade is an interactive agent that helps users with software engineering tasks." in coding_prompt
     assert "Everything the user needs from this turn" in coding_prompt
+    assert "Treat app, SaaS, mobile, and store-shipping requests as product implementation work." in coding_prompt
     assert "----------  Code model operating prompt  ----------" not in general_prompt
     assert "Everything the user needs from this turn" not in general_prompt
 
@@ -2287,6 +2382,137 @@ def test_runtime_does_not_route_research_questions(tmp_path: Path, monkeypatch) 
     assert payload["research"] is None
     assert "research_work_routed" not in payload["governor"]["applied_rules"]
     assert payload["response"] == answer
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+
+
+def test_runtime_routes_build_command_into_gated_delegation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A founder build command must stop being generate-only: it packages a scoped
+    delegation brief and queues an approval-gated external-agent run to the Inbox —
+    never a text-only architecture outline."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Build me a book cataloguing mobile app with barcode scanning",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["status"] == "queued"
+    assert "book cataloguing mobile app" in route["task"]
+    assert "build_work_routed" in payload["governor"]["applied_rules"]
+    item_id = route["item_id"]
+    assert f"#{item_id}" in payload["response"]
+
+    # The item is really in the queue as a gated delegation run, never dispatched.
+    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    match = next((item for item in queued if item["id"] == item_id), None)
+    assert match is not None
+    assert match["kind"] == "delegation_run"
+    assert match["action"] == "external.delegation.run"
+    assert match["permission_tier"] == "L3_EXTERNAL_ACTION"
+    assert "book cataloguing mobile app" in match["metadata"]["brief"]
+
+
+def test_runtime_anaphoric_build_command_uses_conversation_scope(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"Build this out for me" resolves the task from the conversation thread and
+    the brief carries the recent turns as context for the external agent."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation_id = client.post("/conversations", json={}).json()["conversation"]["id"]
+
+    scoping = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                "I want to be able to catalogue the books I have into a library app "
+                "that I can install on my phone"
+            ),
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+    assert scoping.status_code == 200, scoping.text
+    assert scoping.json()["build"] is None  # a scoping statement is not a build command
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Build this out for me",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["status"] == "queued"
+    assert route["anaphoric"] is True
+    assert "catalogue the books" in route["task"]
+
+    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    match = next((item for item in queued if item["id"] == route["item_id"]), None)
+    assert match is not None
+    assert match["kind"] == "delegation_run"
+    # The brief context carries the conversation scoping, not just the command.
+    assert "library app" in match["metadata"]["brief"]
+
+
+def test_runtime_does_not_route_build_questions_or_metaphors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Design questions and metaphorical 'build' talk stay ordinary answers with
+    no queued delegation."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    for message in (
+        "How would I go about building a library app for my phone?",
+        "What should we build next quarter?",
+        "We need to build trust with early customers before launch.",
+    ):
+        response = client.post(
+            "/runtime/respond",
+            json={
+                "message": message,
+                "use_memory": False,
+                "use_semantic_memory": False,
+                "use_skills": False,
+                "contrarian": False,
+            },
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["build"] is None, message
+        assert "build_work_routed" not in payload["governor"]["applied_rules"], message
     assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
 
 

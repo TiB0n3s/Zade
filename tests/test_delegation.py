@@ -57,7 +57,7 @@ def test_auto_invoke_within_budget_dispatches_and_files(tmp_path: Path, monkeypa
 
     captured = {}
 
-    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000):
+    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None):
         captured["command"] = command
         captured["brief"] = brief
         return "PATCH: refactored the module, all green."
@@ -96,7 +96,7 @@ def test_gated_dispatch_runs_agent(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "embed", fake_embed)
     monkeypatch.setattr(
         delegation_module, "run_agent",
-        lambda command, *, brief, timeout=600.0, max_output_chars=20000: "done via approval",
+        lambda command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None: "done via approval",
     )
     config = _config(tmp_path, enabled=True, auto_invoke=False, agent_command=("agent-cli",))
     client = TestClient(create_app(config))
@@ -109,6 +109,37 @@ def test_gated_dispatch_runs_agent(tmp_path: Path, monkeypatch) -> None:
     ).json()
     assert approved["dispatch_result"]["ok"] is True
     assert "done via approval" in approved["dispatch_result"]["artifact"]
+
+
+def test_workspace_root_confines_agent_cwd(tmp_path: Path, monkeypatch) -> None:
+    """A configured workspace_root is created and passed to the agent as cwd, so
+    delegated builds land there instead of inside the kernel's own repo."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    captured = {}
+
+    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None):
+        captured["cwd"] = cwd
+        return "scaffolded."
+
+    monkeypatch.setattr(delegation_module, "run_agent", fake_run_agent)
+    workspace = tmp_path / "workspace" / "builds"
+    config = _config(
+        tmp_path,
+        enabled=True,
+        auto_invoke=True,
+        agent_command=("agent-cli",),
+        workspace_root=str(workspace),
+    )
+    client = TestClient(create_app(config))
+
+    result = client.post("/delegation/run", json={"task": "scaffold an app", "auto_invoke": True}).json()
+
+    assert result["auto_invoked"] is True
+    assert result["dispatch"]["ok"] is True
+    assert captured["cwd"] == str(workspace)
+    assert workspace.is_dir()
 
 
 def test_disabled_blocks_and_unregisters(tmp_path: Path, monkeypatch) -> None:

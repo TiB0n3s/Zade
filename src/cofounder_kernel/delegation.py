@@ -19,6 +19,7 @@ time) so the whole path is testable without spawning a real agent.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any, Callable
 
 from .config import KernelConfig
@@ -192,6 +193,7 @@ class DelegationService:
                 brief=brief,
                 timeout=self.config.delegation.timeout_seconds,
                 max_output_chars=self.config.delegation.max_output_chars,
+                cwd=self._workspace_cwd(),
             )
         except Exception as exc:  # noqa: BLE001 - a failed invocation is a flow error, not a 500
             status = "flow_error"
@@ -234,6 +236,16 @@ class DelegationService:
         }
 
     # ---- internals ----
+    def _workspace_cwd(self) -> str | None:
+        """Resolve (and create) the delegated-work directory. None = inherit the
+        kernel's cwd, the pre-workspace behavior."""
+        root = (self.config.delegation.workspace_root or "").strip()
+        if not root:
+            return None
+        path = Path(root).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
     def _require_enabled(self) -> None:
         if not self.config.delegation.enabled:
             raise ValueError("Delegation is disabled (delegation.enabled = false).")
@@ -252,12 +264,19 @@ class DelegationService:
 
 
 # ---- module-level invoker (the actual external egress) ----
-def run_agent(command: list[str], *, brief: str, timeout: float = 600.0, max_output_chars: int = 20000) -> str:
+def run_agent(
+    command: list[str],
+    *,
+    brief: str,
+    timeout: float = 600.0,
+    max_output_chars: int = 20000,
+    cwd: str | None = None,
+) -> str:
     """Run a configured external agent command, feeding the brief on stdin.
 
     argv only (no shell parsing). Captures stdout+stderr, byte-bounded via the
     char cap. A non-zero exit or a timeout raises, surfaced by the caller as a
-    flow error.
+    flow error. ``cwd`` confines the agent to the delegation workspace.
     """
     try:
         completed = subprocess.run(
@@ -267,6 +286,7 @@ def run_agent(command: list[str], *, brief: str, timeout: float = 600.0, max_out
             text=True,
             timeout=timeout,
             check=False,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired as exc:
         raise ValueError(f"External agent timed out after {timeout}s.") from exc
