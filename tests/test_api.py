@@ -2650,14 +2650,32 @@ def _step_instructions_generate(
     )
 
 
+def _step_then_inability_generate(
+    self, *, prompt, model=None, think=None, temperature=None, num_predict=512
+):
+    """Step instructions on the scoping turn; on the execution command, the
+    classic contradictory draft ("I'm not able to execute...") that the
+    governor must replace with the route block."""
+    if "perform all tasks" in prompt.lower():
+        response = (
+            "I'm not able to execute actions directly in your environment, but I can "
+            "provide you with the full implementation for Step 5. You can implement "
+            "the following in your App.js:\n" + _STEP_INSTRUCTIONS_REPLY
+        )
+    else:
+        response = _STEP_INSTRUCTIONS_REPLY
+    return GenerateResult(response=response, model=model or "qwen3:14b", raw={"prompt": prompt})
+
+
 def test_runtime_step_execution_command_routes_gated_delegation(
     tmp_path: Path, monkeypatch
 ) -> None:
     """"Perform all tasks related to step 5" executes the step Zade itself laid
     out in the thread: the resolved instructions become the brief, the run is
-    queued gated, and it targets the project directory named in the thread."""
+    queued gated, and it targets the project directory named in the thread. A
+    drafted body that denies execution ability is replaced by the route block."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    patch_ollama_model(monkeypatch, _step_instructions_generate)
+    patch_ollama_model(monkeypatch, _step_then_inability_generate)
 
     target = tmp_path / "TheDarkIndex"
     target.mkdir()
@@ -2701,6 +2719,10 @@ def test_runtime_step_execution_command_routes_gated_delegation(
     assert "step 5" in route["task"].lower()
     assert route["workspace"] == str(target.resolve())
     assert "step_work_routed" in payload["governor"]["applied_rules"]
+    assert "routed_reply_body_replaced" in payload["governor"]["applied_rules"]
+    # The contradictory draft is gone; the route block IS the reply.
+    assert "not able to execute" not in payload["response"].lower()
+    assert payload["response"].startswith("Queued the step run")
     assert f"#{route['item_id']}" in payload["response"]
 
     queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]

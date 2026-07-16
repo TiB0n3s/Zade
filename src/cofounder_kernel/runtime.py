@@ -1514,6 +1514,19 @@ The founder's current message is supplied separately as the user-role message. D
             # this turn. State exactly what was queued (or why it couldn't be) so
             # the reply points at a real item instead of narrating construction.
             text = _remove_build_deferral_question(text)
+            if build_route.get("status") == "queued" and (
+                build_route.get("kind") == "step" or _EXECUTION_INABILITY_RE.search(text)
+            ):
+                # The drafted body either denies an execution that actually
+                # queued ("I'm not able to...") or restates step instructions
+                # already packed into the brief — either way it contradicts or
+                # buries the route block, which is the truthful, sufficient reply.
+                text = ""
+                applied_rules.append("routed_reply_body_replaced")
+                notes.append(
+                    "Dropped a drafted body that contradicted or restated the queued "
+                    "delegation; the route block carries the reply."
+                )
             text = f"{text}\n\n{_render_build_route_block(build_route)}".strip()
             applied_rules.append(
                 {
@@ -3367,6 +3380,14 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
         "Nothing was dispatched. Give me the word and I'll retry."
     )
 
+
+# A drafted reply that denies the ability to execute while a real item just
+# queued — the classic "I'm not able to execute actions directly..." opener.
+_EXECUTION_INABILITY_RE = re.compile(
+    r"""(?ix)\b(?:i\s*am|i'?m)\s+not\s+able\s+to\s+(?:directly\s+)?
+        (?:execute|run|perform|make|modify|access)
+        |\bi\s+can(?:no|')t\s+(?:directly\s+)?(?:execute|run|perform|modify|access)"""
+)
 
 _BUILD_DEFERRAL_QUESTION_RE = re.compile(
     r"""\s*
