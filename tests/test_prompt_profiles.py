@@ -54,6 +54,16 @@ def test_persona_profiles_include_baseline_and_exclude_other_personas(tmp_path: 
         assert f"# {heading}" not in selected
 
 
+def test_build_profile_includes_autonomous_execution_policy(tmp_path: Path) -> None:
+    registry = PromptProfileRegistry()
+    rendered = registry.render_profile("build", bindings=fixed_bindings(tmp_path)).content
+
+    assert "AUTONOMOUS EXECUTION POLICY" in rendered
+    assert "Do not ask whether to proceed. Begin execution immediately." in rendered
+    assert "Creating local Git branches, commits, diffs, and patches." in rendered
+    assert "System-enforced approval prompts take precedence." in rendered
+
+
 def test_supported_placeholders_resolve_exact_tokens_without_corrupting_json(tmp_path: Path) -> None:
     bindings = fixed_bindings(tmp_path)
     source = (
