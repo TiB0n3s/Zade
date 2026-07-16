@@ -2632,6 +2632,204 @@ def test_runtime_does_not_route_maintenance_questions_or_metaphors(
     assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
 
 
+_STEP_INSTRUCTIONS_REPLY = (
+    "### Step 5: Configure Camera Permissions\n"
+    "1. Install `react-native-permissions`\n"
+    "```bash\n"
+    "npm install react-native-permissions\n"
+    "```\n"
+    "2. Import and use permissions in your component.\n"
+)
+
+
+def _step_instructions_generate(
+    self, *, prompt, model=None, think=None, temperature=None, num_predict=512
+):
+    return GenerateResult(
+        response=_STEP_INSTRUCTIONS_REPLY, model=model or "qwen3:14b", raw={"prompt": prompt}
+    )
+
+
+def test_runtime_step_execution_command_routes_gated_delegation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"Perform all tasks related to step 5" executes the step Zade itself laid
+    out in the thread: the resolved instructions become the brief, the run is
+    queued gated, and it targets the project directory named in the thread."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, _step_instructions_generate)
+
+    target = tmp_path / "TheDarkIndex"
+    target.mkdir()
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation_id = client.post("/conversations", json={}).json()["conversation"]["id"]
+
+    scoping = client.post(
+        "/runtime/respond",
+        json={
+            "message": f"I'm working in {target} on the book app. What's next for the camera?",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+    assert scoping.status_code == 200, scoping.text
+    assert scoping.json()["build"] is None  # the assistant laying out steps routes nothing
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Can you perform all tasks related to step 5?",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["status"] == "queued"
+    assert route["kind"] == "step"
+    assert "step 5" in route["task"].lower()
+    assert route["workspace"] == str(target.resolve())
+    assert "step_work_routed" in payload["governor"]["applied_rules"]
+    assert f"#{route['item_id']}" in payload["response"]
+
+    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    match = next((item for item in queued if item["id"] == route["item_id"]), None)
+    assert match is not None
+    assert match["kind"] == "delegation_run"
+    assert match["metadata"]["workspace"] == str(target.resolve())
+    # The resolved step instructions are the actual work order in the brief.
+    assert "npm install react-native-permissions" in match["metadata"]["brief"]
+
+
+def test_runtime_bare_do_it_after_step_layout_routes_instead_of_asking(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"Do it" right after Zade laid out step instructions resolves to those
+    instructions and queues the run — the ambiguous-action fallback must stand
+    down when the referent resolved."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, _step_instructions_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation_id = client.post("/conversations", json={}).json()["conversation"]["id"]
+
+    client.post(
+        "/runtime/respond",
+        json={
+            "message": "Walk me through configuring the camera permissions.",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Do it",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["status"] == "queued"
+    assert route["kind"] == "step"
+    rules = payload["governor"]["applied_rules"]
+    assert "step_work_routed" in rules
+    assert "ambiguous_action_replay_repaired" not in rules
+
+
+def test_runtime_bare_do_it_without_step_context_still_asks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"Do it" with no runnable instructions behind it keeps the honest
+    ambiguous-action answer and queues nothing."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)  # plain replies, no step structure
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation_id = client.post("/conversations", json={}).json()["conversation"]["id"]
+
+    client.post(
+        "/runtime/respond",
+        json={
+            "message": "Interesting take on the roadmap.",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Do it",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"] is None
+    assert "ambiguous_action_replay_repaired" in payload["governor"]["applied_rules"]
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+
+
+def test_runtime_step_questions_do_not_route(tmp_path: Path, monkeypatch) -> None:
+    """Questions about steps stay ordinary answers with nothing queued."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, _step_instructions_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    for message in (
+        "What's the next step?",
+        "How do I complete step 5?",
+        "Should I run the tasks in step 3 first?",
+    ):
+        response = client.post(
+            "/runtime/respond",
+            json={
+                "message": message,
+                "use_memory": False,
+                "use_semantic_memory": False,
+                "use_skills": False,
+                "contrarian": False,
+            },
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["build"] is None, message
+        assert "step_work_routed" not in payload["governor"]["applied_rules"], message
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+
+
 def test_runtime_repairs_charter_recitation_into_conversational_voice(
     tmp_path: Path, monkeypatch
 ) -> None:

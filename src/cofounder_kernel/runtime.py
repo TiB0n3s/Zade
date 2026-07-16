@@ -1462,7 +1462,12 @@ The founder's current message is supplied separately as the user-role message. D
             notes.append(
                 "Replaced a near-verbatim prior reply on a completion/status question with an evidence-honest answer."
             )
-        if _is_ambiguous_action_followup(message):
+        if _is_ambiguous_action_followup(message) and not (
+            chat_action_route or research_route or build_route
+        ):
+            # Only when nothing routed: a "do it" that resolved into a real
+            # queued item is not ambiguous, and the route block below is the
+            # honest answer.
             text = _ambiguous_action_replay_fallback(context=context, recent_turns=recent_turns or [])
             applied_rules.append("ambiguous_action_replay_repaired")
             notes.append(
@@ -1511,9 +1516,10 @@ The founder's current message is supplied separately as the user-role message. D
             text = _remove_build_deferral_question(text)
             text = f"{text}\n\n{_render_build_route_block(build_route)}".strip()
             applied_rules.append(
-                "maintenance_work_routed"
-                if build_route.get("kind") == "maintenance"
-                else "build_work_routed"
+                {
+                    "maintenance": "maintenance_work_routed",
+                    "step": "step_work_routed",
+                }.get(str(build_route.get("kind") or "build"), "build_work_routed")
             )
             notes.append(_build_route_note(build_route))
         if (
@@ -1705,6 +1711,7 @@ The founder's current message is supplied separately as the user-role message. D
         turns = conversation_messages or []
         kind = "build"
         workspace = ""
+        instructions = ""
         extracted = _extract_build_task(message)
         if extracted is not None:
             task, anaphoric = extracted
@@ -1721,21 +1728,52 @@ The founder's current message is supplied separately as the user-role message. D
             # Not a build command — maintenance ("fix/resolve/update X") is the
             # other executable-command shape that used to fall through to prose.
             maintenance = _extract_maintenance_task(message)
-            if maintenance is None:
-                return None
-            task, subject_in_message = maintenance
-            if not subject_in_message and not _thread_names_maintenance_subject(turns):
-                return None
-            kind = "maintenance"
-            anaphoric = not subject_in_message
-            workspace = _extract_project_target(turns, current_message=message)
-            acceptance = (
-                "The named issues are actually fixed in the target project — not described, fixed. "
-                "Re-run the relevant verification inside the project (e.g. `npm audit`, the test "
-                "suite) and include its real output in the artifact. If an issue cannot be fixed "
-                "(no upstream fix, breaking change required), name exactly which and why."
-            )
+            if maintenance is not None:
+                task, subject_in_message = maintenance
+                if not subject_in_message and not _thread_names_maintenance_subject(turns):
+                    return None
+                kind = "maintenance"
+                anaphoric = not subject_in_message
+                workspace = _extract_project_target(turns, current_message=message)
+                acceptance = (
+                    "The named issues are actually fixed in the target project — not described, fixed. "
+                    "Re-run the relevant verification inside the project (e.g. `npm audit`, the test "
+                    "suite) and include its real output in the artifact. If an issue cannot be fixed "
+                    "(no upstream fix, breaking change required), name exactly which and why."
+                )
+            else:
+                # Third shape: execute a step/task plan already laid out in the
+                # thread ("perform all tasks related to step 5", "do it").
+                step = _extract_step_execution(message)
+                if step is None:
+                    return None
+                step_number, bare_anaphora = step
+                instructions = _resolve_step_instructions(
+                    turns, step_number=step_number, latest_only=bare_anaphora
+                )
+                if not instructions:
+                    if bare_anaphora:
+                        # Nothing resolvable behind "do it": leave it to the
+                        # ambiguous-action guard instead of queuing a mystery.
+                        return None
+                    return {"status": "no_task", "kind": "step", "task": "", "anaphoric": True}
+                kind = "step"
+                anaphoric = True
+                workspace = _extract_project_target(turns, current_message=message)
+                first_line = instructions.strip().splitlines()[0].strip()[:120]
+                label = f"step {step_number}" if step_number is not None else "the step"
+                task = f"Carry out {label} from our conversation: {first_line}"
+                acceptance = (
+                    "Every task in the step is actually performed in the target project — files "
+                    "created or edited, packages installed, commands run — not explained. Verify "
+                    "the result (build, test, or the step's own check) and report exactly what was "
+                    "done, with real output. If a task cannot be completed, name it and why."
+                )
         context_text = _conversation_build_context(turns, current_message=message)
+        if kind == "step":
+            # The resolved instructions are the actual work order; put them in
+            # front of the packed conversation so truncation cannot drop them.
+            context_text = f"Step instructions to execute:\n{instructions}\n\n{context_text}"[:4000]
         try:
             queued = delegation.queue_delegation(
                 task=task,
@@ -3163,6 +3201,80 @@ def _extract_project_target(turns: list[Any], *, current_message: str = "") -> s
     return ""
 
 
+# Step-execution commands ("perform all tasks related to step 5", "write step
+# 5 for me", "do it" right after a step was laid out) are the third shape of
+# the narrated-work family: the plan already exists in the thread — usually as
+# Zade's own numbered instructions — and the founder orders it EXECUTED. The
+# instructions resolve from the conversation and become the delegation brief.
+_STEP_EXEC_VERB_RE = re.compile(
+    r"""(?ix)^\s*(?:
+        perform | do | complete | execute | carry\s+out | handle |
+        implement | write | finish | run
+    )\b"""
+)
+_STEP_REF_WORD_RE = re.compile(r"(?i)\b(?:steps?|tasks?|phases?)\b")
+_STEP_REF_NUM_RE = re.compile(r"(?i)\bstep\s*#?\s*(\d+)\b")
+# Bare execution anaphora ("do it", "handle that") — the referent must then be
+# the most recent assistant turn that actually laid out runnable instructions.
+_STEP_PURE_ANAPHORA_RE = re.compile(
+    r"(?ix)^\s*(?:do|handle|take\s+care\s+of|execute|run)\s+(?:it|this|that|them)\s*[.!]*\s*$"
+)
+# What counts as runnable step instructions in an assistant turn: a numbered
+# step heading, or a fenced command/code block alongside a numbered list.
+_STEP_STRUCTURE_RE = re.compile(r"(?im)\bstep\s*#?\s*\d+\b|^\s*\d+\.\s.+$")
+
+
+def _extract_step_execution(message: str) -> tuple[int | None, bool] | None:
+    """Return (step_number, bare_anaphora) for a founder step-execution
+    *command*, or None when the message is not one. step_number is None for
+    unnumbered forms ("do all the tasks"); bare_anaphora marks "do it" forms
+    whose entire referent must come from the thread."""
+    text = (message or "").strip()
+    if not text or _TERMINAL_PASTE_RE.search(text):
+        return None
+    if text.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
+        return None
+    stripped = _POLITENESS_PREFIX_RE.sub("", text, count=1).strip()
+    if not stripped or stripped.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
+        return None
+    if _STEP_PURE_ANAPHORA_RE.match(stripped):
+        return None, True
+    if not _STEP_EXEC_VERB_RE.match(stripped):
+        return None
+    if not _STEP_REF_WORD_RE.search(stripped):
+        return None
+    match = _STEP_REF_NUM_RE.search(stripped)
+    return (int(match.group(1)) if match else None), False
+
+
+def _resolve_step_instructions(
+    turns: list[Any], *, step_number: int | None = None, latest_only: bool = False
+) -> str:
+    """Find the instructions the founder is pointing at: the most recent
+    assistant turn mentioning the numbered step, or (unnumbered) the most
+    recent assistant turn shaped like step instructions. latest_only restricts
+    the search to the last assistant turn — bare "do it" refers to what was
+    just said, not anything earlier."""
+    assistant_turns = [
+        str(_turn_field(turn, "content") or "")
+        for turn in (turns or [])
+        if str(_turn_field(turn, "role")).lower() == "assistant"
+    ]
+    if latest_only:
+        assistant_turns = assistant_turns[-1:]
+    for content in reversed(assistant_turns[-12:]):
+        if not content.strip():
+            continue
+        if step_number is not None:
+            anchor = re.search(rf"(?i)\bstep\s*#?\s*{step_number}\b", content)
+            if not anchor:
+                continue
+            return content[anchor.start() : anchor.start() + 1500]
+        if _STEP_STRUCTURE_RE.search(content) or "```" in content:
+            return content[:1500]
+    return ""
+
+
 def _anaphoric_build_task(
     turns: list[Any], *, current_message: str = ""
 ) -> str:
@@ -3208,12 +3320,12 @@ def _turn_field(turn: Any, field: str) -> Any:
 def _render_build_route_block(route: dict[str, Any]) -> str:
     status = route.get("status")
     kind = str(route.get("kind") or "build")
-    noun = "fix" if kind == "maintenance" else "build"
+    noun = {"maintenance": "fix", "step": "step run"}.get(kind, "build")
     task = str(route.get("task") or f"the requested {noun}").strip(" \t\r\n.,;:!?\"'-")
     if status == "queued":
         item_id = route.get("item_id")
         target_line = ""
-        if kind == "maintenance":
+        if kind in {"maintenance", "step"}:
             workspace = str(route.get("workspace") or "").strip()
             target_line = (
                 f" Target project: {workspace}."
@@ -3241,6 +3353,11 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
             "it hands you the brief to run manually. Fix the engine config and I can run this end to end."
         )
     if status == "no_task":
+        if kind == "step":
+            return (
+                "You told me to run the step, but I can't find the step instructions in this "
+                "thread. Point me at the step (or paste it) and I'll queue the delegated run."
+            )
         return (
             "You told me to build, but this thread hasn't scoped a target yet. "
             "Give me one line on what it is and I'll queue the delegated build."
@@ -3273,7 +3390,9 @@ def _remove_build_deferral_question(text: str) -> str:
 
 def _build_route_note(route: dict[str, Any]) -> str:
     status = route.get("status")
-    kind = "maintenance" if route.get("kind") == "maintenance" else "build"
+    kind = str(route.get("kind") or "build")
+    if kind not in {"maintenance", "step"}:
+        kind = "build"
     if status == "queued":
         return (
             f"Detected a {kind} command; packaged a delegation brief from the conversation and queued an "
