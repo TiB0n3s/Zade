@@ -4,6 +4,7 @@ import http.client
 import json
 import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -20,6 +21,46 @@ class OllamaThinkingUnsupported(OllamaError):
     pass
 
 
+class ProviderPolicyError(OllamaError):
+    """A model request violated the provider policy (local-first enforcement).
+
+    Raised at the transport boundary, before any bytes leave the process, so a
+    misconfigured endpoint or cloud-tagged model is a clear local failure —
+    never a silent cloud call and never a fallback.
+    """
+
+
+# Hosts that are cloud model providers. This client speaks to a local Ollama
+# server; these are never legitimate targets for it, under ANY policy. The list
+# is a backstop — under local_only every non-loopback host is refused anyway.
+_BLOCKED_MODEL_PROVIDER_HOSTS = frozenset(
+    {
+        "api.anthropic.com",
+        "api.openai.com",
+        "ollama.com",
+        "www.ollama.com",
+        "api.ollama.com",
+    }
+)
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def is_cloud_model(name: str) -> bool:
+    """True when the model identifier denotes an Ollama Cloud variant.
+
+    Cloud models are published with a ``-cloud`` suffix or a ``cloud`` tag
+    (e.g. ``qwen3-coder:480b-cloud``, ``deepseek-v3.1:cloud``). Name-based
+    detection is the strongest signal /api/tags exposes; /api/show inspection
+    in the inventory service refines it with the ``remote`` marker.
+    """
+    lowered = (name or "").strip().lower()
+    if not lowered:
+        return False
+    tag = lowered.split(":", 1)[1] if ":" in lowered else ""
+    return lowered.endswith("-cloud") or tag == "cloud" or tag.endswith("-cloud")
+
+
 @dataclass(frozen=True)
 class GenerateResult:
     response: str
@@ -31,11 +72,72 @@ class OllamaClient:
     def __init__(self, config: OllamaConfig):
         self.config = config
 
+    # ---- provider policy -------------------------------------------------
+    def _policy(self) -> str:
+        return str(getattr(self.config, "provider_policy", "local_only") or "local_only")
+
+    def endpoint_host(self) -> str:
+        return (urllib.parse.urlparse(self.config.base_url).hostname or "").lower()
+
+    def verified_local(self) -> bool:
+        return self.endpoint_host() in _LOOPBACK_HOSTS
+
+    def provider_info(self) -> dict[str, Any]:
+        """Redacted provider descriptor for telemetry — no prompts, no secrets."""
+        parsed = urllib.parse.urlparse(self.config.base_url)
+        return {
+            "provider": "ollama",
+            "endpoint_scheme": (parsed.scheme or "").lower(),
+            "endpoint_host": (parsed.hostname or "").lower(),
+            "verified_local": self.verified_local(),
+            "provider_policy": self._policy(),
+            "cloud_authorized": bool(getattr(self.config, "allow_cloud_inference", False)),
+            "fallback_attempted": False,
+        }
+
+    def _assert_endpoint_allowed(self, url: str) -> None:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+        if host in _BLOCKED_MODEL_PROVIDER_HOSTS:
+            raise ProviderPolicyError(
+                f"Refused model endpoint {host!r}: cloud model providers are never a valid "
+                "target for the local Ollama client. No request was sent."
+            )
+        if host in _LOOPBACK_HOSTS:
+            return
+        policy = self._policy()
+        if policy == "local_only":
+            raise ProviderPolicyError(
+                f"Refused non-loopback model endpoint {host!r}: provider_policy is local_only. "
+                "Point [ollama] base_url at 127.0.0.1/localhost/::1, or deliberately change "
+                "provider_policy and allow_remote_ollama. No request was sent."
+            )
+        if not bool(getattr(self.config, "allow_remote_ollama", False)):
+            raise ProviderPolicyError(
+                f"Refused remote Ollama host {host!r}: allow_remote_ollama is false. "
+                "No request was sent."
+            )
+
+    def _assert_model_allowed(self, model: str) -> None:
+        if not is_cloud_model(model):
+            return
+        policy = self._policy()
+        if policy == "local_only" or not bool(getattr(self.config, "allow_ollama_cloud", False)):
+            raise ProviderPolicyError(
+                f"Refused cloud model {model!r}: it executes on Ollama Cloud, not this machine "
+                f"(provider_policy={policy}, allow_ollama_cloud="
+                f"{bool(getattr(self.config, 'allow_ollama_cloud', False))}). "
+                "Choose an installed local model. No request was sent."
+            )
+
+    # ---- API -------------------------------------------------------------
     def health(self) -> dict[str, Any]:
         return self._get_json("/api/version")
 
     def tags(self) -> dict[str, Any]:
         return self._get_json("/api/tags")
+
+    def show(self, model: str) -> dict[str, Any]:
+        return self._post_json("/api/show", {"model": model})
 
     def generate(
         self,
@@ -47,6 +149,7 @@ class OllamaClient:
         num_predict: int = 512,
     ) -> GenerateResult:
         selected_model = model or self.config.chat_model
+        self._assert_model_allowed(selected_model)
         requested_think = self.config.think if think is None else think
         body = {
             "model": selected_model,
@@ -82,6 +185,7 @@ class OllamaClient:
         tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> GenerateResult:
         selected_model = model or self.config.chat_model
+        self._assert_model_allowed(selected_model)
         requested_think = self.config.think if think is None else think
         body: dict[str, Any] = {
             "model": selected_model,
@@ -111,7 +215,9 @@ class OllamaClient:
         return GenerateResult(response=response, model=selected_model, raw=raw)
 
     def embed(self, *, text: str, model: str | None = None) -> list[float]:
-        body = {"model": model or self.config.embedding_model, "input": text}
+        selected_model = model or self.config.embedding_model
+        self._assert_model_allowed(selected_model)
+        body = {"model": selected_model, "input": text}
         raw = self._post_json("/api/embed", body)
         embeddings = raw.get("embeddings") or []
         if not embeddings:
@@ -133,6 +239,10 @@ class OllamaClient:
         return self._request_json(request)
 
     def _request_json(self, request: urllib.request.Request) -> dict[str, Any]:
+        # Provider policy first: under local_only only loopback is a valid model
+        # endpoint, and known cloud provider hosts are refused under any policy.
+        # This runs before any bytes leave the process.
+        self._assert_endpoint_allowed(request.full_url)
         # Ollama is a local server, but funnel through the same egress policy so
         # every outbound call in the kernel is checked in exactly one place.
         try:

@@ -12,12 +12,24 @@ cors_dev_origins = ["http://localhost:5173"]
 # Chat/voice sampling temperature. Default is 0.2 (deterministic, flat). Raised so
 # the charter voice has room for texture and doesn't repeat the same phrasing.
 temperature = 0.6
+# Local-first provider policy (default local_only): loopback Ollama only, no
+# cloud models, no remote hosts, no fallback. Stated explicitly here so the
+# posture survives future default changes.
+provider_policy = "local_only"
+# Native coding agent model. Probed 2026-07-16: qwen3:14b is the only installed
+# model that emits NATIVE tool_calls (qwen2.5-coder:14b and deepseek-r1:14b
+# declare "tools" but return JSON-as-text / prose from a live probe).
+coding_agent_model = "qwen3:14b"
 
 [delegation]
-# External coding agent for delegated build work (chat "build X" routes here as
-# an approval-gated brief). Claude Code headless: reads the brief on stdin,
-# prints the result. acceptEdits lets it write files without interactive
-# prompts; riskier tool calls fail closed and get reported in the artifact.
+# Delegated build work runs on the NATIVE local coding agent by default:
+# Zade's own tool loop on the local Ollama model ([ollama] coding_agent_model).
+# No external agent process, no cloud. Set engine = "bridge" to run the CLI
+# below instead — under a local provider policy it launches with a sanitized
+# environment pointed at the loopback Ollama Anthropic-compatible API
+# (ANTHROPIC_BASE_URL=http://127.0.0.1:11434, AUTH_TOKEN=ollama, no API key).
+engine = "native"
+# Local compatibility bridge CLI (used only when engine = "bridge").
 # Full path: Windows CreateProcess can't resolve the bare npm "claude" shim.
 agent_command = ["C:\\Users\\TiBon\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe", "-p", "--permission-mode", "acceptEdits"]
 # Delegated builds run HERE, never inside the kernel repo.

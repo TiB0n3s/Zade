@@ -69,6 +69,24 @@ class OllamaConfig:
     # the cap bounds worst-case latency.
     tool_loop: bool = True
     tool_loop_max_rounds: int = 3
+    # ---- provider policy (local-first, default local-only) ----
+    # local_only:      loopback Ollama + verified local models only; no cloud,
+    #                  no remote Ollama, no fallback; failures fail closed.
+    # local_preferred: local Ollama first; cloud still needs an explicit
+    #                  per-request authorization; never an automatic fallback.
+    # cloud_allowed:   cloud possible only when configuration permits it AND the
+    #                  request explicitly opts in. Installed API keys never count
+    #                  as authorization and never change routing.
+    provider_policy: str = "local_only"
+    allow_remote_ollama: bool = False
+    allow_ollama_cloud: bool = False
+    allow_cloud_inference: bool = False
+    cloud_fallback: str = "never"
+    # Model for the native local coding agent (tool-calling loop). Empty =
+    # resolve at runtime: probe the configured coding_model, then chat_model,
+    # for native tool-call support; fail with candidates if neither passes.
+    # Not defaulted to a specific machine's model on purpose.
+    coding_agent_model: str = ""
 
     def think_for_role(self, role: ModelRole) -> bool:
         return role in {"reasoning", "coding"}
@@ -280,6 +298,15 @@ class DelegationConfig:
     # kernel's own working directory. Point it OUTSIDE this repo so delegated
     # builds can never write into Zade's own code.
     workspace_root: str = ""
+    # Delegated-build engine:
+    #   native  (default) — Zade's own coding-agent loop on the local Ollama
+    #             model; no external agent process at all.
+    #   bridge  — launch agent_command as a LOCAL COMPATIBILITY BRIDGE: under a
+    #             local provider policy its subprocess env is sanitized to the
+    #             loopback Ollama Anthropic-compatible API (never a cloud key).
+    #   brief   — prepare-not-send: package the brief only.
+    # There is NO automatic fallback between engines.
+    engine: str = "native"
 
 
 @dataclass(frozen=True)
@@ -384,6 +411,22 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         chat_temperature=float(os.getenv("COFOUNDER_CHAT_TEMPERATURE", ollama_raw.get("chat_temperature", 0.65))),
         tool_loop=_bool(os.getenv("COFOUNDER_TOOL_LOOP", ollama_raw.get("tool_loop", True))),
         tool_loop_max_rounds=int(os.getenv("COFOUNDER_TOOL_LOOP_MAX_ROUNDS", ollama_raw.get("tool_loop_max_rounds", 3))),
+        provider_policy=_provider_policy(
+            os.getenv("COFOUNDER_PROVIDER_POLICY", ollama_raw.get("provider_policy", "local_only"))
+        ),
+        allow_remote_ollama=_bool(
+            os.getenv("COFOUNDER_ALLOW_REMOTE_OLLAMA", ollama_raw.get("allow_remote_ollama", False))
+        ),
+        allow_ollama_cloud=_bool(
+            os.getenv("COFOUNDER_ALLOW_OLLAMA_CLOUD", ollama_raw.get("allow_ollama_cloud", False))
+        ),
+        allow_cloud_inference=_bool(
+            os.getenv("COFOUNDER_ALLOW_CLOUD_INFERENCE", ollama_raw.get("allow_cloud_inference", False))
+        ),
+        cloud_fallback=str(ollama_raw.get("cloud_fallback", "never")).strip() or "never",
+        coding_agent_model=str(
+            os.getenv("COFOUNDER_CODING_AGENT_MODEL", ollama_raw.get("coding_agent_model", ""))
+        ).strip(),
     )
     security = SecurityConfig(
         local_token=str(os.getenv("COFOUNDER_LOCAL_TOKEN", security_raw.get("local_token", "")) or ""),
@@ -479,6 +522,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         workspace_root=str(
             os.getenv("ZADE_DELEGATION_WORKSPACE_ROOT", delegation_raw.get("workspace_root", ""))
         ).strip(),
+        engine=_delegation_engine(os.getenv("ZADE_DELEGATION_ENGINE", delegation_raw.get("engine", "native"))),
     )
     screen_raw = raw.get("screen", {})
     screen = ScreenConfig(
@@ -518,6 +562,22 @@ def ensure_local_paths(config: KernelConfig) -> None:
     config.paths.blob_dir.mkdir(parents=True, exist_ok=True)
     config.paths.inbox_dir.mkdir(parents=True, exist_ok=True)
     config.paths.cold_raw_ingest_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _delegation_engine(value: object) -> str:
+    engine = str(value or "").strip().lower() or "native"
+    if engine not in {"native", "bridge", "brief"}:
+        raise ValueError(f"Invalid delegation engine {engine!r}: must be native, bridge, or brief.")
+    return engine
+
+
+def _provider_policy(value: object) -> str:
+    policy = str(value or "").strip().lower() or "local_only"
+    if policy not in {"local_only", "local_preferred", "cloud_allowed"}:
+        raise ValueError(
+            f"Invalid provider_policy {policy!r}: must be local_only, local_preferred, or cloud_allowed."
+        )
+    return policy
 
 
 def _bool(value: object) -> bool:

@@ -600,6 +600,7 @@ class RuntimeService:
                     "event_id": event_id,
                     "authority_decision": authority.decision.value,
                     "prompt_profile": context.get("prompt_profile"),
+                    "provider": self.ollama.provider_info(),
                 },
             )
             raise
@@ -768,6 +769,7 @@ class RuntimeService:
                 "event_id": event_id,
                 "authority_decision": authority.decision.value,
                 "prompt_profile": context.get("prompt_profile"),
+                "provider": self.ollama.provider_info(),
             },
         )
         self.db.audit(
@@ -1505,6 +1507,7 @@ The founder's current message is supplied separately as the user-role message. D
             # A build command was routed into the work queue as a delegation brief
             # this turn. State exactly what was queued (or why it couldn't be) so
             # the reply points at a real item instead of narrating construction.
+            text = _remove_build_deferral_question(text)
             text = f"{text}\n\n{_render_build_route_block(build_route)}".strip()
             applied_rules.append("build_work_routed")
             notes.append(_build_route_note(build_route))
@@ -1718,13 +1721,18 @@ The founder's current message is supplied separately as the user-role message. D
             )
         except Exception as exc:  # noqa: BLE001 - routing must never break the chat reply
             return {"status": "error", "task": task, "anaphoric": anaphoric, "error": str(exc)[:200]}
+        engine = getattr(self.config.delegation, "engine", "native")
+        engine_ready = (
+            engine == "native" and getattr(delegation, "coding_agent", None) is not None
+        ) or (engine == "bridge" and bool(self.config.delegation.agent_command))
         return {
             "status": "queued",
             "task": task,
             "anaphoric": anaphoric,
             "item_id": queued.get("item_id"),
             "queue_status": queued.get("status"),
-            "agent_configured": bool(self.config.delegation.agent_command),
+            "agent_configured": engine_ready,
+            "engine": engine,
         }
 
     def _context_summary(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -3033,7 +3041,7 @@ def _anaphoric_build_task(
         if _extract_build_task(content) == ("", True):
             continue
         if len(content) >= 20:
-            return content[:300]
+            return content[:300].strip(" \t\r\n.,;:!?\"'-")
     return ""
 
 
@@ -3062,20 +3070,25 @@ def _turn_field(turn: Any, field: str) -> Any:
 
 def _render_build_route_block(route: dict[str, Any]) -> str:
     status = route.get("status")
-    task = route.get("task", "")
+    task = str(route.get("task") or "the requested build").strip(" \t\r\n.,;:!?\"'-")
     if status == "queued":
         item_id = route.get("item_id")
         if route.get("agent_configured"):
+            engine_label = (
+                "my local coding agent (loopback Ollama)"
+                if route.get("engine", "native") == "native"
+                else "the local compatibility bridge"
+            )
             return (
                 f"Queued the build - {task}. I packaged a scoped brief with our conversation as context "
                 f"and dropped it in your Inbox (item #{item_id}) behind the typed-phrase approval. "
-                "Clear it and I hand the brief to the configured coding agent and file its artifact "
+                f"Clear it and {engine_label} runs the build and files the artifact "
                 "back as delegated-work evidence. That's the word I need from you."
             )
         return (
-            f"Queued the build - {task}. I packaged a scoped brief (item #{item_id}), but no external "
-            "coding agent is configured ([delegation] agent_command in config.toml), so approving it "
-            "hands you the brief to run manually. Set the agent command and I can run this end to end."
+            f"Queued the build - {task}. I packaged a scoped brief (item #{item_id}), but no build "
+            "engine can run right now ([delegation] engine/agent_command in config.toml), so approving "
+            "it hands you the brief to run manually. Fix the engine config and I can run this end to end."
         )
     if status == "no_task":
         return (
@@ -3086,6 +3099,26 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
         f"Tried to queue the build on {task or 'that'} and hit a snag: {route.get('error', 'unknown error')}. "
         "Nothing was dispatched. Give me the word and I'll retry."
     )
+
+
+_BUILD_DEFERRAL_QUESTION_RE = re.compile(
+    r"""\s*
+    (?:
+        Would\s+you\s+like\s+me\s+to\s+(?:write|create|draft|provide|generate|put\s+together|outline)\b.{0,240}\?
+        |
+        Do\s+you\s+want\s+me\s+to\b.{0,240}\?
+        |
+        Should\s+I\b.{0,240}\?
+    )
+    \s*$""",
+    re.IGNORECASE | re.DOTALL | re.VERBOSE,
+)
+
+
+def _remove_build_deferral_question(text: str) -> str:
+    """Build commands already routed to a real queue item should not end by
+    asking whether Zade should merely plan or outline the work."""
+    return _BUILD_DEFERRAL_QUESTION_RE.sub("", text).strip()
 
 
 def _build_route_note(route: dict[str, Any]) -> str:

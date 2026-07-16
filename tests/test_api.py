@@ -654,7 +654,11 @@ def test_runtime_respond_auto_uses_build_profile_for_app_build_requests(
 
     def capture_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):
         captured_calls.append({"messages": list(messages), "model": model, "think": think})
-        return GenerateResult(response="Build mode active.", model=model or "qwen3:14b", raw={"messages": messages})
+        return GenerateResult(
+            response="Would you like me to write a detailed implementation plan?",
+            model=model or "qwen3:14b",
+            raw={"messages": messages},
+        )
 
     monkeypatch.setattr(OllamaClient, "chat", capture_chat)
     config = KernelConfig(
@@ -685,8 +689,11 @@ def test_runtime_respond_auto_uses_build_profile_for_app_build_requests(
     assert "Profile: build" in captured_calls[0]["messages"][0].content
     assert payload["build"]["status"] == "queued"
     assert payload["build"]["item_id"]
-    assert payload["build"]["agent_configured"] is False
+    # Native engine + wired coding agent = the build can actually run locally.
+    assert payload["build"]["agent_configured"] is True
     assert "build_work_routed" in payload["governor"]["applied_rules"]
+    assert "Would you like me" not in payload["response"]
+    assert "Queued the build -" in payload["response"]
 
 
 def test_runtime_respond_auto_uses_build_profile_for_app_build_followup(
@@ -736,7 +743,8 @@ def test_runtime_respond_auto_uses_build_profile_for_app_build_followup(
     assert captured_calls[0]["model"] == "qwen2.5-coder:14b"
     assert payload["build"]["status"] == "queued"
     assert payload["build"]["item_id"]
-    assert payload["build"]["agent_configured"] is False
+    # Native engine + wired coding agent = the build can actually run locally.
+    assert payload["build"]["agent_configured"] is True
     assert "build_work_routed" in payload["governor"]["applied_rules"]
 
 

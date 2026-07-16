@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `9115fc8` 2026-07-16 - Use full claude.exe path for delegation agent
 - `5aa7eec` 2026-07-16 - Route founder build commands into gated delegation work
 - `98c6a44` 2026-07-16 - v1 - skills
 - `c7268aa` 2026-07-16 - Add investigation tool loop: Zade now runs real reads instead of narrating them
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `cb27d4e` 2026-07-15 - Fix Zade home page asset paths for Option B (relativize index.html)
 - `9b35d85` 2026-07-15 - Merge pull request #1 from TiB0n3s/feat/phase3-swarm-screen
 - `f80e84a` 2026-07-15 - Complete Phase 3 + swarm first slice + screen awareness
-- `5000405` 2026-07-15 - Inject living self-knowledge into runtime prompt
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

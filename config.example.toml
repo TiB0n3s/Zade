@@ -25,6 +25,37 @@ temperature = 0.2
 tool_loop = true
 tool_loop_max_rounds = 3
 
+# ---- provider policy (local-first; the default is local_only) ----
+# local_only:      ONLY loopback Ollama (127.0.0.1/localhost/::1) and verified
+#                  local models. Cloud providers (api.anthropic.com,
+#                  api.openai.com), Ollama Cloud (ollama.com, *-cloud models),
+#                  and remote Ollama hosts are refused at the transport layer
+#                  BEFORE any bytes leave the process. No fallback, ever: a
+#                  local failure is reported as a local failure.
+# local_preferred: local first; cloud still needs explicit per-request
+#                  authorization. Never an automatic fallback.
+# cloud_allowed:   cloud possible only when allow_cloud_inference below is true
+#                  AND the request explicitly opts in. An installed API key
+#                  NEVER counts as authorization and never changes routing.
+provider_policy = "local_only"
+allow_remote_ollama = false
+allow_ollama_cloud = false
+allow_cloud_inference = false
+cloud_fallback = "never"
+# Native coding agent model (the tool-calling build loop). Leave empty to
+# resolve automatically: the kernel probes coding_model then chat_model for
+# NATIVE tool-call support (declared capabilities are unreliable — probe truth
+# via GET /models/inventory?probe=true) and fails with the installed candidates
+# if none passes. Set explicitly to pin it, e.g. "qwen3:14b".
+coding_agent_model = ""
+# Verify the effective posture at runtime: GET /providers/status shows the
+# active policy, endpoint host, per-role models, whether Ollama Cloud is
+# disabled (set OLLAMA_NO_CLOUD=1 in Ollama's environment for a hard server-
+# side guarantee), and the provider/model used by the most recent request.
+# Note: cloud SPEECH engines ([voice] deepgram/elevenlabs) and approved web
+# research fetches are external DATA tools under their own permission gates —
+# they are not model inference and are not authorized by any llm policy.
+
 [security]
 local_token = ""
 protect_mutations = true
@@ -96,11 +127,23 @@ command_timeout_seconds = 300.0
 [delegation]
 # Delegated build work (swarm, frontier half). A founder chat command like
 # "build me a book-cataloguing app" or "build this out for me" packages a
-# scoped brief and queues an approval-gated external-agent run; approving the
-# Inbox item invokes agent_command with the brief on stdin. Empty command =
-# brief-only (prepare-not-send). workspace_root confines where the agent runs —
-# keep it OUTSIDE this repo.
+# scoped brief and queues an approval-gated run. workspace_root confines where
+# builds happen — keep it OUTSIDE this repo.
+#
+# engine selects the implementation (NO automatic fallback between them):
+#   native (default) — Zade's own coding-agent loop on the local Ollama model
+#            ([ollama] coding_agent_model): build profile as system message,
+#            real workspace tools (list/read/search/edit/run tests/git),
+#            bounded rounds, all audited. No external process, no cloud.
+#   bridge — run agent_command as a LOCAL COMPATIBILITY BRIDGE. Under a local
+#            provider policy its environment is sanitized: ANTHROPIC_BASE_URL
+#            is forced to the loopback Ollama Anthropic-compatible API,
+#            ANTHROPIC_AUTH_TOKEN=ollama, ANTHROPIC_API_KEY is stripped, and
+#            the explicit local model is set. Claude Code is NOT required for
+#            the default local coding path.
+#   brief  — prepare-not-send: package the brief only.
 enabled = true
+engine = "native"
 auto_invoke = true
 agent_command = ["claude", "-p", "--permission-mode", "acceptEdits"]
 daily_budget = 25

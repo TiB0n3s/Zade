@@ -31,6 +31,8 @@ from .ingestion import IngestionService
 from .research import ResearchService
 from .roles import RolePassService
 from .delegation import DelegationService
+from .coding_agent import CodingAgentService
+from .inventory import ModelInventoryService
 from .screen import ScreenService
 from .models import (
     ActionPlanCreate,
@@ -257,7 +259,17 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     # heavy work OUT to an external agent as an approval-gated L3 action (auto-invoke
     # bounded by a daily budget). Screen awareness is a local, on-demand read.
     roles = RolePassService(config=cfg, db=db, ollama=ollama)
-    delegation = DelegationService(config=cfg, db=db, founder=founder, work_queue=work_queue)
+    # Local model inventory + native coding agent: the default delegated-build
+    # engine. Everything model-shaped runs on the loopback Ollama client above.
+    inventory = ModelInventoryService(config=cfg, ollama=ollama)
+    coding_agent = CodingAgentService(config=cfg, db=db, ollama=ollama, inventory=inventory)
+    delegation = DelegationService(
+        config=cfg,
+        db=db,
+        founder=founder,
+        work_queue=work_queue,
+        coding_agent=coding_agent,
+    )
     delegation.register_into(handlers)
     # Let the chat runtime route founder build commands ("build this out for me")
     # into a gated delegation brief instead of a text-only architecture outline.
@@ -401,6 +413,51 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
             "missing_roles": {
                 role: model for role, model in roles.items() if not _model_is_installed(model, installed_names)
             },
+        }
+
+    @app.get("/models/inventory")
+    def models_inventory(probe: bool = False) -> dict[str, Any]:
+        """Installed local models with details, capabilities, and (optionally)
+        the live native tool-call probe. Never pulls a model."""
+        try:
+            return {"models": inventory.snapshot(probe=probe)}
+        except OllamaError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/providers/status")
+    def providers_status() -> dict[str, Any]:
+        """The provider-policy truth surface: policy, endpoint, per-role models,
+        cloud posture, bridge mode, and the most recent model call. LOCAL means
+        loopback Ollama with a verified-local model; anything else says so."""
+        provider = ollama.provider_info()
+        roles = cfg.ollama.roles()
+        coding_agent_status: dict[str, Any] = {"model": "", "error": ""}
+        try:
+            coding_agent_status["model"] = inventory.resolve_coding_agent_model()
+        except OllamaError as exc:
+            coding_agent_status["error"] = str(exc)
+        installed: list[str] = []
+        inventory_error = ""
+        try:
+            installed = inventory.installed()
+        except OllamaError as exc:
+            inventory_error = str(exc)
+        last_calls = db.list_model_calls(limit=1)
+        last_call = last_calls[0].__dict__ if last_calls else None
+        engine = getattr(cfg.delegation, "engine", "native")
+        return {
+            "indicator": "LOCAL" if provider["verified_local"] else "CLOUD",
+            "provider_policy": provider["provider_policy"],
+            "provider": provider,
+            "ollama_host": cfg.ollama.base_url,
+            "models_by_role": roles | {"coding_agent": coding_agent_status["model"]},
+            "coding_agent": coding_agent_status,
+            "ollama_cloud_disabled": inventory.ollama_cloud_disabled(),
+            "delegation_engine": engine,
+            "claude_code_bridge_active": engine == "bridge",
+            "installed_models": installed,
+            "inventory_error": inventory_error,
+            "last_model_call": last_call,
         }
 
     @app.get("/models/telemetry")

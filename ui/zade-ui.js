@@ -532,8 +532,30 @@
     const foot = el("div", "zade-sidebar-foot");
     foot.innerHTML =
       '<div class="zade-status"><div class="zade-dot" data-kernel-dot></div><span data-kernel-label>Kernel · checking…</span></div>' +
-      '<div class="zade-status"><div class="zade-dot"></div><span>Loopback only · no cloud</span></div>';
+      '<div class="zade-status"><div class="zade-dot" data-provider-dot></div><span data-provider-label>Provider · checking…</span></div>';
     aside.appendChild(foot);
+
+    // Live provider-policy check: LOCAL means loopback Ollama with a verified
+    // local model; anything else is shown loudly instead of assumed.
+    fetch("/providers/status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const dot = aside.querySelector("[data-provider-dot]");
+        const label = aside.querySelector("[data-provider-label]");
+        if (!label) return;
+        if (data && data.indicator === "LOCAL") {
+          if (dot) dot.classList.add("live");
+          label.textContent = "LOCAL · " + (data.provider_policy || "local_only") + " · ollama";
+        } else if (data) {
+          label.textContent = "CLOUD · " + (data.provider_policy || "?") + " — check /providers/status";
+        } else {
+          label.textContent = "Provider · unknown";
+        }
+      })
+      .catch(() => {
+        const label = aside.querySelector("[data-provider-label]");
+        if (label) label.textContent = "Provider · unknown";
+      });
 
     document.body.appendChild(aside);
     document.body.classList.add("zade-has-sidebar");

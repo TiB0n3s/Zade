@@ -41,14 +41,28 @@ def test_build_brief_is_scoped(tmp_path: Path, monkeypatch) -> None:
     assert "All tests pass" in brief
 
 
-def test_brief_only_when_no_agent_configured(tmp_path: Path, monkeypatch) -> None:
+def test_bridge_engine_without_command_cannot_invoke(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    # Default config: agent_command empty → can never auto-invoke.
-    client = TestClient(create_app(_config(tmp_path)))
+    # Bridge engine with no command → can never auto-invoke; stays gated.
+    client = TestClient(create_app(_config(tmp_path, engine="bridge")))
     result = client.post("/delegation/run", json={"task": "do a thing", "auto_invoke": True}).json()
     assert result["status"] == "approval_required"
     assert result["auto_invoked"] is False
-    assert "no agent command" in result["reason"]
+    assert "engine cannot run" in result["reason"]
+
+
+def test_brief_engine_prepares_not_sends(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    client = TestClient(create_app(_config(tmp_path, engine="brief")))
+    queued = client.post("/delegation/run", json={"task": "prep only", "auto_invoke": False}).json()
+    approved = client.post(
+        f"/work/items/{queued['item_id']}/approve",
+        json={"resolved_by": "founder", "dispatch": True, "typed_confirmation": PHRASE},
+    ).json()
+    dispatch = approved["dispatch_result"]
+    assert dispatch["status"] == "prepared"
+    assert "prep only" in dispatch["brief"]
 
 
 def test_auto_invoke_within_budget_dispatches_and_files(tmp_path: Path, monkeypatch) -> None:
@@ -57,14 +71,16 @@ def test_auto_invoke_within_budget_dispatches_and_files(tmp_path: Path, monkeypa
 
     captured = {}
 
-    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None):
+    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None, env=None):
         captured["command"] = command
         captured["brief"] = brief
         return "PATCH: refactored the module, all green."
 
     monkeypatch.setattr(delegation_module, "run_agent", fake_run_agent)
 
-    config = _config(tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), daily_budget=25)
+    config = _config(
+        tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), daily_budget=25, engine="bridge"
+    )
     app = create_app(config)
     client = TestClient(app)
 
@@ -84,7 +100,9 @@ def test_auto_invoke_within_budget_dispatches_and_files(tmp_path: Path, monkeypa
 
 def test_over_budget_falls_back_to_gated(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
-    config = _config(tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), daily_budget=0)
+    config = _config(
+        tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), daily_budget=0, engine="bridge"
+    )
     client = TestClient(create_app(config))
     result = client.post("/delegation/run", json={"task": "x", "auto_invoke": True}).json()
     assert result["auto_invoked"] is False
@@ -96,9 +114,9 @@ def test_gated_dispatch_runs_agent(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "embed", fake_embed)
     monkeypatch.setattr(
         delegation_module, "run_agent",
-        lambda command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None: "done via approval",
+        lambda command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None, env=None: "done via approval",
     )
-    config = _config(tmp_path, enabled=True, auto_invoke=False, agent_command=("agent-cli",))
+    config = _config(tmp_path, enabled=True, auto_invoke=False, agent_command=("agent-cli",), engine="bridge")
     client = TestClient(create_app(config))
 
     queued = client.post("/delegation/run", json={"task": "gated task", "auto_invoke": False}).json()
@@ -119,7 +137,7 @@ def test_workspace_root_confines_agent_cwd(tmp_path: Path, monkeypatch) -> None:
 
     captured = {}
 
-    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None):
+    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None, env=None):
         captured["cwd"] = cwd
         return "scaffolded."
 
@@ -131,6 +149,7 @@ def test_workspace_root_confines_agent_cwd(tmp_path: Path, monkeypatch) -> None:
         auto_invoke=True,
         agent_command=("agent-cli",),
         workspace_root=str(workspace),
+        engine="bridge",
     )
     client = TestClient(create_app(config))
 
@@ -140,6 +159,125 @@ def test_workspace_root_confines_agent_cwd(tmp_path: Path, monkeypatch) -> None:
     assert result["dispatch"]["ok"] is True
     assert captured["cwd"] == str(workspace)
     assert workspace.is_dir()
+
+
+def test_bridge_environment_is_sanitized_to_loopback_ollama(tmp_path: Path, monkeypatch) -> None:
+    """The compatibility bridge under a local policy: ANTHROPIC_BASE_URL is the
+    loopback Ollama, the auth token is 'ollama', the real API key is STRIPPED,
+    and the explicit local model is passed. Cloud is unreachable by env."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-sentinel-should-never-be-seen")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+
+    captured = {}
+
+    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None, env=None):
+        captured["env"] = env
+        return "bridge artifact"
+
+    monkeypatch.setattr(delegation_module, "run_agent", fake_run_agent)
+    config = _config(
+        tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), engine="bridge"
+    )
+    client = TestClient(create_app(config))
+    result = client.post("/delegation/run", json={"task": "bridge task", "auto_invoke": True}).json()
+
+    assert result["dispatch"]["ok"] is True
+    env = captured["env"]
+    assert env is not None
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:1"  # the configured loopback Ollama
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "ollama"
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["ANTHROPIC_MODEL"] == "qwen2.5-coder:14b"  # configured local coding model
+    note = result["dispatch"]["bridge"]
+    assert note["mode"] == "local_compatibility_bridge"
+    assert note["base_host"] == "127.0.0.1"
+    assert note["anthropic_api_key_present"] is False
+
+
+def test_native_engine_dispatches_coding_agent_without_subprocess(tmp_path: Path, monkeypatch) -> None:
+    """Engine 'native' (the default) runs Zade's own coding agent: no external
+    process is launched even when an agent command is configured, and the
+    artifact is filed as native delegated-work evidence."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    def forbidden_run_agent(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("external agent subprocess must not launch under engine=native")
+
+    monkeypatch.setattr(delegation_module, "run_agent", forbidden_run_agent)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(tmp_path),
+            "rounds": 2,
+            "used_tools": True,
+            "steps": [{"tool": "read_file", "ok": True}],
+            "changed_files": ["src/fix.py"],
+            "response": "Fixed the bug; focused test passes.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    config = _config(
+        tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), engine="native"
+    )
+    client = TestClient(create_app(config))
+    result = client.post("/delegation/run", json={"task": "fix the bug", "auto_invoke": True}).json()
+
+    dispatch = result["dispatch"]
+    assert dispatch["ok"] is True
+    assert dispatch["engine"] == "native"
+    assert dispatch["model"] == "qwen3:14b"
+    assert dispatch["changed_files"] == ["src/fix.py"]
+    evidence = client.get("/founder/evidence").json()["items"]
+    assert any("native coding" in (item.get("notes") or "").lower() or
+               item.get("source") == "delegation:native-coding-agent" for item in evidence)
+
+
+def test_native_capability_error_never_escalates_to_bridge(tmp_path: Path, monkeypatch) -> None:
+    """A native capability failure is returned as a LOCAL failure. It must not
+    fall back to the bridge CLI or any cloud provider."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    def forbidden_run_agent(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("no fallback to external agent on native failure")
+
+    monkeypatch.setattr(delegation_module, "run_agent", forbidden_run_agent)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def failing_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": False,
+            "status": "capability_error",
+            "error": "No configured local model passed the native tool-call probe.",
+            "model": "",
+            "rounds": 0,
+            "steps": [],
+            "changed_files": [],
+            "response": "",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", failing_agent_run)
+    config = _config(
+        tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), engine="native"
+    )
+    client = TestClient(create_app(config))
+    result = client.post("/delegation/run", json={"task": "fix it", "auto_invoke": True}).json()
+
+    dispatch = result["dispatch"]
+    assert dispatch["ok"] is False
+    assert dispatch["engine"] == "native"
+    assert "tool-call probe" in dispatch["error"]
 
 
 def test_disabled_blocks_and_unregisters(tmp_path: Path, monkeypatch) -> None:

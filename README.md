@@ -102,6 +102,57 @@ $env:COFOUNDER_LOCAL_TOKEN = "choose-a-local-secret"
 
 When set, every `POST`, `PUT`, `PATCH`, and `DELETE` requires `X-Zade-Token`. The static UI reads the same token from `localStorage.zadeKernelToken`.
 
+## Provider Policy (local-first, default local-only)
+
+Every model-backed feature — chat, coding, planning, critique, summarization,
+evals, subagent role passes, embeddings — runs through one loopback Ollama
+client, and that client enforces `[ollama] provider_policy` at the transport
+layer before any bytes leave the process:
+
+- `local_only` (the default): only loopback hosts (`127.0.0.1`, `localhost`,
+  `::1`) and verified local models. Cloud provider hosts (`api.anthropic.com`,
+  `api.openai.com`, `ollama.com`), Ollama Cloud models (`*-cloud` /
+  `:cloud`-tagged), and remote Ollama hosts are refused with a clear
+  `ProviderPolicyError`. There is no fallback: a local failure is a local
+  failure.
+- `local_preferred`: local first; cloud still needs explicit per-request
+  authorization. Never an automatic fallback.
+- `cloud_allowed`: cloud is possible only when `allow_cloud_inference = true`
+  AND the request explicitly opts in. An installed `ANTHROPIC_API_KEY` /
+  `OPENAI_API_KEY` never counts as authorization and never changes routing.
+
+Installed models are discovered from the local Ollama (`GET /models/inventory`,
+which reads `/api/tags` + `/api/show`); pass `?probe=true` to run the live
+native tool-call probe (declared capabilities are unreliable — on this class of
+models, some declare `tools` yet emit tool calls as JSON text). The coding
+agent's model comes from `[ollama] coding_agent_model`, or is resolved by
+probing `coding_model` then `chat_model`; when nothing passes, the error names
+the installed candidates and the key to set. Models are never pulled
+automatically.
+
+Verify the effective posture at `GET /providers/status`: active policy,
+endpoint host, model per role, whether Ollama Cloud is disabled (set
+`OLLAMA_NO_CLOUD=1` in the Ollama server's environment for the hard
+server-side guarantee), whether the Claude Code compatibility bridge is
+active, installed models, and the provider/model of the most recent request.
+The UI sidebar shows the same truth as a LOCAL/CLOUD indicator.
+
+Delegated builds default to the **native local coding agent**
+(`[delegation] engine = "native"`): Zade's own bounded tool loop on the local
+model — build profile as the system message, real workspace-confined tools
+(list/read/search/edit/run tests/git), every execution audited. Claude Code is
+not required for local coding. `engine = "bridge"` runs the configured CLI as
+a *local compatibility bridge*: under a local policy its subprocess environment
+is sanitized to the loopback Ollama Anthropic-compatible API
+(`ANTHROPIC_BASE_URL=http://127.0.0.1:11434`, `ANTHROPIC_AUTH_TOKEN=ollama`,
+API key stripped, explicit local model). There is no automatic fallback
+between engines.
+
+Cloud speech engines (`[voice]` Deepgram/ElevenLabs) and approved web-research
+fetches are external **data** tools under their own permission gates; they are
+not model inference and no llm policy authorizes them to carry prompts or
+repository content to a cloud model.
+
 ## Prompt Profiles
 
 Zade's runtime prompt profiles are embedded application assets in `src/cofounder_kernel/prompt_assets/zade`. They are loaded as UTF-8 package resources, adapted for this local runtime, and injected into the actual `/runtime/respond` model-request path before the prompt is sent to Ollama. The full system prompt is not logged by default.
@@ -302,6 +353,8 @@ GET  /audit/recent
 GET  /models
 GET  /models/telemetry
 GET  /models/telemetry/calls
+GET  /models/inventory
+GET  /providers/status
 POST /models/benchmark
 GET  /ops/health-check
 GET  /ops/security
