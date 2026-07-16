@@ -19,6 +19,7 @@ time) so the whole path is testable without spawning a real agent.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import urllib.parse
 from pathlib import Path
@@ -34,6 +35,74 @@ DELEGATION_RUN_ACTION = "external.delegation.run"
 AgentRunner = Callable[..., str]
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+# ---- verification-claim cross-check ------------------------------------------
+# The chat layer already refuses to narrate work it did not do; this pushes the
+# same guarantee into delegated artifacts. An artifact asserting a verification
+# (type check, tests, audit, build) is cross-checked against the run's AUDITED
+# step list; a claim with no matching successfully executed run_command step is
+# marked UNVERIFIED before the evidence is filed.
+
+def _claim(label: str, claim: str, command: str) -> tuple[str, re.Pattern[str], re.Pattern[str]]:
+    return (label, re.compile(claim, re.IGNORECASE), re.compile(command, re.IGNORECASE))
+
+
+_VERIFICATION_CLAIMS: tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...] = (
+    _claim("TypeScript type check (tsc)", r"\btsc\b|\btype[\s-]?check(?:s|ed|ing)?\b", r"\btsc\b"),
+    _claim("npm test", r"\bnpm\s+(?:run\s+)?test\b", r"\bnpm(?:\.cmd)?\b.*\btest\b"),
+    _claim("npm audit", r"\bnpm\s+audit\b", r"\bnpm(?:\.cmd)?\b.*\baudit\b"),
+    _claim("build", r"\bbuild\s+(?:succeed(?:ed|s)?|pass(?:ed|es)?|completed)\b", r"\bbuild\b"),
+    _claim(
+        "tests pass",
+        r"\btests?\b[^.\n]{0,80}\b(?:pass(?:ed|es|ing)?|green)\b"
+        r"|\bpass(?:ed|es)?\b[^.\n]{0,80}\btests?\b"
+        r"|\bpytest\b[^.\n]{0,80}\bpass(?:ed|es)?\b",
+        r"\bpytest\b|\bnpm(?:\.cmd)?\b.*\btest\b|\bnode\b.*\btest\b",
+    ),
+)
+
+
+def find_unverified_claims(artifact: str, steps: Any) -> list[str]:
+    """Return the verification claims asserted in ``artifact`` that no audited
+    step actually executed. ``steps`` is the native run's audited step list;
+    an external (bridge) artifact carries none, so every verification claim it
+    makes comes back unverified — which is the honest posture."""
+    text = str(artifact or "")
+    if not text.strip():
+        return []
+    commands: list[str] = []
+    for step in steps or []:
+        if not isinstance(step, dict) or step.get("tool") != "run_command":
+            continue
+        if not step.get("ok", False):
+            continue
+        argv = (step.get("arguments") or {}).get("argv")
+        if isinstance(argv, (list, tuple)):
+            commands.append(" ".join(str(part) for part in argv))
+    unverified: list[str] = []
+    for label, claim_re, command_re in _VERIFICATION_CLAIMS:
+        match = claim_re.search(text)
+        if match is None:
+            continue
+        if any(command_re.search(command) for command in commands):
+            continue
+        snippet = " ".join(match.group(0).split())[:120]
+        unverified.append(f"{label} (artifact says: {snippet!r})")
+    return unverified
+
+
+def _unverified_notes_suffix(unverified: list[str], *, engine: str) -> str:
+    if not unverified:
+        return ""
+    header = (
+        "UNVERIFIED CLAIM(S) — asserted in the artifact but not backed by any "
+        "audited executed command"
+    )
+    if engine == "bridge":
+        header += " (external agents return no audited step list)"
+    bullets = "".join(f"\n- {claim}" for claim in unverified)
+    return f"\n{header}:{bullets}\nTreat these claims as unconfirmed until re-verified."
 
 
 class DelegationService:
@@ -266,6 +335,10 @@ class DelegationService:
             status = "flow_error"
             error = str(exc)[:400]
 
+        # An external agent returns no audited step list, so its verification
+        # claims cannot be cross-checked against executed commands — they are
+        # marked unverified by construction.
+        unverified_claims = find_unverified_claims(artifact, None)
         evidence_id = None
         if status == "ok" and artifact.strip():
             try:
@@ -276,8 +349,15 @@ class DelegationService:
                         "reliability": self.config.delegation.default_reliability,
                         "claim_supported": f"External agent artifact for '{task}': {artifact[:400]}",
                         "strength": 55,
-                        "notes": "Produced by a delegated external agent. Treat as a sourced external claim, not native certainty.",
-                        "metadata": {"task": task, "entity_boundary": "External agent produced; Zade records as delegated evidence."},
+                        "notes": (
+                            "Produced by a delegated external agent. Treat as a sourced external claim, not native certainty."
+                            + _unverified_notes_suffix(unverified_claims, engine="bridge")
+                        ),
+                        "metadata": {
+                            "task": task,
+                            "unverified_claims": unverified_claims,
+                            "entity_boundary": "External agent produced; Zade records as delegated evidence.",
+                        },
                     }
                 )
                 evidence_id = evidence.id
@@ -294,6 +374,7 @@ class DelegationService:
                 "work_item_id": item.id,
                 "task": task,
                 "artifact_chars": len(artifact),
+                "unverified_claims": unverified_claims,
                 "evidence_id": evidence_id,
                 "engine": "bridge",
                 # Effective bridge posture: base host + model only — no prompts,
@@ -308,6 +389,7 @@ class DelegationService:
             "task": task,
             "engine": "bridge",
             "bridge": bridge_note,
+            "unverified_claims": unverified_claims,
             "artifact": artifact,
             "evidence_id": evidence_id,
             "error": error,
@@ -320,6 +402,7 @@ class DelegationService:
         assert self.coding_agent is not None  # guarded by run_from_work_item
         result = self.coding_agent.run(task=task, context=brief, workspace=workspace or None)
         artifact = str(result.get("response") or "")
+        unverified_claims = find_unverified_claims(artifact, result.get("steps"))
         evidence_id = None
         error = str(result.get("error") or "")
         if result.get("ok") and artifact.strip():
@@ -334,11 +417,13 @@ class DelegationService:
                         "notes": (
                             "Produced by Zade's native coding agent on the local Ollama model "
                             f"{result.get('model')}. Verified-local run."
+                            + _unverified_notes_suffix(unverified_claims, engine="native")
                         ),
                         "metadata": {
                             "task": task,
                             "model": result.get("model"),
                             "changed_files": result.get("changed_files", []),
+                            "unverified_claims": unverified_claims,
                             "entity_boundary": "Local coding agent produced; recorded as delegated evidence.",
                         },
                     }
@@ -362,6 +447,7 @@ class DelegationService:
                 "rounds": result.get("rounds"),
                 "changed_files": result.get("changed_files", []),
                 "artifact_chars": len(artifact),
+                "unverified_claims": unverified_claims,
                 "evidence_id": evidence_id,
                 "error": error,
             },
@@ -377,6 +463,7 @@ class DelegationService:
             "rounds": result.get("rounds"),
             "steps": result.get("steps", []),
             "changed_files": result.get("changed_files", []),
+            "unverified_claims": unverified_claims,
             "artifact": artifact,
             "evidence_id": evidence_id,
             "error": error or str(result.get("error") or ""),

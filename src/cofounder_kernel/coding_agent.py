@@ -44,6 +44,7 @@ MAX_LIST_ENTRIES = 400
 MAX_SEARCH_MATCHES = 80
 COMMAND_TIMEOUT_SECONDS = 420.0
 MAX_COMMAND_OUTPUT_CHARS = 12_000
+MAX_VERIFY_OUTPUT_CHARS = 4000
 
 # Allowlisted first-argv tokens for run_command. Deliberately small: enough to
 # run tests and inspect a Python or Node workspace. npx stays OFF the list —
@@ -220,6 +221,37 @@ class CodingAgentService:
                     }
                 )
 
+        # Kernel-run auto-verification: when the run changed files and the
+        # workspace has a recognizable test entry point, the KERNEL runs the
+        # real verification through the same allowlisted/audited run_command
+        # path and appends the actual output to the artifact. The model cannot
+        # skip it and cannot fake it — the appended block is ground truth.
+        auto_verification: dict[str, Any] | None = None
+        if status == "ok" and changed_files:
+            verify_argv = self._verification_argv(root)
+            if verify_argv is not None:
+                started = time.perf_counter()
+                verify_result = self._execute(tools, "run_command", {"argv": list(verify_argv)})
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                steps.append(
+                    {
+                        "tool": "run_command",
+                        "arguments": {"argv": list(verify_argv)},
+                        "ok": bool(verify_result.get("ok", False)),
+                        "latency_ms": latency_ms,
+                        "round": rounds,
+                        "auto_verify": True,
+                    }
+                )
+                auto_verification = {
+                    "argv": list(verify_argv),
+                    "ok": bool(verify_result.get("ok", False)),
+                    "returncode": verify_result.get("returncode"),
+                }
+                final_text = (
+                    final_text.strip() + "\n\n" + _render_verification(verify_argv, verify_result)
+                ).strip()
+
         result = {
             "ok": status == "ok",
             "status": status,
@@ -231,6 +263,7 @@ class CodingAgentService:
             "used_tools": used_tools,
             "steps": steps,
             "changed_files": sorted(changed_files),
+            "auto_verification": auto_verification,
             "response": final_text.strip(),
         }
         # Redacted per-run telemetry: role, provider, model, endpoint, outcome —
@@ -257,6 +290,27 @@ class CodingAgentService:
         except Exception:  # noqa: BLE001 - telemetry must not break the run
             pass
         return result
+
+    # ---- auto-verification ------------------------------------------------------
+    def _verification_argv(self, root: Path) -> list[str] | None:
+        """Pick the workspace's real verification command, or None when the
+        workspace has no recognizable test entry point. Node workspaces only
+        qualify when package.json actually declares a test script (a bare
+        ``npm test`` would just error); Python workspaces qualify on
+        pyproject.toml, a tests/ directory, or root-level test_*.py files."""
+        package = root / "package.json"
+        if package.is_file():
+            try:
+                manifest = json.loads(package.read_text(encoding="utf-8", errors="replace"))
+            except (json.JSONDecodeError, OSError):
+                manifest = {}
+            scripts = manifest.get("scripts") if isinstance(manifest, dict) else {}
+            if isinstance(scripts, dict) and str(scripts.get("test") or "").strip():
+                return ["npm", "test"]
+            return None
+        if (root / "pyproject.toml").is_file() or (root / "tests").is_dir() or any(root.glob("test_*.py")):
+            return ["python", "-m", "pytest", "-q"]
+        return None
 
     # ---- workspace ------------------------------------------------------------
     def _workspace_root(self, workspace: str | Path | None) -> Path:
@@ -667,6 +721,25 @@ def _parse_tool_call(call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if not isinstance(arguments, dict):
         arguments = {}
     return name, arguments
+
+
+def _render_verification(argv: list[str], result: dict[str, Any]) -> str:
+    """Render the kernel-run verification as an artifact block. Only real
+    subprocess output goes in here — never model text."""
+    lines = [
+        "--- Kernel auto-verification (REAL output, appended by the kernel — not the model) ---",
+        f"$ {' '.join(argv)}",
+    ]
+    if "returncode" in result:
+        lines.append(f"exit code: {result['returncode']}")
+    for stream in ("stdout", "stderr"):
+        text = str(result.get(stream) or "").strip()
+        if text:
+            lines.append(text[:MAX_VERIFY_OUTPUT_CHARS])
+    error = str(result.get("error") or "").strip()
+    if error:
+        lines.append(f"error: {error[:400]}")
+    return "\n".join(lines)
 
 
 def _render_result(result: dict[str, Any]) -> str:

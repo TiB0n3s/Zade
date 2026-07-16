@@ -280,6 +280,112 @@ def test_native_capability_error_never_escalates_to_bridge(tmp_path: Path, monke
     assert "tool-call probe" in dispatch["error"]
 
 
+def test_native_unverified_claim_is_flagged_in_evidence(tmp_path: Path, monkeypatch) -> None:
+    """Work item #43 regression: the agent's artifact claims a tsc type check
+    that appears nowhere in its audited step list (npx isn't even allowlisted).
+    The claim must be flagged in the dispatch result and the filed evidence."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(tmp_path),
+            "rounds": 2,
+            "used_tools": True,
+            "steps": [
+                {"tool": "read_file", "arguments": {"path": "src/app.ts"}, "ok": True},
+                {"tool": "write_file", "arguments": {"path": "src/app.ts"}, "ok": True},
+            ],
+            "changed_files": ["src/app.ts"],
+            "response": "Done. Passed TypeScript type checks with `npx tsc --noEmit`.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    config = _config(tmp_path, enabled=True, auto_invoke=True, engine="native")
+    client = TestClient(create_app(config))
+    result = client.post("/delegation/run", json={"task": "harden the app", "auto_invoke": True}).json()
+
+    dispatch = result["dispatch"]
+    assert dispatch["ok"] is True
+    assert dispatch["unverified_claims"], "the tsc claim has no matching executed step"
+    assert any("tsc" in claim.lower() for claim in dispatch["unverified_claims"])
+    evidence = client.get("/founder/evidence").json()["items"]
+    filed = next(item for item in evidence if item["evidence_type"] == "delegated_work")
+    assert "UNVERIFIED CLAIM" in (filed.get("notes") or "")
+    assert "tsc" in (filed.get("notes") or "").lower()
+
+
+def test_native_claim_backed_by_audited_step_is_not_flagged(tmp_path: Path, monkeypatch) -> None:
+    """A verification claim whose command really ran as an audited ok step is
+    NOT marked unverified — the cross-check keys on executed argv contents."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(tmp_path),
+            "rounds": 3,
+            "used_tools": True,
+            "steps": [
+                {"tool": "replace_in_file", "arguments": {"path": "src/lib.js"}, "ok": True},
+                {"tool": "run_command", "arguments": {"argv": ["npm", "test"]}, "ok": True},
+            ],
+            "changed_files": ["src/lib.js"],
+            "response": "Fixed the parser; npm test passed with all tests green.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    config = _config(tmp_path, enabled=True, auto_invoke=True, engine="native")
+    client = TestClient(create_app(config))
+    result = client.post("/delegation/run", json={"task": "fix the parser", "auto_invoke": True}).json()
+
+    dispatch = result["dispatch"]
+    assert dispatch["ok"] is True
+    assert dispatch["unverified_claims"] == []
+    evidence = client.get("/founder/evidence").json()["items"]
+    filed = next(item for item in evidence if item["evidence_type"] == "delegated_work")
+    assert "UNVERIFIED CLAIM" not in (filed.get("notes") or "")
+
+
+def test_bridge_artifact_verification_claims_are_marked_unverified(tmp_path: Path, monkeypatch) -> None:
+    """An external agent returns no audited step list, so its verification
+    claims are unverifiable by construction and filed with the marker."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    monkeypatch.setattr(
+        delegation_module, "run_agent",
+        lambda command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None, env=None:
+            "Refactor complete. All tests green and npm audit is clean.",
+    )
+    config = _config(
+        tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), engine="bridge"
+    )
+    client = TestClient(create_app(config))
+    result = client.post("/delegation/run", json={"task": "refactor", "auto_invoke": True}).json()
+
+    dispatch = result["dispatch"]
+    assert dispatch["ok"] is True
+    assert dispatch["unverified_claims"]
+    evidence = client.get("/founder/evidence").json()["items"]
+    filed = next(item for item in evidence if item["evidence_type"] == "delegated_work")
+    assert "UNVERIFIED CLAIM" in (filed.get("notes") or "")
+    assert "no audited step list" in (filed.get("notes") or "")
+
+
 def test_disabled_blocks_and_unregisters(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     client = TestClient(create_app(_config(tmp_path, enabled=False)))

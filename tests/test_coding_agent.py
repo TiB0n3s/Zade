@@ -287,6 +287,104 @@ def test_capability_error_lists_candidates_and_never_calls_cloud(tmp_path: Path,
     assert ollama.calls == []  # no model call at all, local or otherwise
 
 
+# kernel-run auto-verification -------------------------------------------------------
+
+def test_auto_verify_runs_real_tests_after_changes(tmp_path: Path, fixture_repo: Path) -> None:
+    """When a run changed files in a pytest workspace, the KERNEL runs the real
+    verification itself and appends the actual output — even when the model
+    claimed success without ever running the tests."""
+    script = [
+        {
+            "tool_calls": [
+                _call(
+                    "replace_in_file",
+                    path="calc.py",
+                    old_text="    return a - b  # BUG: should be addition",
+                    new_text="    return a + b",
+                )
+            ]
+        },
+        {"content": "Fixed add(). All tests pass."},  # claimed, never executed
+    ]
+    svc, _ = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="fix the add() bug")
+
+    assert result["ok"] is True, result
+    assert result["changed_files"] == ["calc.py"]
+    verify_steps = [s for s in result["steps"] if s.get("auto_verify")]
+    assert len(verify_steps) == 1
+    assert verify_steps[0]["tool"] == "run_command"
+    assert verify_steps[0]["arguments"]["argv"] == ["python", "-m", "pytest", "-q"]
+    assert verify_steps[0]["ok"] is True
+    assert result["auto_verification"]["ok"] is True
+    assert result["auto_verification"]["returncode"] == 0
+    assert "Kernel auto-verification" in result["response"]
+    assert "exit code: 0" in result["response"]
+
+
+def test_auto_verify_failure_is_reported_honestly(tmp_path: Path, fixture_repo: Path) -> None:
+    """A wrong 'fix' plus a fabricated pass claim: the kernel's appended output
+    carries the REAL failing result, contradicting the model's text."""
+    script = [
+        {
+            "tool_calls": [
+                _call(
+                    "replace_in_file",
+                    path="calc.py",
+                    old_text="    return a - b  # BUG: should be addition",
+                    new_text="    return a * b",
+                )
+            ]
+        },
+        {"content": "Fixed add(). All tests pass."},
+    ]
+    svc, _ = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="fix the add() bug")
+
+    assert result["changed_files"] == ["calc.py"]
+    assert result["auto_verification"]["ok"] is False
+    verify_steps = [s for s in result["steps"] if s.get("auto_verify")]
+    assert verify_steps and verify_steps[0]["ok"] is False
+    assert "Kernel auto-verification" in result["response"]
+    assert "exit code: 0" not in result["response"]
+
+
+def test_auto_verify_skipped_without_file_changes(tmp_path: Path, fixture_repo: Path) -> None:
+    script = [
+        {"tool_calls": [_call("read_file", path="calc.py")]},
+        {"content": "Reviewed the code; nothing to change."},
+    ]
+    svc, _ = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="review calc.py")
+    assert result["changed_files"] == []
+    assert result["auto_verification"] is None
+    assert "Kernel auto-verification" not in result["response"]
+    assert not any(s.get("auto_verify") for s in result["steps"])
+
+
+def test_verification_argv_detects_workspace_kind(tmp_path: Path) -> None:
+    # Node workspace with a declared test script → npm test.
+    node_ws = tmp_path / "node-ws"
+    node_ws.mkdir(parents=True)
+    (node_ws / "package.json").write_text(
+        json.dumps({"name": "x", "scripts": {"test": "jest"}}), encoding="utf-8"
+    )
+    svc, _ = _service(tmp_path, node_ws, [])
+    assert svc._verification_argv(node_ws) == ["npm", "test"]
+    # No test script → a bare `npm test` would just error; skip verification.
+    (node_ws / "package.json").write_text(json.dumps({"name": "x"}), encoding="utf-8")
+    assert svc._verification_argv(node_ws) is None
+    # Python workspace with pyproject → pytest.
+    py_ws = tmp_path / "py-ws"
+    py_ws.mkdir(parents=True)
+    (py_ws / "pyproject.toml").write_text("[project]\nname = 'y'\n", encoding="utf-8")
+    assert svc._verification_argv(py_ws) == ["python", "-m", "pytest", "-q"]
+    # Nothing recognizable → no auto-verification.
+    empty_ws = tmp_path / "empty-ws"
+    empty_ws.mkdir(parents=True)
+    assert svc._verification_argv(empty_ws) is None
+
+
 def test_tool_executions_are_audited(tmp_path: Path, fixture_repo: Path) -> None:
     script = [
         {"tool_calls": [_call("read_file", path="calc.py")]},
