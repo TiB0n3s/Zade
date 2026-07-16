@@ -349,6 +349,9 @@ class DelegationQueueRequest(BaseModel):
     context: str = Field(default="", max_length=8000)
     acceptance: str = Field(default="", max_length=2000)
     auto_invoke: bool | None = None
+    # Existing project directory the run targets; empty = the default
+    # delegation workspace. A named target always stays approval-gated.
+    workspace: str = Field(default="", max_length=500)
 
 
 class ScreenCaptureRequest(BaseModel):

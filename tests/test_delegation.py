@@ -295,3 +295,152 @@ def test_delegation_layer_in_inventory(tmp_path: Path, monkeypatch) -> None:
     inventory = client.get("/self-inventory").json()
     assert "POST /delegation/run" in inventory["delegation_layer"]["routes"]
     assert inventory["delegation_layer"]["dispatch_action"] == "external.delegation.run"
+
+
+def test_workspace_target_forces_gated_and_is_recorded(tmp_path: Path, monkeypatch) -> None:
+    """A run aimed at a founder-named project directory never auto-invokes,
+    even with auto-invoke on and budget available; the target is recorded in
+    the item metadata and shown in the brief the founder approves."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    target = tmp_path / "SomeProject"
+    target.mkdir()
+    config = _config(
+        tmp_path, enabled=True, auto_invoke=True, agent_command=("agent-cli",), engine="bridge"
+    )
+    client = TestClient(create_app(config))
+
+    result = client.post(
+        "/delegation/run",
+        json={"task": "fix the audit findings", "auto_invoke": True, "workspace": str(target)},
+    ).json()
+
+    assert result["auto_invoked"] is False
+    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    item = next(entry for entry in queued if entry["id"] == result["item_id"])
+    assert item["metadata"]["workspace"] == str(target)
+    assert "## Target project" in item["metadata"]["brief"]
+    assert str(target) in item["metadata"]["brief"]
+
+
+def test_workspace_target_dispatch_uses_target_as_cwd(tmp_path: Path, monkeypatch) -> None:
+    """On dispatch, a bridge run executes inside the target project directory
+    instead of the default delegation workspace."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    target = tmp_path / "SomeProject"
+    target.mkdir()
+
+    captured = {}
+
+    def fake_run_agent(command, *, brief, timeout=600.0, max_output_chars=20000, cwd=None, env=None):
+        captured["cwd"] = cwd
+        return "audit clean."
+
+    monkeypatch.setattr(delegation_module, "run_agent", fake_run_agent)
+    config = _config(
+        tmp_path,
+        enabled=True,
+        auto_invoke=False,
+        agent_command=("agent-cli",),
+        workspace_root=str(tmp_path / "default-workspace"),
+        engine="bridge",
+    )
+    client = TestClient(create_app(config))
+
+    queued = client.post(
+        "/delegation/run",
+        json={"task": "fix the audit findings", "workspace": str(target)},
+    ).json()
+    approved = client.post(
+        f"/work/items/{queued['item_id']}/approve",
+        json={"resolved_by": "founder", "dispatch": True, "typed_confirmation": PHRASE},
+    ).json()
+
+    assert approved["dispatch_result"]["ok"] is True
+    assert captured["cwd"] == str(target)
+
+
+def test_workspace_target_native_engine_passes_workspace(tmp_path: Path, monkeypatch) -> None:
+    """Under engine=native the coding agent runs confined to the target project."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    target = tmp_path / "SomeProject"
+    target.mkdir()
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    captured = {}
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        captured["workspace"] = workspace
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace),
+            "rounds": 1,
+            "used_tools": True,
+            "steps": [],
+            "changed_files": ["package.json"],
+            "response": "Vulnerabilities resolved; npm audit reports 0.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    config = _config(tmp_path, enabled=True, auto_invoke=False, engine="native")
+    client = TestClient(create_app(config))
+
+    queued = client.post(
+        "/delegation/run",
+        json={"task": "resolve the vulnerabilities", "workspace": str(target)},
+    ).json()
+    approved = client.post(
+        f"/work/items/{queued['item_id']}/approve",
+        json={"resolved_by": "founder", "dispatch": True, "typed_confirmation": PHRASE},
+    ).json()
+
+    assert approved["dispatch_result"]["ok"] is True
+    assert captured["workspace"] == str(target)
+
+
+def test_workspace_target_dispatch_refuses_bad_targets(tmp_path: Path, monkeypatch) -> None:
+    """Dispatch fails closed on a missing target directory, and on any target
+    inside the kernel's own repository (delegated runs may not modify the kernel)."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    def forbidden_run_agent(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("agent must not launch for an invalid target workspace")
+
+    monkeypatch.setattr(delegation_module, "run_agent", forbidden_run_agent)
+    kernel_root = Path(delegation_module.__file__).resolve().parents[2]
+
+    for index, (bad_target, expected) in enumerate(
+        (
+            (str(tmp_path / "does-not-exist"), "does not exist"),
+            (str(kernel_root), "kernel"),
+        )
+    ):
+        # Fresh app per case: queue_delegation's unique_key is second-resolution,
+        # so two same-second enqueues in one app would dedup onto one item.
+        config = _config(
+            tmp_path / f"case-{index}",
+            enabled=True,
+            auto_invoke=False,
+            agent_command=("agent-cli",),
+            engine="bridge",
+        )
+        client = TestClient(create_app(config))
+        queued = client.post(
+            "/delegation/run",
+            json={"task": "fix things", "workspace": bad_target},
+        ).json()
+        approved = client.post(
+            f"/work/items/{queued['item_id']}/approve",
+            json={"resolved_by": "founder", "dispatch": True, "typed_confirmation": PHRASE},
+        ).json()
+        dispatch = approved["dispatch_result"]
+        assert dispatch["ok"] is False, bad_target
+        assert dispatch["status"] == "flow_error"
+        assert expected in dispatch["error"]

@@ -139,10 +139,19 @@ class DelegationService:
         context: str = "",
         acceptance: str = "",
         auto_invoke: bool | None = None,
+        workspace: str = "",
     ) -> dict[str, Any]:
         self._require_enabled()
+        workspace = (workspace or "").strip()
         brief = (brief or "").strip() or self.build_brief(task=task, context=context, acceptance=acceptance)
+        if workspace:
+            # The approval item must show exactly where the agent will operate.
+            brief = f"{brief}\n\n## Target project\nRun inside this existing project directory: {workspace}"
         want_auto = self.config.delegation.auto_invoke if auto_invoke is None else bool(auto_invoke)
+        if workspace:
+            # A run aimed at a founder-named project directory (outside the
+            # default delegation workspace) always waits for the typed phrase.
+            want_auto = False
 
         result = self.work_queue.enqueue(
             kind="delegation_run",
@@ -153,7 +162,7 @@ class DelegationService:
             permission_tier="L3_EXTERNAL_ACTION",
             priority=60,
             source="delegation",
-            metadata={"task": task.strip(), "brief": brief},
+            metadata={"task": task.strip(), "brief": brief, "workspace": workspace},
             unique_key=f"{DELEGATION_RUN_ACTION}:{utc_now()}",
         )
         payload = result.as_dict()
@@ -191,6 +200,18 @@ class DelegationService:
         brief = str(metadata.get("brief", "")).strip()
         if not brief:
             raise ValueError("Delegation work item is missing its brief.")
+        workspace = str(metadata.get("workspace", "")).strip()
+        if workspace:
+            problem = _target_workspace_problem(workspace)
+            if problem:
+                return {
+                    "handler": DELEGATION_RUN_ACTION,
+                    "status": "flow_error",
+                    "ok": False,
+                    "task": task,
+                    "brief": brief,
+                    "error": problem,
+                }
         engine = getattr(self.config.delegation, "engine", "native")
 
         # Engine: native — Zade's own coding loop on the local Ollama model.
@@ -206,7 +227,7 @@ class DelegationService:
                     "brief": brief,
                     "error": "Delegation engine is 'native' but no coding agent is wired in.",
                 }
-            return self._run_native(item=item, task=task, brief=brief)
+            return self._run_native(item=item, task=task, brief=brief, workspace=workspace)
 
         # Engine: brief — prepare-not-send.
         command = self.config.delegation.agent_command
@@ -238,7 +259,7 @@ class DelegationService:
                 brief=brief,
                 timeout=self.config.delegation.timeout_seconds,
                 max_output_chars=self.config.delegation.max_output_chars,
-                cwd=self._workspace_cwd(),
+                cwd=workspace or self._workspace_cwd(),
                 env=bridge_env,
             )
         except Exception as exc:  # noqa: BLE001 - a failed invocation is a flow error, not a 500
@@ -292,10 +313,12 @@ class DelegationService:
             "error": error,
         }
 
-    def _run_native(self, *, item: WorkItem, task: str, brief: str) -> dict[str, Any]:
+    def _run_native(
+        self, *, item: WorkItem, task: str, brief: str, workspace: str = ""
+    ) -> dict[str, Any]:
         """Delegated build via the native local coding agent (no subprocess)."""
         assert self.coding_agent is not None  # guarded by run_from_work_item
-        result = self.coding_agent.run(task=task, context=brief)
+        result = self.coding_agent.run(task=task, context=brief, workspace=workspace or None)
         artifact = str(result.get("response") or "")
         evidence_id = None
         error = str(result.get("error") or "")
@@ -333,6 +356,7 @@ class DelegationService:
                 "work_item_id": item.id,
                 "task": task,
                 "engine": "native",
+                "workspace": str(result.get("workspace") or workspace or ""),
                 "model": result.get("model"),
                 "provider": result.get("provider"),
                 "rounds": result.get("rounds"),
@@ -442,6 +466,24 @@ class DelegationService:
             ):
                 count += 1
         return count
+
+
+def _target_workspace_problem(workspace: str) -> str:
+    """Validate a founder-named target project directory at dispatch time.
+    Returns a human-readable refusal, or "" when the target is usable. The
+    kernel's own repository is never a valid target — delegated runs do not
+    modify the kernel itself."""
+    path = Path(workspace).expanduser()
+    if not path.is_dir():
+        return f"Target project directory does not exist: {workspace!r}. Nothing was run."
+    resolved = path.resolve()
+    kernel_root = Path(__file__).resolve().parents[2]
+    if resolved == kernel_root or kernel_root in resolved.parents:
+        return (
+            "Target project resolves inside the kernel's own repository; "
+            "delegated runs may not modify the kernel. Nothing was run."
+        )
+    return ""
 
 
 # ---- module-level invoker (the actual external egress) ----

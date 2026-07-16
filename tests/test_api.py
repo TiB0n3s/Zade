@@ -2524,6 +2524,114 @@ def test_runtime_does_not_route_build_questions_or_metaphors(
     assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
 
 
+def test_runtime_maintenance_command_routes_gated_delegation_with_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"Resolve the vulnerabilities on your own" is a maintenance command: it
+    queues a gated delegation aimed at the project directory the founder named
+    in the thread — never a narrated fix. The terminal paste itself does not
+    route (it is evidence, not a command)."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    target = tmp_path / "BookCatalogingApp"
+    target.mkdir()
+    (target / "package.json").write_text("{}", encoding="utf-8")
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation_id = client.post("/conversations", json={}).json()["conversation"]["id"]
+
+    paste = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                f"PS {target}> npm audit fix\n"
+                "npm warn EBADENGINE Unsupported engine\n"
+                "# npm audit report\n"
+                "braces  <3.0.3  Severity: high\n"
+                "27 vulnerabilities (6 critical, 17 high)"
+            ),
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+    assert paste.status_code == 200, paste.text
+    assert paste.json()["build"] is None  # a terminal paste is not a command
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Give me a full list of the vulnerabilities and resolve them on your own",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["status"] == "queued"
+    assert route["kind"] == "maintenance"
+    assert route["workspace"] == str(target.resolve())
+    assert "maintenance_work_routed" in payload["governor"]["applied_rules"]
+    item_id = route["item_id"]
+    assert f"#{item_id}" in payload["response"]
+    assert str(target.resolve()) in payload["response"]
+
+    # The queued item carries the target project so the approval shows exactly
+    # where the agent will operate, and it stays gated (never auto-dispatched).
+    queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+    match = next((item for item in queued if item["id"] == item_id), None)
+    assert match is not None
+    assert match["kind"] == "delegation_run"
+    assert match["permission_tier"] == "L3_EXTERNAL_ACTION"
+    assert match["metadata"]["workspace"] == str(target.resolve())
+    assert "## Target project" in match["metadata"]["brief"]
+    # The brief context carries the pasted audit evidence for the agent.
+    assert "braces" in match["metadata"]["brief"]
+
+
+def test_runtime_does_not_route_maintenance_questions_or_metaphors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Questions about fixing and non-code 'fix' talk stay ordinary answers."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    for message in (
+        "How do I fix these vulnerabilities?",
+        "What should we do about the npm audit findings?",
+        "Should I upgrade the packages before launch?",
+        "We need to fix the trust problem with early customers.",
+        "Can you update me on the roadmap?",
+    ):
+        response = client.post(
+            "/runtime/respond",
+            json={
+                "message": message,
+                "use_memory": False,
+                "use_semantic_memory": False,
+                "use_skills": False,
+                "contrarian": False,
+            },
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["build"] is None, message
+        assert "maintenance_work_routed" not in payload["governor"]["applied_rules"], message
+    assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+
+
 def test_runtime_repairs_charter_recitation_into_conversational_voice(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -996,6 +996,7 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
                 context=payload.context,
                 acceptance=payload.acceptance,
                 auto_invoke=payload.auto_invoke,
+                workspace=payload.workspace,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

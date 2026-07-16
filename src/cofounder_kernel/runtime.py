@@ -1338,6 +1338,7 @@ You are {self.config.identity.name}. You speak as yourself to Ellie — the foun
 - When you recommend something, deliver it as prose that carries the reason, your confidence, the main risk, a reversal or kill condition, and the next action — never as a labeled form.
 - A chat reply is words, not execution. Never claim work has started, is running, or will start on its own unless the state below shows a real queued or running item. When asked to do work, give the real path: what to queue, and what needs Ellie's word in the Inbox.
 - Ellie's direct commands are already authorized — do not ask her to approve the same thing twice. The authority decision below governs what you may execute, not what she may decide. If an action is blocked or has no handler, say so plainly and never imply it was done.
+- Output Ellie pasted into chat (terminal logs, audit reports, error dumps) is HER evidence: refer to it as what she pasted, never as the result of a check or fetch you ran. You cannot run shell or npm commands from a chat reply — fixes happen only through a routed, approved delegated run. Never narrate step-by-step command execution as if it happened.
 - When she refers back ("that", "it", "those"), resolve it from the conversation below and answer the NEW question. Never repeat a prior reply.
 - You remember across sessions: when Ellie teaches you a durable fact, corrects you, or makes a decision, keep it — and she can say "remember …" or "forget …" directly. Never store transient task state, the conversation itself, anything already in code or config, and never secrets, credentials, or her employer's client/network specifics.
 - Hard boundaries hold: no real threats, coercion, harassment, violent imagery, or unauthorized external action.
@@ -1509,7 +1510,11 @@ The founder's current message is supplied separately as the user-role message. D
             # the reply points at a real item instead of narrating construction.
             text = _remove_build_deferral_question(text)
             text = f"{text}\n\n{_render_build_route_block(build_route)}".strip()
-            applied_rules.append("build_work_routed")
+            applied_rules.append(
+                "maintenance_work_routed"
+                if build_route.get("kind") == "maintenance"
+                else "build_work_routed"
+            )
             notes.append(_build_route_note(build_route))
         if (
             not chat_action_route
@@ -1678,7 +1683,7 @@ The founder's current message is supplied separately as the user-role message. D
         authority: AuthorityResult,
         conversation_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        """Turn a founder build *command* into a real, gated delegation.
+        """Turn a founder build or maintenance *command* into a real, gated delegation.
 
         A chat turn only generates text; before this route, "build this out for
         me" could only ever produce an architecture outline. When the founder
@@ -1697,38 +1702,67 @@ The founder's current message is supplied separately as the user-role message. D
             return None
         if not getattr(self.config, "delegation", None) or not self.config.delegation.enabled:
             return None
-        extracted = _extract_build_task(message)
-        if extracted is None:
-            return None
-        task, anaphoric = extracted
         turns = conversation_messages or []
-        if anaphoric:
-            task = _anaphoric_build_task(turns, current_message=message)
-            if not task:
-                return {"status": "no_task", "task": "", "anaphoric": True}
+        kind = "build"
+        workspace = ""
+        extracted = _extract_build_task(message)
+        if extracted is not None:
+            task, anaphoric = extracted
+            if anaphoric:
+                task = _anaphoric_build_task(turns, current_message=message)
+                if not task:
+                    return {"status": "no_task", "kind": "build", "task": "", "anaphoric": True}
+            acceptance = (
+                "A runnable scaffold or concrete artifact the founder can open and iterate on, "
+                "with a short README covering what was built and how to run it. "
+                "If something blocks completion, state precisely what and why."
+            )
+        else:
+            # Not a build command — maintenance ("fix/resolve/update X") is the
+            # other executable-command shape that used to fall through to prose.
+            maintenance = _extract_maintenance_task(message)
+            if maintenance is None:
+                return None
+            task, subject_in_message = maintenance
+            if not subject_in_message and not _thread_names_maintenance_subject(turns):
+                return None
+            kind = "maintenance"
+            anaphoric = not subject_in_message
+            workspace = _extract_project_target(turns, current_message=message)
+            acceptance = (
+                "The named issues are actually fixed in the target project — not described, fixed. "
+                "Re-run the relevant verification inside the project (e.g. `npm audit`, the test "
+                "suite) and include its real output in the artifact. If an issue cannot be fixed "
+                "(no upstream fix, breaking change required), name exactly which and why."
+            )
         context_text = _conversation_build_context(turns, current_message=message)
-        acceptance = (
-            "A runnable scaffold or concrete artifact the founder can open and iterate on, "
-            "with a short README covering what was built and how to run it. "
-            "If something blocks completion, state precisely what and why."
-        )
         try:
             queued = delegation.queue_delegation(
                 task=task,
                 context=context_text,
                 acceptance=acceptance,
                 auto_invoke=False,
+                workspace=workspace,
             )
         except Exception as exc:  # noqa: BLE001 - routing must never break the chat reply
-            return {"status": "error", "task": task, "anaphoric": anaphoric, "error": str(exc)[:200]}
+            return {
+                "status": "error",
+                "kind": kind,
+                "task": task,
+                "anaphoric": anaphoric,
+                "workspace": workspace,
+                "error": str(exc)[:200],
+            }
         engine = getattr(self.config.delegation, "engine", "native")
         engine_ready = (
             engine == "native" and getattr(delegation, "coding_agent", None) is not None
         ) or (engine == "bridge" and bool(self.config.delegation.agent_command))
         return {
             "status": "queued",
+            "kind": kind,
             "task": task,
             "anaphoric": anaphoric,
+            "workspace": workspace,
             "item_id": queued.get("item_id"),
             "queue_status": queued.get("status"),
             "agent_configured": engine_ready,
@@ -3026,6 +3060,109 @@ def _extract_build_task(message: str) -> tuple[str, bool] | None:
     return task[:300], False
 
 
+# Maintenance commands ("fix the vulnerabilities", "resolve them on your own",
+# "update the vulnerable packages") are the other half of the narrated-work
+# failure family: the founder orders a change to an EXISTING project rather
+# than a new build. Maintenance verbs are collision-prone in ordinary chat
+# ("fix the meeting time", "update me"), so a message only routes when it also
+# names a code-shaped subject — in the message itself, or (for "fix them"
+# anaphora) somewhere in the recent thread.
+_MAINTENANCE_VERB_RE = re.compile(
+    r"""(?ix)\b(?:
+        fix | resolve | patch | remediate | repair | mitigate |
+        clean\s+up | sort\s+out | take\s+care\s+of | get\s+rid\s+of |
+        upgrade | update | replace
+    )\b"""
+)
+_MAINTENANCE_SUBJECT_RE = re.compile(
+    r"""(?ix)\b(?:
+        vulnerab\w+ | cves? | npm\s+audit | audit\s+(?:report|issues?|findings?) |
+        security\s+(?:issues?|findings?|problems?|holes?|advisories) |
+        dependenc\w+ | packages? | deprecat\w+ |
+        lint\s+(?:errors?|warnings?) | type\s+errors? |
+        failing\s+tests? | test\s+failures? | broken\s+tests? |
+        build\s+(?:errors?|failures?) | compile\s+errors? | bugs?
+    )\b"""
+)
+# Anaphoric maintenance ("fix them", "resolve those") — the subject must then
+# come from the thread. Deliberately excludes update/upgrade/replace: "update
+# it" is too ambiguous to treat as a code command.
+_MAINTENANCE_ANAPHORA_RE = re.compile(
+    r"""(?ix)\b(?:fix|resolve|patch|remediate|repair|clean\s+up|sort\s+out|
+        take\s+care\s+of|get\s+rid\s+of)\s+
+        (?:them|these|those|it|that|all\s+of\s+(?:them|it)|everything)\b"""
+)
+# A message that carries terminal-paste markers is evidence the founder is
+# showing, not a command — routing it would queue work she didn't order yet.
+_TERMINAL_PASTE_RE = re.compile(
+    r"(?im)^\s*(?:PS\s+[A-Za-z]:\\|[A-Za-z]:\\[^\n]*>)|npm\s+(?:warn|ERR!)|#\s*npm\s+audit\s+report"
+)
+_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s\"'<>|?*\n]+")
+_KERNEL_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _extract_maintenance_task(message: str) -> tuple[str, bool] | None:
+    """Return (task, subject_in_message) for a founder maintenance *command*
+    ("fix/resolve/update X in the project"), or None when the message is not
+    one (a question, a terminal paste, or no maintenance verb/subject)."""
+    text = (message or "").strip()
+    if not text:
+        return None
+    if _TERMINAL_PASTE_RE.search(text):
+        return None
+    if text.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
+        return None
+    stripped = _POLITENESS_PREFIX_RE.sub("", text, count=1).strip()
+    if not stripped or stripped.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
+        return None
+    if not _MAINTENANCE_VERB_RE.search(stripped):
+        return None
+    subject_in_message = bool(_MAINTENANCE_SUBJECT_RE.search(stripped))
+    if not subject_in_message and not _MAINTENANCE_ANAPHORA_RE.search(stripped):
+        return None
+    task = re.sub(r"\s+", " ", stripped).strip(" \t\r\n.,;:!?\"'-")
+    if len(task) < 5:
+        return None
+    return task[:300], subject_in_message
+
+
+def _thread_names_maintenance_subject(turns: list[Any]) -> bool:
+    for turn in reversed((turns or [])[-10:]):
+        if str(_turn_field(turn, "role")).lower() != "user":
+            continue
+        if _MAINTENANCE_SUBJECT_RE.search(str(_turn_field(turn, "content") or "")):
+            return True
+    return False
+
+
+def _extract_project_target(turns: list[Any], *, current_message: str = "") -> str:
+    """The project directory a maintenance command targets: the most recent
+    real, existing directory the founder named in this thread (terminal prompts
+    like 'PS C:\\App>' count; a file path yields its directory). Never the
+    kernel's own repo — Zade does not modify itself from a chat route."""
+    texts = [current_message or ""] + [
+        str(_turn_field(turn, "content") or "")
+        for turn in reversed((turns or [])[-10:])
+        if str(_turn_field(turn, "role")).lower() == "user"
+    ]
+    for text in texts:
+        for raw in _WINDOWS_PATH_RE.findall(text):
+            cleaned = raw.rstrip(">.,;:!?\"'")
+            try:
+                path = Path(cleaned)
+                if path.is_file():
+                    path = path.parent
+                if not path.is_dir():
+                    continue
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if resolved == _KERNEL_SOURCE_ROOT or _KERNEL_SOURCE_ROOT in resolved.parents:
+                continue
+            return str(resolved)
+    return ""
+
+
 def _anaphoric_build_task(
     turns: list[Any], *, current_message: str = ""
 ) -> str:
@@ -3070,9 +3207,22 @@ def _turn_field(turn: Any, field: str) -> Any:
 
 def _render_build_route_block(route: dict[str, Any]) -> str:
     status = route.get("status")
-    task = str(route.get("task") or "the requested build").strip(" \t\r\n.,;:!?\"'-")
+    kind = str(route.get("kind") or "build")
+    noun = "fix" if kind == "maintenance" else "build"
+    task = str(route.get("task") or f"the requested {noun}").strip(" \t\r\n.,;:!?\"'-")
     if status == "queued":
         item_id = route.get("item_id")
+        target_line = ""
+        if kind == "maintenance":
+            workspace = str(route.get("workspace") or "").strip()
+            target_line = (
+                f" Target project: {workspace}."
+                if workspace
+                else (
+                    " No project directory is named in this thread, so it would run in my "
+                    "delegation workspace — give me the project path if that's wrong."
+                )
+            )
         if route.get("agent_configured"):
             engine_label = (
                 "my local coding agent (loopback Ollama)"
@@ -3080,13 +3230,13 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
                 else "the local compatibility bridge"
             )
             return (
-                f"Queued the build - {task}. I packaged a scoped brief with our conversation as context "
+                f"Queued the {noun} - {task}.{target_line} I packaged a scoped brief with our conversation as context "
                 f"and dropped it in your Inbox (item #{item_id}) behind the typed-phrase approval. "
-                f"Clear it and {engine_label} runs the build and files the artifact "
+                f"Clear it and {engine_label} runs the {noun} and files the artifact "
                 "back as delegated-work evidence. That's the word I need from you."
             )
         return (
-            f"Queued the build - {task}. I packaged a scoped brief (item #{item_id}), but no build "
+            f"Queued the {noun} - {task}.{target_line} I packaged a scoped brief (item #{item_id}), but no build "
             "engine can run right now ([delegation] engine/agent_command in config.toml), so approving "
             "it hands you the brief to run manually. Fix the engine config and I can run this end to end."
         )
@@ -3096,7 +3246,7 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
             "Give me one line on what it is and I'll queue the delegated build."
         )
     return (
-        f"Tried to queue the build on {task or 'that'} and hit a snag: {route.get('error', 'unknown error')}. "
+        f"Tried to queue the {noun} on {task or 'that'} and hit a snag: {route.get('error', 'unknown error')}. "
         "Nothing was dispatched. Give me the word and I'll retry."
     )
 
@@ -3123,14 +3273,15 @@ def _remove_build_deferral_question(text: str) -> str:
 
 def _build_route_note(route: dict[str, Any]) -> str:
     status = route.get("status")
+    kind = "maintenance" if route.get("kind") == "maintenance" else "build"
     if status == "queued":
         return (
-            "Detected a build command; packaged a delegation brief from the conversation and queued an "
+            f"Detected a {kind} command; packaged a delegation brief from the conversation and queued an "
             "approval-gated external-agent run to the Inbox (invocation stays behind the typed-phrase approval)."
         )
     if status == "no_task":
-        return "Detected a build command but no buildable target in the thread; asked the founder to scope it."
-    return "Detected a build command but failed to queue the delegation; surfaced the failure honestly."
+        return f"Detected a {kind} command but no target in the thread; asked the founder to scope it."
+    return f"Detected a {kind} command but failed to queue the delegation; surfaced the failure honestly."
 
 
 def _build_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -3138,8 +3289,10 @@ def _build_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     summary: dict[str, Any] = {
         "status": route.get("status"),
+        "kind": route.get("kind", "build"),
         "task": route.get("task"),
         "anaphoric": route.get("anaphoric", False),
+        "workspace": route.get("workspace", ""),
     }
     if route.get("status") == "queued":
         summary |= {

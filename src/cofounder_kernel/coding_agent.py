@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -41,13 +42,14 @@ MAX_FILE_READ_CHARS = 24_000
 MAX_FILE_WRITE_CHARS = 200_000
 MAX_LIST_ENTRIES = 400
 MAX_SEARCH_MATCHES = 80
-COMMAND_TIMEOUT_SECONDS = 180.0
+COMMAND_TIMEOUT_SECONDS = 420.0
 MAX_COMMAND_OUTPUT_CHARS = 12_000
 
 # Allowlisted first-argv tokens for run_command. Deliberately small: enough to
-# run tests and inspect a Python workspace. Everything else is refused at the
+# run tests and inspect a Python or Node workspace. npx stays OFF the list —
+# it executes arbitrary packages by design. Everything else is refused at the
 # execution boundary regardless of what the prompt or model claims.
-COMMAND_ALLOWLIST = ("python", "python3", "py", "pytest", "pip", "uv", "git")
+COMMAND_ALLOWLIST = ("python", "python3", "py", "pytest", "pip", "uv", "git", "npm", "node")
 
 _INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md", "Claude.md", "claude.md", "README.md")
 _MAX_INSTRUCTION_CHARS = 4000
@@ -598,6 +600,12 @@ class CodingAgentService:
             resolved = [sys.executable, "-m", "pytest", *argv[1:]]
         elif program == "pip":
             resolved = [sys.executable, "-m", "pip", *argv[1:]]
+        elif program in {"npm", "node"}:
+            # On Windows npm ships as a .cmd shim CreateProcess cannot resolve
+            # from a bare name; a PATH lookup keeps this an argv exec (no shell).
+            located = shutil.which(resolved[0])
+            if located:
+                resolved[0] = located
         try:
             completed = subprocess.run(
                 resolved,

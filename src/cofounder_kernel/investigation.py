@@ -97,6 +97,14 @@ class InvestigationService:
             "what data is missing. Tool results arrive as tool messages; treat them as this "
             "turn's ground truth."
         )
+        lines.append(
+            "These tools are READ-ONLY: none of them can run shell commands, edit files, "
+            "install or update packages, or change anything on the machine. If the founder "
+            "asks you to fix, resolve, install, update, or run something, say plainly that "
+            "chat cannot execute it and that the real path is a delegated run she approves "
+            "in the Inbox. Never present output she pasted (or that you remember) as "
+            "something you just fetched, and never narrate an action as performed."
+        )
         return "\n".join(lines)
 
     def _register_tools(self) -> None:

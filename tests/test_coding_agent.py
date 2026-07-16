@@ -205,6 +205,37 @@ def test_unallowlisted_command_is_refused(tmp_path: Path, fixture_repo: Path) ->
     assert "not allowlisted" in str(tool_messages[0]["content"])
 
 
+def test_npx_stays_off_the_allowlist(tmp_path: Path, fixture_repo: Path) -> None:
+    # npm/node are allowlisted for JS-project maintenance, but npx executes
+    # arbitrary packages by design and must stay refused.
+    script = [
+        {"tool_calls": [_call("run_command", argv=["npx", "some-arbitrary-package"])]},
+        {"content": "done"},
+    ]
+    svc, _ = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="try npx")
+    assert result["steps"][0]["ok"] is False
+
+
+def test_node_command_runs_when_installed(tmp_path: Path, fixture_repo: Path) -> None:
+    import shutil
+
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed on this machine")
+    script = [
+        {"tool_calls": [_call("run_command", argv=["node", "--version"])]},
+        {"content": "done"},
+    ]
+    svc, ollama = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="check node")
+    assert result["steps"][0]["ok"] is True
+    tool_messages = [
+        m for call in ollama.calls for m in call["messages"]
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    assert "v" in str(tool_messages[0]["content"])
+
+
 def test_unknown_tool_is_refused_not_invented(tmp_path: Path, fixture_repo: Path) -> None:
     script = [
         {"tool_calls": [_call("delete_everything", path=".")]},
