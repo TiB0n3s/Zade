@@ -4,7 +4,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 
 DEFAULT_HOT_ROOT = Path(r"C:\AI Brain")
@@ -63,6 +63,12 @@ class OllamaConfig:
     # low `temperature` above for determinism. Raising this unsticks the voice
     # from flat/generic phrasing that a low temperature tends to produce.
     chat_temperature: float = 0.65
+    # Agentic investigation loop: let the chat model call whitelisted read-only
+    # tools (trading-bot reads, memory search) before answering, instead of
+    # narrating checks it cannot perform. Each round is a full model call, so
+    # the cap bounds worst-case latency.
+    tool_loop: bool = True
+    tool_loop_max_rounds: int = 3
 
     def think_for_role(self, role: ModelRole) -> bool:
         return role in {"reasoning", "coding"}
@@ -372,6 +378,8 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         think=_bool(os.getenv("COFOUNDER_THINK", ollama_raw.get("think", False))),
         temperature=float(os.getenv("COFOUNDER_TEMPERATURE", ollama_raw.get("temperature", 0.2))),
         chat_temperature=float(os.getenv("COFOUNDER_CHAT_TEMPERATURE", ollama_raw.get("chat_temperature", 0.65))),
+        tool_loop=_bool(os.getenv("COFOUNDER_TOOL_LOOP", ollama_raw.get("tool_loop", True))),
+        tool_loop_max_rounds=int(os.getenv("COFOUNDER_TOOL_LOOP_MAX_ROUNDS", ollama_raw.get("tool_loop_max_rounds", 3))),
     )
     security = SecurityConfig(
         local_token=str(os.getenv("COFOUNDER_LOCAL_TOKEN", security_raw.get("local_token", "")) or ""),

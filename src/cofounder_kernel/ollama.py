@@ -170,7 +170,7 @@ def _chat_message_payload(message: Any) -> dict[str, Any]:
     if isinstance(message, Mapping):
         role = str(message.get("role", "")).strip()
         content = str(message.get("content", ""))
-        payload = {key: value for key, value in message.items() if key in {"images", "tool_calls"}}
+        payload = {key: value for key, value in message.items() if key in {"images", "tool_calls", "tool_name", "name"}}
     else:
         role = str(getattr(message, "role", "")).strip()
         content = str(getattr(message, "content", ""))

@@ -17,6 +17,7 @@ from .critic import ContrarianCritic
 from .db import KernelDatabase, utc_now
 from .founder import FounderService
 from .ingestion import IngestionService
+from .investigation import InvestigationService
 from .ollama import OllamaClient
 from .prompts import DEFAULT_PROFILE_ID, ModelMessage, PromptProfileRegistry, PromptRuntimeBindings
 from .self_knowledge.prompt import prompt_self_knowledge_mode, render_prompt_self_knowledge
@@ -230,6 +231,15 @@ class RuntimeService:
         # after the runtime because it needs the notification bus). Typed as Any
         # to avoid a runtime<->research import cycle.
         self.research = research
+        # Agentic investigation loop: whitelisted read-only tools the chat model
+        # can call before answering, so "can you look at X?" runs real reads
+        # instead of narrating a check the turn cannot perform.
+        self.investigation = InvestigationService(
+            config=config,
+            db=db,
+            ollama=ollama,
+            trading_bot=trading_bot,
+        )
 
     def charter_stack(self) -> dict[str, Any]:
         identity = self.founder.get_identity_charter()
@@ -411,6 +421,7 @@ class RuntimeService:
         think: bool | None = None,
         conversation_id: int | None = None,
         contrarian: bool | None = None,
+        use_tools: bool | None = None,
     ) -> dict[str, Any]:
         active_profile_id = self._resolve_prompt_profile_id(profile, conversation_id=conversation_id)
         context = self.context(
@@ -451,6 +462,10 @@ class RuntimeService:
         )
         authority_payload = _founder_direct_authority_payload(authority)
         selected_model = model or self.config.ollama.model_for_role(task_type)
+        resolved_use_tools = (
+            (self.config.ollama.tool_loop if use_tools is None else bool(use_tools))
+            and self.investigation.available()
+        )
         model_messages = self._build_model_messages(
             message=message,
             context=context,
@@ -458,6 +473,7 @@ class RuntimeService:
             conversation_block=conversation.get("system_block") or conversation["block"],
             conversation_turns=int((conversation.get("state") or {}).get("turn_count") or 0),
             conversation_messages=list(conversation.get("messages") or []),
+            investigation_block=self.investigation.prompt_block() if resolved_use_tools else "",
         )
         prompt_chars = _model_messages_chars(model_messages)
         if task_type == "coding":
@@ -465,13 +481,22 @@ class RuntimeService:
         else:
             resolved_think = think if think is not None else self.config.ollama.think_for_role(task_type)
         started = time.perf_counter()
+        investigation_summary: dict[str, Any] | None = None
         try:
-            generated = self.ollama.chat(
-                messages=model_messages,
-                model=selected_model,
-                think=resolved_think,
-                temperature=self.config.ollama.chat_temperature,
-            )
+            if resolved_use_tools:
+                generated, investigation_summary = self.investigation.run_loop(
+                    messages=model_messages,
+                    model=selected_model,
+                    think=resolved_think,
+                    temperature=self.config.ollama.chat_temperature,
+                )
+            else:
+                generated = self.ollama.chat(
+                    messages=model_messages,
+                    model=selected_model,
+                    think=resolved_think,
+                    temperature=self.config.ollama.chat_temperature,
+                )
         except Exception as exc:
             latency_ms = int((time.perf_counter() - started) * 1000)
             event_id = self._log_event(
@@ -603,6 +628,7 @@ class RuntimeService:
                 "chat_action_route": _chat_action_route_summary(chat_action_route),
                 "research_route": _research_route_summary(research_route),
                 "prompt_profile": context.get("prompt_profile"),
+                "investigation": investigation_summary,
             },
         )
         if self.critic and critique and critique["status"] == "ok" and contrarian_summary:
@@ -692,6 +718,7 @@ class RuntimeService:
             "contrarian": contrarian_summary,
             "chat_action": _chat_action_route_summary(chat_action_route),
             "research": _research_route_summary(research_route),
+            "investigation": investigation_summary,
         }
 
     def operating_loop(
@@ -1077,18 +1104,19 @@ class RuntimeService:
         conversation_block: str = "",
         conversation_turns: int = 0,
         conversation_messages: list[ModelMessage] | None = None,
+        investigation_block: str = "",
     ) -> list[ModelMessage]:
+        system_content = self._build_governed_system_message(
+            message=message,
+            context=context,
+            authority=authority,
+            conversation_block=conversation_block,
+            conversation_turns=conversation_turns,
+        )
+        if investigation_block:
+            system_content = f"{system_content}\n\n{investigation_block}"
         messages = [
-            ModelMessage(
-                role="system",
-                content=self._build_governed_system_message(
-                    message=message,
-                    context=context,
-                    authority=authority,
-                    conversation_block=conversation_block,
-                    conversation_turns=conversation_turns,
-                ),
-            ),
+            ModelMessage(role="system", content=system_content),
         ]
         messages.extend(_safe_history_messages(conversation_messages or []))
         messages.append(ModelMessage(role="user", content=message))

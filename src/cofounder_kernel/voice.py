@@ -197,6 +197,9 @@ class VoiceService:
             conversation_id=conversation_id,
             contrarian=contrarian,
             use_semantic_memory=use_semantic_memory,
+            # Voice is latency-critical: every investigation round is a full
+            # model call, so voice answers from pre-injected context only.
+            use_tools=False,
         )
         runtime_latency_ms = _elapsed_ms(runtime_started)
         model_response_complete_ms = _elapsed_ms(server_started)

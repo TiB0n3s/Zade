@@ -331,12 +331,12 @@
     // wait animate through Zade's real pipeline order — they can't stream from
     // the server. The instant the reply lands we swap them for a truthful,
     // persistent summary built entirely from the response payload (never invented).
-    const CHAT_STAGES = ['Recalling everything', 'Routing skills', 'Drafting', 'Pushing back on myself'];
+    const CHAT_STAGES = ['Recalling everything', 'Routing skills', 'Investigating & drafting', 'Pushing back on myself'];
     const VOICE_STAGES = ['Transcribing speech', 'Recalling everything', 'Drafting', 'Pushing back on myself'];
 
     function startTrace(mode) {
       const stages = mode === 'voice' ? VOICE_STAGES : CHAT_STAGES;
-      const holdIndex = stages.indexOf('Drafting');
+      const holdIndex = stages.findIndex((s) => s.toLowerCase().includes('drafting'));
       state.trace = { stages, active: 0, holdIndex };
       renderThread();
       clearInterval(traceTimer);
@@ -418,6 +418,27 @@
         detail: skillSel.length ? skillSel.map((s) => s.name).join(', ') : (skillCount ? skillCount + ' matched' : 'none matched'),
         state: skillCount ? 'ok' : 'muted'
       });
+
+      // Real investigation steps: tools the model actually called this turn.
+      // These come from the kernel's audited tool loop — never invented here.
+      const inv = result.investigation || {};
+      const invSteps = inv.steps || [];
+      if (invSteps.length) {
+        for (const s of invSteps) {
+          const argBits = Object.entries(s.arguments || {}).map(([k, v]) => `${k}=${v}`).join(', ');
+          steps.push({
+            label: 'Investigated: ' + String(s.tool || 'tool').replace(/_/g, ' '),
+            detail: [argBits, s.latency_ms != null ? fmtMs(s.latency_ms) : ''].filter(Boolean).join(' · '),
+            state: s.ok ? 'ok' : 'warn'
+          });
+        }
+      } else if (inv.enabled) {
+        steps.push({
+          label: 'Investigated',
+          detail: inv.fallback ? 'model has no tool support — answered from injected context' : 'no live reads needed',
+          state: 'muted'
+        });
+      }
 
       const modelBits = [result.model || ''];
       if (timingSegments.runtime_response != null) modelBits.push(fmtMs(timingSegments.runtime_response));

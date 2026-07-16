@@ -240,6 +240,9 @@ class RuntimeRespondRequest(BaseModel):
     think: bool | None = None
     conversation_id: int | None = Field(default=None, ge=1)
     contrarian: bool | None = None
+    # None = use the configured default (ollama.tool_loop). Explicit False lets
+    # latency-sensitive callers (voice) skip the investigation loop.
+    use_tools: bool | None = None
 
 
 class ConversationCreate(BaseModel):

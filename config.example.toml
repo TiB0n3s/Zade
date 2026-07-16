@@ -19,6 +19,11 @@ coding_model = "qwen2.5-coder:14b"
 embedding_model = "nomic-embed-text"
 think = false
 temperature = 0.2
+# Agentic investigation loop: the chat model can call whitelisted read-only
+# tools (trading-bot status/changes/activity/signals/events, memory search)
+# before answering. Each round is a full model call; max_rounds bounds latency.
+tool_loop = true
+tool_loop_max_rounds = 3
 
 [security]
 local_token = ""
