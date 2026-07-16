@@ -18,7 +18,8 @@ temperature = 0.6
 # an approval-gated brief). Claude Code headless: reads the brief on stdin,
 # prints the result. acceptEdits lets it write files without interactive
 # prompts; riskier tool calls fail closed and get reported in the artifact.
-agent_command = ["claude", "-p", "--permission-mode", "acceptEdits"]
+# Full path: Windows CreateProcess can't resolve the bare npm "claude" shim.
+agent_command = ["C:\\Users\\TiBon\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe", "-p", "--permission-mode", "acceptEdits"]
 # Delegated builds run HERE, never inside the kernel repo.
 workspace_root = "C:\\Users\\TiBon\\ZadeWorkspace"
 # Real builds need more than 10 minutes.
