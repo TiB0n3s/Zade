@@ -17,12 +17,12 @@ hardening is deferred (residual L3 risk accepted).
 | # | Capability | Build status (as of 2026-07-16) | Cutover check |
 |---|------------|--------------------------------|---------------|
 | 1 | Wake-word / hands-free voice loop | **PARKED** by founder pending a wake word | Excluded while parked. Before *deleting* DT (not just idling it), founder re-confirms the park or the loop ships. |
-| 2 | Screen awareness | Shipped + live-verified 2026-07-15 (`screen.py`, Ops · Screen) | [ ] `POST /screen/capture` reads the real desktop |
-| 3 | Resident presence: tray, boot-on-login, OS toasts | Shipped; superseded in practice by the Tauri shell (autostart, tray, native WinRT toasts) | [ ] Shell boots on login, toast fires for a fresh unread notification |
-| 4 | Headed browser automation | Shipped + live-verified 2026-07-13 (`browser.py`, L3 gated) | [ ] One approved `external.browser.run` flow completes with screenshot |
-| 5 | Vault move/delete operator (trash + dry-run) | Shipped + live-verified 2026-07-13 (`vault.py`, L2 gated) | [ ] Dry-run → move → delete → restore round-trip on a scratch file |
-| 6 | Specialist agent swarm (hybrid + auto-invoke) | First slice shipped + live-verified 2026-07-15 (`roles.py` + `delegation.py`); native local coding agent is now the default engine | [ ] One role pass + one delegated run complete (see Gate B for the integrity checks) |
-| 7 | Autonomous web research / daydream | Shipped + live-verified 2026-07-13 (`research.py`, egress L3 gated) | [ ] Daydream derives topics; one approved fetch files graded evidence |
+| 2 | Screen awareness | Shipped + live-verified 2026-07-15 (`screen.py`, Ops · Screen) | [x] **2026-07-16:** `POST /screen/capture` 200 — real focused window ("3D Prints - File Explorer") + 30 window titles |
+| 3 | Resident presence: tray, boot-on-login, OS toasts | Shipped; superseded in practice by the Tauri shell (autostart, tray, native WinRT toasts) | [x] **2026-07-16:** Run key "Zade" present, shell resident, fresh `POST /notify` visible unread in `/tray/state` within one poll cycle. **Caught + fixed a real defect:** the Run key targets `target\release\zade-shell.exe` but only the debug exe existed (release deleted at some point) → next login would have silently failed; release exe rebuilt same day. Toast *display* remains founder-verified 2026-07-15 (not headlessly assertable). |
+| 4 | Headed browser automation | Shipped + live-verified 2026-07-13 (`browser.py`, L3 gated) | [x] **2026-07-16:** approved `external.browser.run` (navigate→read→screenshot on example.com) dispatched ok; real PNG at `C:\AI Brain\Zade\browser-captures\capture-2.png` |
+| 5 | Vault move/delete operator (trash + dry-run) | Shipped + live-verified 2026-07-13 (`vault.py`, L2 gated) | [x] **2026-07-16:** scratch file in `inbox/`: dry-run plan (guards passed) → approved move → approved delete (trash) → restore — sentinel content intact end-to-end |
+| 6 | Specialist agent swarm (hybrid + auto-invoke) | First slice shipped + live-verified 2026-07-15 (`roles.py` + `delegation.py`); native local coding agent is now the default engine | [x] **2026-07-16:** red_team role pass on qwen3:14b (5.4s, verdict "Unsound assumption" — fittingly, that one checklist pass isn't sufficient). Delegated run: work item 46 / evidence 40 same day (Gate B live flip). |
+| 7 | Autonomous web research / daydream | Shipped + live-verified 2026-07-13 (`research.py`, egress L3 gated) | [x] **2026-07-16:** daydream derived 3 real topics from assumption gaps; approved fetch (example.com) dispatched ok and filed graded `web_research` evidence id 42 (reliability C, strength 30) |
 
 ## Gate B — delegated-work integrity (verification layer, added 2026-07-16)
 
