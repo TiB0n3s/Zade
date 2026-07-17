@@ -1962,6 +1962,101 @@ def test_runtime_replaces_replayed_status_claim_for_completion_question(
     assert any("near-verbatim prior reply" in note for note in payload["governor"]["notes"])
 
 
+def test_runtime_repairs_challenged_execution_claim_without_rerun_theater(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When the founder challenges a missing file from a claimed implementation,
+    Zade should not produce a theatrical apology or promise to re-run work from
+    chat. The deterministic reply must separate founder evidence from actual
+    execution evidence."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    bad_apology = (
+        "You're correct - there is no `BarcodeScannerScreen.js` file in the current "
+        "project directory, and this confirms that the work I claimed to have "
+        "completed for Step 5 was not actually executed.\n\n"
+        "I will now re-run Step 5 with explicit verification.\n\n"
+        "Let me know if you'd like me to start over with Step 5."
+    )
+
+    def apologizing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=bad_apology, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, apologizing_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation = client.post("/conversations", json={"title": "Step 5"})
+    conversation_id = conversation.json()["conversation"]["id"]
+    client.app.state.conversations.record_assistant_turn(
+        conversation_id,
+        content=(
+            "Step 5 is complete. I created `BarcodeScannerScreen.js` and wired the "
+            "barcode scanner into the app."
+        ),
+        task_type="coding",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                "There is no BarcodeScannerScreen.js file, make sure you didn't "
+                "hallucinate any work claimed to have been completed"
+            ),
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"] is None
+    assert payload["response"].startswith("You're right to challenge that")
+    assert "BarcodeScannerScreen.js" in payload["response"]
+    assert "chat claim is not execution evidence" in payload["response"]
+    assert "`perform Step 5`" in payload["response"]
+    assert "will now re-run" not in payload["response"].lower()
+    assert "let me know" not in payload["response"].lower()
+    assert "execution_claim_challenge_repaired" in payload["governor"]["applied_rules"]
+
+
+def test_runtime_claim_challenge_without_step_context_does_not_invent_step_5(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def generic_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response="I will now redo it.", model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, generic_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                "There is no BarcodeScannerScreen.js file, make sure you didn't "
+                "hallucinate any work claimed to have been completed"
+            ),
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "`perform Step 5`" not in payload["response"]
+    assert "exact step or task" in payload["response"]
+    assert "execution_claim_challenge_repaired" in payload["governor"]["applied_rules"]
+
+
 def test_runtime_appends_honesty_line_when_reply_promises_unqueued_work(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -4681,6 +4776,129 @@ def test_runtime_directed_build_executes_and_reports_real_outcome(
     # The artifact was filed as delegated-work evidence.
     evidence = client.get("/founder/evidence").json()["items"]
     assert any(item["evidence_type"] == "delegated_work" for item in evidence)
+
+
+def test_runtime_directed_build_failed_check_reports_not_done(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The open integrity gap, closed: when the kernel's own check on a
+    delegated run FAILS, the founder-facing report must lead with 'NOT done' —
+    never 'Ran the build' with the failure silently dropped."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 3,
+            "used_tools": True,
+            "steps": [
+                {"tool": "write_file", "arguments": {"path": "src/app.py"}, "ok": True},
+                {"tool": "run_command", "arguments": {"argv": ["python", "-m", "py_compile", "src/app.py"]},
+                 "ok": False, "auto_verify": True},
+            ],
+            "changed_files": ["src/app.py"],
+            "auto_verification": {
+                "mode": "syntax",
+                "ok": False,
+                "checks": [{"argv": ["python", "-m", "py_compile", "src/app.py"], "ok": False, "returncode": 1}],
+                "unchecked_files": [],
+                "argv": ["python", "-m", "py_compile", "src/app.py"],
+                "returncode": 1,
+                "repair_rounds": 2,
+            },
+            "response": "Implemented the module.\n\n--- Kernel auto-verification ---\nSyntaxError: invalid syntax",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Build me a book cataloguing mobile app with barcode scanning",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route["status"] == "verify_failed"
+    assert "NOT done" in payload["response"]
+    assert "check on the result FAILED" in payload["response"]
+    assert "Ran the build" not in payload["response"]
+    # The failing check command is named so the founder sees what actually ran.
+    assert "py_compile" in payload["response"]
+
+
+def test_runtime_directed_build_without_any_check_reports_unverified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A run that changed files nothing could check must say UNVERIFIED
+    out loud instead of reading like a clean completion."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 2,
+            "used_tools": True,
+            "steps": [
+                {"tool": "write_file", "arguments": {"path": "src/navigation.js"}, "ok": True},
+            ],
+            "changed_files": ["src/navigation.js", "src/screens/BarcodeScannerScreen.js"],
+            "auto_verification": {
+                "mode": "none",
+                "ok": None,
+                "checks": [],
+                "unchecked_files": ["src/navigation.js", "src/screens/BarcodeScannerScreen.js"],
+                "argv": None,
+                "returncode": None,
+                "repair_rounds": 0,
+            },
+            "response": "Implemented the UI components.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Build me a book cataloguing mobile app with barcode scanning",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"]["status"] == "executed"
+    assert "UNVERIFIED" in payload["response"]
+    assert "Kernel-run verification passed" not in payload["response"]
 
 
 def test_runtime_directed_build_surfaces_founder_decision(

@@ -451,6 +451,22 @@ class DelegationService:
             )
         artifact = str(result.get("response") or "")
         unverified_claims = find_unverified_claims(artifact, result.get("steps"))
+        auto_verification = (
+            result.get("auto_verification")
+            if isinstance(result.get("auto_verification"), dict)
+            else None
+        )
+        verify_note = ""
+        if auto_verification is not None:
+            if auto_verification.get("ok") is False:
+                verify_note = (
+                    " KERNEL CHECK FAILED on the changed files — the work did not verify; "
+                    "the real failing output is in the artifact."
+                )
+            elif auto_verification.get("ok") is None:
+                verify_note = (
+                    " No kernel check could run for the changed files — the work is UNVERIFIED."
+                )
         evidence_id = None
         error = str(result.get("error") or "")
         if result.get("ok") and artifact.strip():
@@ -465,6 +481,7 @@ class DelegationService:
                         "notes": (
                             "Produced by Zade's native coding agent on the local Ollama model "
                             f"{result.get('model')}. Verified-local run."
+                            + verify_note
                             + _unverified_notes_suffix(unverified_claims, engine="native")
                         ),
                         "metadata": {
@@ -472,6 +489,7 @@ class DelegationService:
                             "model": result.get("model"),
                             "changed_files": result.get("changed_files", []),
                             "unverified_claims": unverified_claims,
+                            "auto_verification": auto_verification,
                             "entity_boundary": "Local coding agent produced; recorded as delegated evidence.",
                         },
                     }
@@ -496,6 +514,7 @@ class DelegationService:
                 "changed_files": result.get("changed_files", []),
                 "artifact_chars": len(artifact),
                 "unverified_claims": unverified_claims,
+                "auto_verification": auto_verification,
                 "evidence_id": evidence_id,
                 "error": error,
             },
@@ -512,6 +531,7 @@ class DelegationService:
             "steps": result.get("steps", []),
             "changed_files": result.get("changed_files", []),
             "unverified_claims": unverified_claims,
+            "auto_verification": auto_verification,
             "artifact": artifact,
             "evidence_id": evidence_id,
             "error": error or str(result.get("error") or ""),

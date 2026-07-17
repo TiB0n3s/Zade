@@ -362,6 +362,88 @@ def test_auto_verify_skipped_without_file_changes(tmp_path: Path, fixture_repo: 
     assert not any(s.get("auto_verify") for s in result["steps"])
 
 
+def test_syntax_fallback_check_fails_broken_python_honestly(tmp_path: Path) -> None:
+    """No test entry point in the workspace: the kernel still checks the run by
+    syntax-compiling the changed files. Broken code cannot come back as a clean
+    'executed' — the check fails, the repair prompt fires, and when the model
+    does nothing the failure is kept, not papered over."""
+    ws = tmp_path / "bare-ws"
+    ws.mkdir(parents=True)
+    script = [
+        {"tool_calls": [_call("write_file", path="app.py", content="def broken(:\n    pass\n")]},
+        {"content": "Implemented app.py. Everything works."},  # fabricated claim
+        # Script exhausted after this: the repair round gets the default
+        # no-tool "done" reply, so nothing changes and the failure stands.
+    ]
+    svc, ollama = _service(tmp_path, ws, script)
+    result = svc.run(task="implement the app module")
+
+    assert result["changed_files"] == ["app.py"]
+    verification = result["auto_verification"]
+    assert verification["mode"] == "syntax"
+    assert verification["ok"] is False
+    assert verification["repair_rounds"] == 1
+    assert verification["checks"][0]["argv"] == ["python", "-m", "py_compile", "app.py"]
+    # The failure was fed back to the model as the Repeat leg of the loop.
+    repair_calls = [
+        c for c in ollama.calls
+        if any("KERNEL CHECK FAILED" in str(m.get("content", "")) for m in c["messages"])
+    ]
+    assert repair_calls, "the real check failure must reach the model for repair"
+    # The artifact carries the real output and the parse-level qualifier.
+    assert "Kernel auto-verification" in result["response"]
+    assert "syntax-level check only" in result["response"]
+
+
+def test_syntax_fallback_repair_round_fixes_and_passes(tmp_path: Path) -> None:
+    """Goal → Act → Check → Repeat, end to end: the first check fails on broken
+    code, the model repairs it in the repair round, and the kernel re-runs the
+    check itself — the final result reflects the passing re-check."""
+    ws = tmp_path / "bare-ws"
+    ws.mkdir(parents=True)
+    script = [
+        {"tool_calls": [_call("write_file", path="app.py", content="def broken(:\n    pass\n")]},
+        {"content": "Implemented app.py."},
+        # Repair round (after KERNEL CHECK FAILED):
+        {"tool_calls": [_call("write_file", path="app.py", content="def fixed():\n    return 1\n")]},
+        {"content": "Fixed the syntax error in app.py."},
+    ]
+    svc, _ = _service(tmp_path, ws, script)
+    result = svc.run(task="implement the app module")
+
+    verification = result["auto_verification"]
+    assert verification["ok"] is True
+    assert verification["repair_rounds"] == 1
+    verify_steps = [s for s in result["steps"] if s.get("auto_verify")]
+    assert len(verify_steps) == 2  # failing check + passing re-check
+    assert verify_steps[0]["ok"] is False
+    assert verify_steps[-1]["ok"] is True
+
+
+def test_uncheckable_changed_files_are_reported_unverified(tmp_path: Path) -> None:
+    """Changed files no local checker covers (e.g. JSX) must come back
+    explicitly UNVERIFIED — never silently folded into a success report."""
+    ws = tmp_path / "bare-ws"
+    ws.mkdir(parents=True)
+    script = [
+        {"tool_calls": [_call(
+            "write_file",
+            path="src/Screen.js",
+            content="export default () => (<View />);\n",
+        )]},
+        {"content": "Screen implemented."},
+    ]
+    svc, _ = _service(tmp_path, ws, script)
+    result = svc.run(task="implement the screen")
+
+    verification = result["auto_verification"]
+    assert verification["mode"] == "none"
+    assert verification["ok"] is None
+    assert verification["unchecked_files"] == ["src/Screen.js"]
+    assert verification["repair_rounds"] == 0
+    assert "UNVERIFIED" in result["response"]
+
+
 def test_verification_argv_detects_workspace_kind(tmp_path: Path) -> None:
     # Node workspace with a declared test script → npm test.
     node_ws = tmp_path / "node-ws"

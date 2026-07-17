@@ -46,6 +46,11 @@ COMMAND_TIMEOUT_SECONDS = 420.0
 MAX_COMMAND_OUTPUT_CHARS = 12_000
 MAX_VERIFY_OUTPUT_CHARS = 4000
 
+# Goal → Act → Check → Repeat: when the kernel's own check fails, the real
+# failing output is fed back to the model for at most this many repair rounds
+# before the run reports, honestly, that the work did not verify.
+MAX_REPAIR_ROUNDS = 2
+
 # Allowlisted first-argv tokens for run_command. Deliberately small: enough to
 # run tests and inspect a Python or Node workspace. npx stays OFF the list —
 # it executes arbitrary packages by design. Everything else is refused at the
@@ -161,117 +166,149 @@ class CodingAgentService:
         rounds_cap = max(1, int(max_rounds or DEFAULT_MAX_ROUNDS))
         steps: list[dict[str, Any]] = []
         changed_files: set[str] = set()
-        rounds = 0
-        final_text = ""
-        status = "ok"
-        error = ""
-        used_tools = False
+        state = {"rounds": 0, "final_text": "", "status": "ok", "error": "", "used_tools": False}
 
-        for round_index in range(rounds_cap + 1):
-            allow_tools = round_index < rounds_cap
-            try:
-                generated = self.ollama.chat(
-                    messages=messages,
-                    model=selected_model,
-                    think=self.config.ollama.think_for_role("coding"),
-                    temperature=0.1,
-                    num_predict=2048,
-                    tools=schemas if allow_tools else None,
-                )
-            except OllamaError as exc:
-                if round_index == 0 and "does not support tools" in str(exc).lower():
-                    return {
-                        "ok": False,
-                        "status": "capability_error",
-                        "error": (
+        def advance(cap: int) -> None:
+            """Drive model rounds until the model stops calling tools, raises a
+            founder decision, errors, or the cap elapses. Mutates the shared
+            run state so the verify/repair phase can call it again."""
+            for round_index in range(cap + 1):
+                allow_tools = round_index < cap
+                try:
+                    generated = self.ollama.chat(
+                        messages=messages,
+                        model=selected_model,
+                        think=self.config.ollama.think_for_role("coding"),
+                        temperature=0.1,
+                        num_predict=2048,
+                        tools=schemas if allow_tools else None,
+                    )
+                except OllamaError as exc:
+                    if (
+                        not state["used_tools"]
+                        and state["rounds"] == 0
+                        and "does not support tools" in str(exc).lower()
+                    ):
+                        state["status"] = "capability_error"
+                        state["error"] = (
                             f"Model {selected_model!r} rejected native tools: {str(exc)[:200]}. "
                             "No cloud escalation was attempted. Set [ollama] coding_agent_model "
                             "to a tool-capable installed model."
-                        ),
-                        "model": selected_model,
-                        "rounds": rounds,
-                        "steps": steps,
-                        "changed_files": sorted(changed_files),
-                        "response": "",
-                    }
-                status = "model_error"
-                error = str(exc)[:400]
-                break
-            final_text = generated.response or final_text
-            tool_calls = _extract_tool_calls(generated.raw) if allow_tools else []
-            if not tool_calls:
-                break
-            used_tools = True
-            rounds += 1
-            messages.append(
-                {"role": "assistant", "content": generated.response or "", "tool_calls": tool_calls}
-            )
-            for call in tool_calls[:MAX_CALLS_PER_ROUND]:
-                name, arguments = _parse_tool_call(call)
-                started = time.perf_counter()
-                result = self._execute(tools, name, arguments)
-                latency_ms = int((time.perf_counter() - started) * 1000)
-                if result.pop("_changed_file", None):
-                    changed_files.add(str(result.get("path", "")))
-                steps.append(
-                    {
-                        "tool": name,
-                        "arguments": _redact_arguments(arguments),
-                        "ok": bool(result.get("ok", True)),
-                        "latency_ms": latency_ms,
-                        "round": rounds,
-                    }
-                )
+                        )
+                        return
+                    state["status"] = "model_error"
+                    state["error"] = str(exc)[:400]
+                    return
+                state["final_text"] = generated.response or state["final_text"]
+                tool_calls = _extract_tool_calls(generated.raw) if allow_tools else []
+                if not tool_calls:
+                    return
+                state["used_tools"] = True
+                state["rounds"] += 1
                 messages.append(
-                    {"role": "tool", "tool_name": name, "content": _render_result(result)}
+                    {"role": "assistant", "content": generated.response or "", "tool_calls": tool_calls}
                 )
-            if question_box.get("question"):
-                # The model raised a genuine founder decision: stop cleanly.
-                # The delegation layer files the question; nothing is guessed.
-                status = "needs_decision"
-                break
-            dropped = len(tool_calls) - min(len(tool_calls), MAX_CALLS_PER_ROUND)
-            if dropped > 0:
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_name": "kernel",
-                        "content": json.dumps(
-                            {"note": f"{dropped} tool call(s) skipped: per-round cap is {MAX_CALLS_PER_ROUND}."}
-                        ),
-                    }
-                )
+                for call in tool_calls[:MAX_CALLS_PER_ROUND]:
+                    name, arguments = _parse_tool_call(call)
+                    started = time.perf_counter()
+                    result = self._execute(tools, name, arguments)
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+                    if result.pop("_changed_file", None):
+                        changed_files.add(str(result.get("path", "")))
+                    steps.append(
+                        {
+                            "tool": name,
+                            "arguments": _redact_arguments(arguments),
+                            "ok": bool(result.get("ok", True)),
+                            "latency_ms": latency_ms,
+                            "round": state["rounds"],
+                        }
+                    )
+                    messages.append(
+                        {"role": "tool", "tool_name": name, "content": _render_result(result)}
+                    )
+                if question_box.get("question"):
+                    # The model raised a genuine founder decision: stop cleanly.
+                    # The delegation layer files the question; nothing is guessed.
+                    state["status"] = "needs_decision"
+                    return
+                dropped = len(tool_calls) - min(len(tool_calls), MAX_CALLS_PER_ROUND)
+                if dropped > 0:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_name": "kernel",
+                            "content": json.dumps(
+                                {"note": f"{dropped} tool call(s) skipped: per-round cap is {MAX_CALLS_PER_ROUND}."}
+                            ),
+                        }
+                    )
 
-        # Kernel-run auto-verification: when the run changed files and the
-        # workspace has a recognizable test entry point, the KERNEL runs the
-        # real verification through the same allowlisted/audited run_command
-        # path and appends the actual output to the artifact. The model cannot
-        # skip it and cannot fake it — the appended block is ground truth.
+        advance(rounds_cap)
+        if state["status"] == "capability_error":
+            return {
+                "ok": False,
+                "status": "capability_error",
+                "error": state["error"],
+                "model": selected_model,
+                "rounds": state["rounds"],
+                "steps": steps,
+                "changed_files": sorted(changed_files),
+                "response": "",
+            }
+
+        # Kernel-run check (Goal → Act → Check → Repeat): when the run changed
+        # files, the KERNEL checks the result itself through the same
+        # allowlisted/audited run_command path — the workspace's real test
+        # entry point when one exists, otherwise syntax checks on the changed
+        # files where a trustworthy local checker exists. The model cannot skip
+        # it and cannot fake it. Files no checker covers are reported as
+        # UNVERIFIED, never silently passed. On failure the real output is fed
+        # back to the model for bounded repair rounds; the result carries the
+        # LAST check's outcome, not the model's claim.
         auto_verification: dict[str, Any] | None = None
-        if status == "ok" and changed_files:
-            verify_argv = self._verification_argv(root)
-            if verify_argv is not None:
-                started = time.perf_counter()
-                verify_result = self._execute(tools, "run_command", {"argv": list(verify_argv)})
-                latency_ms = int((time.perf_counter() - started) * 1000)
-                steps.append(
+        if state["status"] == "ok" and changed_files:
+            auto_verification = self._run_verification(
+                tools, root, sorted(changed_files), steps=steps, rounds=state["rounds"]
+            )
+            repairs = 0
+            while (
+                auto_verification.get("ok") is False
+                and repairs < MAX_REPAIR_ROUNDS
+                and state["status"] == "ok"
+            ):
+                repairs += 1
+                steps_before = len(steps)
+                messages.append(
                     {
-                        "tool": "run_command",
-                        "arguments": {"argv": list(verify_argv)},
-                        "ok": bool(verify_result.get("ok", False)),
-                        "latency_ms": latency_ms,
-                        "round": rounds,
-                        "auto_verify": True,
+                        "role": "user",
+                        "content": (
+                            "KERNEL CHECK FAILED — the work is not done. Real output:\n"
+                            f"{str(auto_verification.get('output') or '')[:MAX_VERIFY_OUTPUT_CHARS]}\n\n"
+                            "You are in the Repeat leg of Goal → Act → Check → Repeat: fix the "
+                            "failure with tools now, then finish with a plain-text summary. Do "
+                            "not claim the check passes — the kernel re-runs it itself."
+                        ),
                     }
                 )
-                auto_verification = {
-                    "argv": list(verify_argv),
-                    "ok": bool(verify_result.get("ok", False)),
-                    "returncode": verify_result.get("returncode"),
-                }
-                final_text = (
-                    final_text.strip() + "\n\n" + _render_verification(verify_argv, verify_result)
-                ).strip()
+                advance(rounds_cap)
+                if state["status"] != "ok" or len(steps) == steps_before:
+                    # Nothing new happened (or the run stopped): re-checking
+                    # would reproduce the same failure; keep the honest result.
+                    break
+                auto_verification = self._run_verification(
+                    tools, root, sorted(changed_files), steps=steps, rounds=state["rounds"]
+                )
+            auto_verification["repair_rounds"] = repairs
+            rendered = str(auto_verification.pop("rendered", "") or "")
+            if rendered:
+                state["final_text"] = (state["final_text"].strip() + "\n\n" + rendered).strip()
+
+        status = state["status"]
+        rounds = state["rounds"]
+        used_tools = state["used_tools"]
+        error = state["error"]
+        final_text = state["final_text"]
 
         result = {
             "ok": status == "ok",
@@ -341,6 +378,98 @@ class CodingAgentService:
             return ["python", "-m", "pytest", "-q"]
         return None
 
+    def _verification_plan(
+        self, root: Path, changed: list[str]
+    ) -> tuple[str, list[list[str]], list[str]]:
+        """The kernel's check plan for this run: (mode, check argvs, unchecked
+        files). Prefer the workspace's real test entry point; without one, fall
+        back to syntax checks on the changed files where a trustworthy local
+        checker exists (.py via py_compile, .json via json.tool). Files with no
+        reliable checker come back as unchecked — they are reported as
+        unverified, never silently passed."""
+        argv = self._verification_argv(root)
+        if argv is not None:
+            return "tests", [list(argv)], []
+        py_files = [f for f in changed if f.lower().endswith(".py")]
+        json_files = [f for f in changed if f.lower().endswith(".json")]
+        checks: list[list[str]] = []
+        if py_files:
+            checks.append(["python", "-m", "py_compile", *py_files])
+        for f in json_files:
+            checks.append(["python", "-m", "json.tool", f])
+        covered = set(py_files) | set(json_files)
+        unchecked = [f for f in changed if f not in covered]
+        return ("syntax" if checks else "none"), checks, unchecked
+
+    def _run_verification(
+        self,
+        tools: dict[str, AgentTool],
+        root: Path,
+        changed: list[str],
+        *,
+        steps: list[dict[str, Any]],
+        rounds: int,
+    ) -> dict[str, Any]:
+        """Execute the check plan through the audited run_command path and
+        return a structured verdict: ok True (all checks passed), False (a
+        check failed), or None (no runnable check exists — unverified)."""
+        mode, checks, unchecked = self._verification_plan(root, changed)
+        results: list[dict[str, Any]] = []
+        rendered_blocks: list[str] = []
+        failing_blocks: list[str] = []
+        for argv in checks:
+            started = time.perf_counter()
+            outcome = self._execute(tools, "run_command", {"argv": list(argv)})
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            check_ok = bool(outcome.get("ok", False))
+            steps.append(
+                {
+                    "tool": "run_command",
+                    "arguments": {"argv": list(argv)},
+                    "ok": check_ok,
+                    "latency_ms": latency_ms,
+                    "round": rounds,
+                    "auto_verify": True,
+                }
+            )
+            results.append(
+                {"argv": list(argv), "ok": check_ok, "returncode": outcome.get("returncode")}
+            )
+            block = _render_verification(argv, outcome)
+            rendered_blocks.append(block)
+            if not check_ok:
+                failing_blocks.append(block)
+        ok: bool | None = all(r["ok"] for r in results) if results else None
+        if mode == "none":
+            rendered = (
+                "--- Kernel auto-verification ---\n"
+                "No runnable check exists for the changed file(s): "
+                + ", ".join(unchecked)
+                + ". The change is UNVERIFIED — treat any completion claim accordingly."
+            )
+        else:
+            rendered = "\n\n".join(rendered_blocks)
+            if mode == "syntax":
+                rendered += (
+                    "\n(syntax-level check only — this workspace has no test entry "
+                    "point, so behavior is unverified)"
+                )
+            if unchecked:
+                rendered += (
+                    "\n(no reliable local checker for: " + ", ".join(unchecked) + " — unverified)"
+                )
+        anchor = next((r for r in results if not r["ok"]), results[0] if results else {})
+        return {
+            "mode": mode,
+            "ok": ok,
+            "checks": results,
+            "unchecked_files": unchecked,
+            "argv": anchor.get("argv"),
+            "returncode": anchor.get("returncode"),
+            "output": "\n\n".join(failing_blocks) or rendered,
+            "rendered": rendered,
+        }
+
     # ---- workspace ------------------------------------------------------------
     def _workspace_root(self, workspace: str | Path | None) -> Path:
         configured = getattr(self.config.delegation, "workspace_root", "") or ""
@@ -395,18 +524,27 @@ class CodingAgentService:
             "You have callable tools this run. They execute REAL local operations:",
             tool_lines,
             (
-                "Work in small verified steps: read before you edit, prefer replace_in_file for "
-                "surgical changes, run the focused test after an edit, and finish with a short "
-                "summary of what changed and the test result. Never claim an action you did not "
-                "perform with a tool. When you are done, reply with plain text and no tool calls."
+                "Your working loop is Goal → Act → Check → Repeat: know what the task needs, act "
+                "with tools, check the result through a tool observation (read the file back, run "
+                "the focused test), and repeat until the check passes. Read before you edit and "
+                "prefer replace_in_file for surgical changes. Before reporting progress, audit "
+                "each claim against a tool result from this run: only report work you can point "
+                "to evidence for, and if something is not yet verified, say so explicitly. If a "
+                "check fails, say so with the output; if a step was skipped, say that. Never "
+                "claim an action you did not perform with a tool."
+            ),
+            (
+                "When you are done, reply with plain text and no tool calls. Lead with the "
+                "outcome: your first sentence answers what happened, then the detail that "
+                "changes what the reader does next — no fabricated test results, no padding."
             ),
             (
                 "You are pre-authorized to complete this task end to end — never stop to ask "
-                "whether to proceed, and never end with a plan instead of the work. Resolve "
-                "ordinary ambiguity with the safest reasonable choice and keep going. Only if "
-                "you hit a decision you truly cannot make safely (missing requirement, "
-                "irreversible choice, materially different options) call ask_founder once with "
-                "one precise question, then stop."
+                "whether to proceed, and never end with a plan instead of the work. Pause for "
+                "the founder only when the work genuinely requires them: a destructive or "
+                "irreversible choice, a real scope change, or input only they can provide — "
+                "then call ask_founder once with one precise question and stop. Everything "
+                "else, resolve with the safest reasonable choice and keep going."
             ),
         ]
         if instructions:

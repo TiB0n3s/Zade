@@ -1462,6 +1462,16 @@ The founder's current message is supplied separately as the user-role message. D
             notes.append(
                 "Replaced a near-verbatim prior reply on a completion/status question with an evidence-honest answer."
             )
+        claim_challenge = _execution_claim_challenge_fallback(
+            message=message,
+            recent_turns=recent_turns or [],
+        )
+        if claim_challenge and not (chat_action_route or research_route or build_route):
+            text = claim_challenge
+            applied_rules.append("execution_claim_challenge_repaired")
+            notes.append(
+                "Replaced a challenged execution/completion claim with an evidence-boundary answer."
+            )
         if _is_ambiguous_action_followup(message) and not (
             chat_action_route or research_route or build_route
         ):
@@ -1514,7 +1524,7 @@ The founder's current message is supplied separately as the user-role message. D
             # this turn. State exactly what was queued (or why it couldn't be) so
             # the reply points at a real item instead of narrating construction.
             text = _remove_build_deferral_question(text)
-            if build_route.get("status") in {"queued", "executed", "needs_decision", "run_failed"} and (
+            if build_route.get("status") in {"queued", "executed", "verify_failed", "needs_decision", "run_failed"} and (
                 build_route.get("kind") == "step" or _EXECUTION_INABILITY_RE.search(text)
             ):
                 # The drafted body either denies an execution that actually
@@ -1826,6 +1836,11 @@ The founder's current message is supplied separately as the user-role message. D
             # The directed run already executed this turn — report what really
             # happened instead of pointing at an Inbox item.
             dispatch = queued.get("dispatch") or {}
+            verification = (
+                dispatch.get("auto_verification")
+                if isinstance(dispatch.get("auto_verification"), dict)
+                else None
+            )
             route["dispatch"] = {
                 "status": dispatch.get("status"),
                 "ok": dispatch.get("ok"),
@@ -1834,6 +1849,7 @@ The founder's current message is supplied separately as the user-role message. D
                 "rounds": dispatch.get("rounds"),
                 "changed_files": dispatch.get("changed_files", []),
                 "unverified_claims": dispatch.get("unverified_claims", []),
+                "auto_verification": verification,
                 "evidence_id": dispatch.get("evidence_id"),
                 "error": dispatch.get("error", ""),
             }
@@ -1841,12 +1857,23 @@ The founder's current message is supplied separately as the user-role message. D
                 route["status"] = "needs_decision"
                 route["question"] = dispatch.get("founder_question") or {}
                 route["decision_item_id"] = dispatch.get("decision_item_id")
+            elif dispatch.get("ok") and verification is not None and verification.get("ok") is False:
+                # The run itself completed, but the kernel's own check on the
+                # result FAILED. The report must lead with that, not "executed".
+                route["status"] = "verify_failed"
+                route["verification"] = verification
             elif dispatch.get("ok"):
                 route["status"] = "executed"
-                route["auto_verified"] = any(
-                    isinstance(step, dict) and step.get("auto_verify") and step.get("ok")
-                    for step in dispatch.get("steps") or []
+                route["auto_verified"] = (
+                    verification.get("ok") is True
+                    if verification is not None
+                    else any(
+                        isinstance(step, dict) and step.get("auto_verify") and step.get("ok")
+                        for step in dispatch.get("steps") or []
+                    )
                 )
+                if verification is not None:
+                    route["verified_mode"] = str(verification.get("mode") or "")
             else:
                 route["status"] = "run_failed"
                 route["error"] = str(dispatch.get("error") or dispatch.get("status") or "run failed")[:400]
@@ -2335,6 +2362,80 @@ def _completion_status_replay_fallback() -> str:
         "The prior status line replayed itself; that is not completion evidence. "
         "I need an actual check result, commitment closure, or runtime event before I call it done."
     )
+
+
+_EXECUTION_CLAIM_CHALLENGE_RE = re.compile(
+    r"""(?ix)
+    (?:
+        \b(?:hallucinat\w*|fabricat\w*|made\s+up|false\s+claim|untrue|lied|lying)\b
+        |
+        \b(?:claim(?:ed|ing)?|said|told\s+me)\b.{0,120}
+        \b(?:complete(?:d)?|done|execut(?:ed|ion)|implement(?:ed|ation)?|created|changed|fixed|built)\b
+        |
+        \b(?:there\s+is\s+no|does\s+not\s+exist|doesn'?t\s+exist|missing|can'?t\s+find|cannot\s+find)\b
+        .{0,120}
+        \b(?:file|folder|directory|screen|component|module|work|step|task)\b
+    )
+    """
+)
+_COMPLETION_CLAIM_RE = re.compile(
+    r"(?i)\b(?:complete(?:d)?|done|execut(?:ed|ion)|implement(?:ed|ation)?|created|changed|fixed|built)\b"
+)
+_FILE_REFERENCE_RE = re.compile(
+    r"`?([A-Za-z0-9][A-Za-z0-9_.\\/-]*\.[A-Za-z0-9][A-Za-z0-9_.-]{0,12})`?"
+)
+
+
+def _execution_claim_challenge_fallback(
+    *, message: str, recent_turns: list[dict[str, Any]]
+) -> str:
+    if not _EXECUTION_CLAIM_CHALLENGE_RE.search(message or ""):
+        return ""
+    subject = _execution_claim_subject(message=message, recent_turns=recent_turns)
+    files = _extract_file_references(message)
+    file_line = (
+        f" Your check says `{files[0]}` is missing."
+        if files
+        else " Your check contradicts the earlier completion claim."
+    )
+    correction_path = (
+        f"give the project path and say `perform {subject}` (or paste the step again)"
+        if subject.lower().startswith("step ")
+        else "give the project path and the exact step or task to perform"
+    )
+    return (
+        "You're right to challenge that. A chat claim is not execution evidence."
+        f"{file_line} I should treat the earlier claim as unverified unless there is a "
+        "delegated-run item, changed-file list, or real verification output behind it. "
+        f"I won't call {subject} complete from prose. To correct the work, {correction_path}, "
+        "and the runtime will route it through the coding agent with real output."
+    )
+
+
+def _extract_file_references(text: str) -> list[str]:
+    seen: set[str] = set()
+    files: list[str] = []
+    for match in _FILE_REFERENCE_RE.finditer(text or ""):
+        value = match.group(1).strip("`.,;:!?\"'")
+        if value.lower() in seen:
+            continue
+        seen.add(value.lower())
+        files.append(value)
+    return files
+
+
+def _execution_claim_subject(*, message: str, recent_turns: list[dict[str, Any]]) -> str:
+    for text in [message or ""] + [
+        str(_turn_field(turn, "content") or "")
+        for turn in reversed(recent_turns or [])
+        if str(_turn_field(turn, "role")).lower() == "assistant"
+    ]:
+        if not _COMPLETION_CLAIM_RE.search(text):
+            continue
+        step = _STEP_REF_NUM_RE.search(text)
+        if step:
+            return f"Step {step.group(1)}"
+    return "the claimed work"
 
 
 _AMBIGUOUS_ACTION_FOLLOWUPS = frozenset(
@@ -3401,7 +3502,7 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
                 "delegation workspace — give me the project path if that's wrong."
             )
         )
-    if status == "executed":
+    if status in {"executed", "verify_failed"}:
         dispatch = route.get("dispatch") or {}
         changed = [str(f) for f in dispatch.get("changed_files") or []]
         changed_line = (
@@ -3411,20 +3512,53 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
             if changed
             else " No files needed changing."
         )
-        verify_line = (
-            " Kernel-run verification passed on real output."
-            if route.get("auto_verified")
-            else (
-                " Heads up: it asserted checks it never ran — treat those as unconfirmed."
-                if dispatch.get("unverified_claims")
-                else ""
-            )
-        )
         evidence_line = (
             f" Artifact filed as delegated-work evidence (item #{item_id})."
             if dispatch.get("evidence_id")
             else f" Full detail is on item #{item_id}."
         )
+        if status == "verify_failed":
+            verification = route.get("verification") or {}
+            failing = [
+                " ".join(str(a) for a in (check.get("argv") or []))
+                for check in verification.get("checks") or []
+                if not check.get("ok")
+            ]
+            failing_line = f" ({'; '.join(failing)})" if failing else ""
+            repairs = int(verification.get("repair_rounds") or 0)
+            repair_line = (
+                f" I fed the failure back for {repairs} repair round(s) and it still fails."
+                if repairs
+                else ""
+            )
+            return (
+                f"The {noun} is NOT done - {task}.{target_line} My local coding agent "
+                f"({dispatch.get('model') or 'local model'}) changed {len(changed)} file(s), but "
+                f"the kernel's own check on the result FAILED{failing_line}, so I'm not calling "
+                f"it complete.{repair_line} The real failing output is on item #{item_id}. "
+                "Redirect me or say to go again and I'll run another pass."
+            )
+        if route.get("auto_verified"):
+            verify_line = (
+                " Kernel-run verification passed on real output."
+                if route.get("verified_mode") != "syntax"
+                else (
+                    " Kernel-run syntax check passed on real output — parse-level only; "
+                    "this workspace has no test entry point, so behavior is unverified."
+                )
+            )
+        elif dispatch.get("unverified_claims"):
+            verify_line = (
+                " Heads up: it asserted checks it never ran — treat those as unconfirmed."
+            )
+        elif changed:
+            verify_line = (
+                " No check could verify this run — the workspace has no test entry point "
+                "and the changed files have no local checker — so treat it as UNVERIFIED "
+                "until something real exercises it."
+            )
+        else:
+            verify_line = ""
         return (
             f"Ran the {noun} - {task}.{target_line} Executed just now by my local coding agent "
             f"({dispatch.get('model') or 'local model'}).{changed_line}{verify_line}{evidence_line}"
@@ -3524,6 +3658,11 @@ def _build_route_note(route: dict[str, Any]) -> str:
             f"Detected a directed {kind} command; the delegated run executed immediately at full auto "
             "(founder command is the authorization) and the real outcome is in the reply."
         )
+    if status == "verify_failed":
+        return (
+            f"Detected a directed {kind} command; the run executed but the kernel's own check on "
+            "the result failed, so the reply reports the work as NOT done, with the real output."
+        )
     if status == "needs_decision":
         return (
             f"Detected a directed {kind} command; the run started and paused on a genuine founder "
@@ -3554,7 +3693,7 @@ def _build_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
         "anaphoric": route.get("anaphoric", False),
         "workspace": route.get("workspace", ""),
     }
-    if route.get("status") in {"queued", "executed", "needs_decision", "run_failed"}:
+    if route.get("status") in {"queued", "executed", "verify_failed", "needs_decision", "run_failed"}:
         summary |= {
             "item_id": route.get("item_id"),
             "queue_status": route.get("queue_status"),
