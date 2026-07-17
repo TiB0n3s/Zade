@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `634ea24` 2026-07-17 - Kernel MCP and runtime
 - `02b0b81` 2026-07-17 - MCP and Agent Surface
 - `e8762dd` 2026-07-17 - MCP Surface
 - `9505598` 2026-07-17 - co-founder kernel enhancement
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `036596e` 2026-07-17 - Review verify_failed reads as a finding, not a broken run
 - `059f780` 2026-07-17 - Review route: 'review <project>' runs a read-only inspection; workspace run-record answers status questions
 - `f80d547` 2026-07-17 - Structured output: JSON contracts enforced server-side via Ollama format
-- `0120f68` 2026-07-17 - Grounded answers: tagged recall citations audited by the kernel
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -25,7 +25,9 @@ from .db import KernelDatabase, utc_now
 from .devtools import DevToolsHandlers, allowed_commands
 from .evals import EvalService
 from .experiments import ExperimentService
+from .anthropic_client import AnthropicError, AnthropicNotConfigured
 from .founder import FounderService
+from .strategy_review import StrategyReviewService
 from .handlers import ActionHandlerRegistry
 from .ingestion import IngestionService
 from .research import ResearchService
@@ -48,6 +50,7 @@ from .models import (
     ApprovalDeferRequest,
     ApprovalEditRequest,
     ApprovalResolveRequest,
+    StrategyReviewRequest,
     AuthorityEvaluateRequest,
     BackupCreateRequest,
     BackupRetentionRequest,
@@ -249,6 +252,10 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     ops = KernelOpsService(config=cfg, db=db, ollama=ollama, ui_dir=UI_DIR)
     evals = EvalService(config=cfg, db=db, ollama=ollama, runtime=runtime, critic=critic)
     voice = VoiceService(config=cfg, db=db, runtime=runtime)
+    strategy_review = StrategyReviewService(
+        config=cfg, db=db, founder=founder, ingestion=ingestion,
+        typed_confirmation_phrase=authority.summary()["typed_confirmation_phrase"],
+    )
     bus = NotificationBus(db=db, voice=voice)
     commitments = CommitmentLedger(db=db, bus=bus)
     actions = ActionPipelineService(db=db, authority=authority, founder=founder, work_queue=work_queue, bus=bus)
@@ -1457,6 +1464,36 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         request = payload or ApprovalResolveRequest()
         try:
             return deny_egress_grant(db, request_id, resolved_by=request.resolved_by, note=request.note)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # -- founder_brief → Anthropic strategic review (first cloud consumer) -----
+    @app.post("/strategy/review")
+    def strategy_review_request(payload: StrategyReviewRequest | None = None) -> dict[str, Any]:
+        body = payload or StrategyReviewRequest()
+        return strategy_review.request_review(focus=body.focus, question=body.question)
+
+    @app.get("/strategy/reviews")
+    def strategy_review_pending() -> dict[str, Any]:
+        return {"pending": strategy_review.list_pending()}
+
+    @app.post("/strategy/reviews/{request_id}/approve")
+    def strategy_review_approve(request_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalResolveRequest()
+        try:
+            return strategy_review.approve(request_id, resolved_by=request.resolved_by, typed_phrase=request.typed_confirmation)
+        except AnthropicNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except AnthropicError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/strategy/reviews/{request_id}/deny")
+    def strategy_review_deny(request_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        request = payload or ApprovalResolveRequest()
+        try:
+            return strategy_review.deny(request_id, resolved_by=request.resolved_by, note=request.note)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

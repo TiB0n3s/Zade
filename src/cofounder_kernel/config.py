@@ -327,6 +327,30 @@ class ScreenConfig:
 
 
 @dataclass(frozen=True)
+class AnthropicConfig:
+    """Cloud inference via Anthropic — the FIRST non-local model client.
+
+    Off by default. A strategic review reaches Anthropic only when ALL hold:
+      * ``enabled = true`` here (a deliberate config opt-in), and
+      * the egress gate issues a per-request founder grant for
+        ``founder_brief → anthropic`` (typed-phrase approval), and
+      * ``[ollama] provider_policy`` is not ``local_only``, and
+      * ``ANTHROPIC_API_KEY`` is set in the environment.
+    The key is read from the env var and is never written to config or the DB.
+    Only a curated founder_brief may go — raw founder_state is FORBIDDEN by the
+    egress matrix regardless of this section.
+    """
+
+    enabled: bool = False
+    base_url: str = "https://api.anthropic.com/v1/messages"
+    model: str = "claude-opus-4-8"
+    api_key_env: str = "ANTHROPIC_API_KEY"
+    anthropic_version: str = "2023-06-01"
+    max_tokens: int = 2048
+    timeout_seconds: float = 120.0
+
+
+@dataclass(frozen=True)
 class EgressConfig:
     """Data-class egress gate (see egress.py and EGRESS-DESIGN.md).
 
@@ -365,6 +389,7 @@ class KernelConfig:
     delegation: DelegationConfig = DelegationConfig()
     screen: ScreenConfig = ScreenConfig()
     egress: EgressConfig = EgressConfig()
+    anthropic: AnthropicConfig = AnthropicConfig()
     prompt_profiles: PromptProfileConfig = PromptProfileConfig()
 
 
@@ -558,6 +583,16 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
     egress = EgressConfig(
         standing_grants=_segments(egress_raw.get("standing_grants"), ()),
     )
+    anthropic_raw = raw.get("anthropic", {})
+    anthropic = AnthropicConfig(
+        enabled=_bool(os.getenv("ZADE_ANTHROPIC_ENABLED", anthropic_raw.get("enabled", False))),
+        base_url=str(anthropic_raw.get("base_url", "https://api.anthropic.com/v1/messages")).rstrip("/"),
+        model=str(anthropic_raw.get("model", "claude-opus-4-8")).strip(),
+        api_key_env=str(anthropic_raw.get("api_key_env", "ANTHROPIC_API_KEY")).strip(),
+        anthropic_version=str(anthropic_raw.get("anthropic_version", "2023-06-01")).strip(),
+        max_tokens=int(anthropic_raw.get("max_tokens", 2048)),
+        timeout_seconds=float(anthropic_raw.get("timeout_seconds", 120.0)),
+    )
     prompt_profiles_raw = raw.get("prompt_profiles", {})
     prompt_profiles = PromptProfileConfig(
         default=str(os.getenv("ZADE_PROMPT_PROFILE", prompt_profiles_raw.get("default", "general"))).strip()
@@ -581,6 +616,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         delegation=delegation,
         screen=screen,
         egress=egress,
+        anthropic=anthropic,
         prompt_profiles=prompt_profiles,
     )
 

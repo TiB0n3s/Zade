@@ -354,6 +354,48 @@ def test_egress_grant_endpoints(tmp_path: Path, monkeypatch) -> None:
     assert client.get("/egress/grants").json()["pending"] == []
 
 
+def test_strategy_review_endpoints(tmp_path: Path, monkeypatch) -> None:
+    """founder_brief → Anthropic, end to end over HTTP: request holds the brief,
+    approve (token + typed phrase) sends and files, and the queue drains."""
+    from cofounder_kernel.anthropic_client import AnthropicClient
+    from cofounder_kernel.config import AnthropicConfig
+
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    # stub the actual send so no real cloud call happens
+    monkeypatch.setattr(
+        AnthropicClient, "review",
+        lambda self, *, prompt, system="", max_tokens=None: "Retention is the weakest point; run a pilot.",
+    )
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy="local_preferred"),
+        security=SecurityConfig(local_token="secret"),
+        anthropic=AnthropicConfig(enabled=True),
+    )
+    app = create_app(config)
+    db = app.state.db
+    client = TestClient(app)
+    token = {"X-Zade-Token": "secret"}
+
+    # Request: the brief is HELD for approval, nothing sent.
+    req = client.post("/strategy/review", headers=token, json={"focus": "fundraising", "question": "ready to raise?"})
+    assert req.status_code == 200
+    assert req.json()["status"] == "awaiting_approval"
+    rid = req.json()["approval_request_id"]
+    pend = client.get("/strategy/reviews").json()["pending"]
+    assert pend and pend[0]["approval_request_id"] == rid and "fundraising" in pend[0]["preview"]
+
+    # Approve is token- and phrase-gated; success sends and files the review.
+    assert client.post(f"/strategy/reviews/{rid}/approve").status_code == 401
+    assert client.post(f"/strategy/reviews/{rid}/approve", headers=token, json={"typed_confirmation": "no"}).status_code == 400
+    ok = client.post(f"/strategy/reviews/{rid}/approve", headers=token, json={"typed_confirmation": "make the jump to hyperspace"})
+    assert ok.status_code == 200 and ok.json()["status"] == "completed"
+    assert "Retention" in ok.json()["review"]
+    assert db.search_memories("Retention", 5)  # review filed as governed memory
+    assert client.get("/strategy/reviews").json()["pending"] == []
+
+
 def test_authority_and_self_inventory_routes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     config = KernelConfig(

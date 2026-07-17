@@ -146,7 +146,7 @@ Properties (all test-pinned in [test_egress.py](tests/test_egress.py) + [test_ap
 - **Hard boundaries still win** — `FORBIDDEN` cells (raw `founder_state`) and `local_only` DENY *before* any grant is offered; `authorize_egress` never files a pending request for a DENY.
 - **Redacted** — the founder sees a `preview` (what would be sent), never the payload.
 
-This makes the surviving PER_REQUEST cloud paths — `founder_brief`→model, `source_code`→model, `screen_pixels`→model — operable. What's still absent is a *consumer*: no cloud client sends anything yet. `authorize_egress` is the gate a future consumer calls; building e.g. the `founder_brief`→Anthropic review is the next step, and it now has a real authorization path.
+This makes the surviving PER_REQUEST cloud paths — `founder_brief`→model, `source_code`→model, `screen_pixels`→model — operable. **The first consumer is built:** `founder_brief`→Anthropic strategic review (`strategy_review.py` + `anthropic_client.py` + `/strategy/review*`) — the first actual cloud egress in the system. It assembles a curated brief (`founder.brief()`), holds it for approval (founder sees the exact bytes), re-checks the gate at execute, then sends to Anthropic and files the review through the governed memory path. Four gates in series before a byte leaves: `[anthropic] enabled` + matrix PER_REQUEST + `provider_policy ≠ local_only` + a founder typed-phrase grant (with `ANTHROPIC_API_KEY`). `source_code`→model and `screen_pixels`→model remain unbuilt consumers.
 
 ---
 
@@ -177,7 +177,7 @@ A malformed or unknown grant fails loud at load (`egress.parse_standing_grants`)
 | **2** | `[egress]` config + load (`EgressConfig`); gate wired into the **voice** cloud methods ([voice.py](src/cofounder_kernel/voice.py) `_assert_egress_allowed`) as the first real call site. Each decision audited (redacted, `action="egress.decision"`). Cloud voice now refused by default; local `command` engine unaffected. | ✅ landed |
 | **3** | Wire the **research** lane; classify the fetch as `public_derived` (STANDING — the gate adds classification + audit, deferring to research's own approval). Surface AUTH_REQUIRED decisions in the approval console as a founder card. | next |
 | **3.5** | **Per-request grant flow** — `authorize_egress` + `request/approve/deny/consume` + `/egress/grants` founder endpoints. Turns AUTH_REQUIRED into a founder decision; makes the PER_REQUEST cloud cells operable. | ✅ built (see §4 "The per-request grant flow") |
-| **4** | First *new* cloud vendor (whichever the founder picks) behind PER_REQUEST — a real *consumer* that calls `authorize_egress` then sends. Grant issuance already flows through the typed phrase. | gated by that vendor's design review |
+| **4** | First *new* cloud vendor / consumer behind PER_REQUEST. | ✅ `founder_brief`→Anthropic strategic review built (`strategy_review.py`, `anthropic_client.py`, `/strategy/review*`) — first actual cloud egress; `[anthropic]` off by default |
 | **—** | **Cross-channel founder authentication** (prereq for any CHANNEL egress; see §7 #3). | not started |
 
 **Nothing in any phase flips `provider_policy` off `local_only` on its own.** Raising the policy stays a deliberate, separate founder act. Phase 2 changed no default runtime behavior: the default config ships local voice, and the gate refuses the cloud lanes it was already the case no one had enabled.

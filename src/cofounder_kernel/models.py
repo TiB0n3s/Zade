@@ -58,6 +58,11 @@ class ApprovalResolveRequest(BaseModel):
     typed_confirmation: str = Field(default="", max_length=200)
 
 
+class StrategyReviewRequest(BaseModel):
+    focus: str = Field(default="", max_length=2000)
+    question: str = Field(default="", max_length=2000)
+
+
 class ApprovalDeferRequest(BaseModel):
     resolved_by: str = Field(default="founder", min_length=1, max_length=120)
     note: str = Field(default="", max_length=1000)
