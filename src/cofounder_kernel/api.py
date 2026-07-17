@@ -168,7 +168,13 @@ _VAULT_APPROVAL_NOTE = (
 )
 
 
-def create_app(config: KernelConfig | None = None) -> FastAPI:
+def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool = True) -> FastAPI:
+    """Build the kernel app. ``run_boot_maintenance`` runs the serving-boot tiers
+    (semantic reindex, memory-file mirror, and the abandoned-thread sweep). It is
+    on for the real serve path and off for read-only introspection builds (e.g.
+    the self-knowledge snapshot, which constructs a throwaway app only to
+    enumerate handlers) — those must never mutate the DB, and the sweep ends
+    conversations, so constructing an app for inspection must not trigger it."""
     cfg = config or load_config()
     ensure_local_paths(cfg)
     local_token = _resolve_local_token(cfg)
@@ -278,25 +284,38 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     runtime.delegation = delegation
     screen = ScreenService(config=cfg, db=db)
 
-    # Tier 4: keep the semantic memory index current. Incremental + best-effort —
-    # a fresh DB or an embedder outage is a harmless no-op, and unchanged memories
-    # are skipped, so steady-state startup makes no embedder calls.
-    try:
-        ingestion.rebuild_memory_embeddings()
-    except Exception:
-        pass
-    # Tier 6: mirror memories to human-editable files (their source of truth).
-    # Idempotent backfill — only writes files that don't exist yet.
-    try:
-        ingestion.export_memories_to_files()
-    except Exception:
-        pass
-    # Document/chunk semantic index with retrieval prefixes. Incremental +
-    # best-effort — unchanged chunks are skipped, so steady-state startup is a no-op.
-    try:
-        ingestion.rebuild_chunk_embeddings()
-    except Exception:
-        pass
+    # Serving-boot maintenance. Skipped for read-only introspection builds so
+    # merely constructing an app never touches (let alone mutates) the DB.
+    if run_boot_maintenance:
+        # Tier 4: keep the semantic memory index current. Incremental + best-effort —
+        # a fresh DB or an embedder outage is a harmless no-op, and unchanged memories
+        # are skipped, so steady-state startup makes no embedder calls.
+        try:
+            ingestion.rebuild_memory_embeddings()
+        except Exception:
+            pass
+        # Tier 6: mirror memories to human-editable files (their source of truth).
+        # Idempotent backfill — only writes files that don't exist yet.
+        try:
+            ingestion.export_memories_to_files()
+        except Exception:
+            pass
+        # Document/chunk semantic index with retrieval prefixes. Incremental +
+        # best-effort — unchanged chunks are skipped, so steady-state startup is a no-op.
+        try:
+            ingestion.rebuild_chunk_embeddings()
+        except Exception:
+            pass
+        # Tier 8: finalize abandoned threads. The UI resumes only the most-recent
+        # active conversation; every older active thread is unreachable and would
+        # never distill on its own (short threads never hit the auto-distill
+        # threshold, and 'New Thread' is the only other trigger). Promote their
+        # durable knowledge now. Best-effort + loss-safe — a distill failure leaves
+        # the thread active to retry next boot rather than stranding its turns.
+        try:
+            conversations.sweep_abandoned()
+        except Exception:
+            pass
 
     app = FastAPI(title=f"{cfg.identity.name} Local AI Co-founder Kernel", version="0.1.0")
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")

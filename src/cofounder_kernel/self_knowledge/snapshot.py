@@ -153,7 +153,10 @@ def _collect_integrations(state: Any) -> list[dict[str, str]]:
 def _create_runtime_app(config: KernelConfig) -> Any:
     from cofounder_kernel import api as api_module
 
-    return api_module.create_app(config)
+    # Introspection only: enumerate handlers/tools/skills. Never run serving-boot
+    # maintenance — it would reindex and, worse, sweep/end conversations in the
+    # DB this snapshot merely wants to read.
+    return api_module.create_app(config, run_boot_maintenance=False)
 
 
 def _runtime_prompt_wiring_snapshot(doc_path: Path) -> dict[str, str]:

@@ -127,3 +127,130 @@ def test_distill_endpoint_promotes_and_404s_unknown(tmp_path: Path, monkeypatch)
     assert body["written"][0]["kind"] == "chat_commitment"
 
     assert client.post("/conversations/999999/distill").status_code == 404
+
+
+def test_sweep_abandoned_promotes_older_active_threads_and_keeps_resume_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Short threads that never hit the auto-distill threshold still reach memory:
+    the boot sweep promotes every active thread except the single most-recent one
+    (the UI's resume target), which it leaves open and un-distilled."""
+    holder = {
+        "text": (
+            '[{"kind":"decision","title":"Ship the sweep","content":"Boot sweep finalizes abandoned threads."},'
+            '{"kind":"fact","title":"Threads under 20 turns skipped","content":"Auto-distill needs aged-out turns."}]'
+        )
+    }
+    app = _make(tmp_path, monkeypatch, holder)
+    conversations = app.state.conversations
+    db = conversations.db
+
+    older = conversations.create(title="older")["id"]
+    _seed(conversations, older, n=2)
+    middle = conversations.create(title="middle")["id"]
+    _seed(conversations, middle, n=2)
+    newest = conversations.create(title="newest")["id"]  # resume target (most recent)
+    _seed(conversations, newest, n=2)
+
+    result = conversations.sweep_abandoned()
+
+    # Resume target stays open and untouched; the two older threads are finalized.
+    assert result["kept_open"] == newest
+    assert set(result["ended"]) == {older, middle}
+    assert result["deferred"] == []
+    assert result["memories_promoted"] == 4  # two items per swept thread
+
+    assert db.get_conversation(newest)["status"] == "active"
+    assert db.get_conversation(older)["status"] == "ended"
+    assert db.get_conversation(middle)["status"] == "ended"
+
+    # The swept threads' knowledge is now in searchable memory; the resume
+    # target's turns are deliberately not promoted yet.
+    assert len(db.list_memories_by_source(f"conversation:{older}")) == 2
+    assert len(db.list_memories_by_source(f"conversation:{middle}")) == 2
+    assert db.list_memories_by_source(f"conversation:{newest}") == []
+    assert conversations.get(newest)["distilled_through_turn_id"] is None
+
+    # Idempotent: a second sweep finds nothing left to finalize.
+    again = conversations.sweep_abandoned()
+    assert again["ended"] == [] and again["deferred"] == []
+
+
+def test_sweep_abandoned_defers_on_extraction_failure_and_keeps_thread_active(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An embedder/model outage at boot must not strand an abandoned thread as
+    'ended' — it stays active so a later boot retries, losing nothing."""
+    holder = {"text": "no json here"}  # extraction fails -> distill hard-fails
+    app = _make(tmp_path, monkeypatch, holder)
+    conversations = app.state.conversations
+    db = conversations.db
+
+    abandoned = conversations.create(title="abandoned")["id"]
+    _seed(conversations, abandoned, n=2)
+    resume_target = conversations.create(title="resume")["id"]
+    _seed(conversations, resume_target, n=1)
+
+    result = conversations.sweep_abandoned()
+    assert result["deferred"] == [abandoned]
+    assert result["ended"] == []
+    assert db.get_conversation(abandoned)["status"] == "active"  # not stranded
+    assert conversations.get(abandoned)["distilled_through_turn_id"] is None
+    assert db.list_memories_by_source(f"conversation:{abandoned}") == []
+
+    # Model recovers on the next sweep -> the same turns promote, nothing lost.
+    holder["text"] = '[{"kind":"lesson","title":"Retry preserves turns","content":"Deferred threads distill later."}]'
+    recovered = conversations.sweep_abandoned()
+    assert recovered["ended"] == [abandoned]
+    assert db.get_conversation(abandoned)["status"] == "ended"
+    assert len(db.list_memories_by_source(f"conversation:{abandoned}")) == 1
+
+
+def test_introspection_build_does_not_sweep_but_serving_boot_does(tmp_path: Path, monkeypatch) -> None:
+    """Guard: building an app for read-only introspection (run_boot_maintenance
+    =False, as the self-knowledge snapshot does) must not end/distill any thread;
+    only a real serving boot may finalize abandoned threads."""
+    holder = {"text": '[{"kind":"fact","title":"Boot swept it","content":"Serving boot finalized the thread."}]'}
+    app = _make(tmp_path, monkeypatch, holder)  # first build: empty DB, sweep is a no-op
+    conversations = app.state.conversations
+    db = conversations.db
+    cfg = _config(tmp_path)
+
+    older = conversations.create(title="older")["id"]
+    _seed(conversations, older, n=2)
+    newest = conversations.create(title="newest")["id"]
+    _seed(conversations, newest, n=2)
+
+    # Introspection build against the same config/DB: no maintenance, no sweep.
+    create_app(cfg, run_boot_maintenance=False)
+    assert db.get_conversation(older)["status"] == "active"
+    assert db.get_conversation(newest)["status"] == "active"
+    assert db.list_memories_by_source(f"conversation:{older}") == []
+
+    # A serving boot finalizes the abandoned older thread, keeps the resume target.
+    create_app(cfg, run_boot_maintenance=True)
+    assert db.get_conversation(older)["status"] == "ended"
+    assert db.get_conversation(newest)["status"] == "active"
+    assert len(db.list_memories_by_source(f"conversation:{older}")) == 1
+
+
+def test_end_session_leaves_thread_active_when_distill_fails(tmp_path: Path, monkeypatch) -> None:
+    """The 'New Thread' path must not mark a thread ended on a failed distill —
+    doing so would strand its turns forever."""
+    holder = {"text": "cannot comply"}  # parse failure
+    app = _make(tmp_path, monkeypatch, holder)
+    conversations = app.state.conversations
+    db = conversations.db
+    cid = conversations.create()["id"]
+    _seed(conversations, cid, n=2)
+
+    ended = conversations.end_session(cid)
+    assert ended["status"] == "active" and ended["ended"] is None
+    assert db.get_conversation(cid)["status"] == "active"
+
+    # Model cooperates -> ending now succeeds and promotes the turns.
+    holder["text"] = '[{"kind":"fact","title":"Ended cleanly","content":"Final distill succeeded."}]'
+    ended2 = conversations.end_session(cid)
+    assert ended2["status"] == "ended" and ended2["ended"] == cid
+    assert db.get_conversation(cid)["status"] == "ended"
+    assert len(db.list_memories_by_source(f"conversation:{cid}")) == 1

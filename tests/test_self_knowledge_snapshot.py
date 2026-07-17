@@ -42,8 +42,8 @@ def test_collect_snapshots_includes_handlers_registered_by_create_app(monkeypatc
 
     original_create_app = api_module.create_app
 
-    def create_app_with_extra_handler(config: KernelConfig | None = None):
-        app = original_create_app(config)
+    def create_app_with_extra_handler(config: KernelConfig | None = None, **kwargs):
+        app = original_create_app(config, **kwargs)
         app.state.handlers.register("local.test.extra", "Extra test handler.", lambda item: {"status": "ok"})
         return app
 

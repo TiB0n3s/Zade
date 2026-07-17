@@ -51,24 +51,95 @@ class ConversationService:
     def end_session(self, conversation_id: int) -> dict[str, Any]:
         """Close a thread (Tier 8): run a final distillation of everything not yet
         promoted, then mark it 'ended' so a later boot starts a fresh session
-        instead of piling onto it. Best-effort on the distill; idempotent."""
+        instead of piling onto it. Idempotent.
+
+        Loss-safe: if the final distill hard-fails (model/parse error or an
+        exception), the thread is left 'active' so the boot sweep or a later
+        attempt retries. Marking it 'ended' on a failed distill would strand
+        those turns forever — the exact leak this path exists to close."""
         conversation = self.db.get_conversation(conversation_id)
         if not conversation:
             raise ValueError(f"Conversation not found: {conversation_id}")
         try:
             distilled = self.distill(conversation_id, min_turns=1, only_aged_out=False)
         except Exception:
-            distilled = None
-        self.db.update_conversation_status(conversation_id, status="ended")
+            distilled = {"status": "extraction_failed", "written": [], "count": 0}
+        failed = bool(distilled) and distilled.get("status") == "extraction_failed"
+        if not failed:
+            self.db.update_conversation_status(conversation_id, status="ended")
         self.db.audit(
             actor="conversation",
             action="conversation.end",
             target=f"conversation:{conversation_id}",
             permission_tier="L1_MEMORY_WRITE",
             status="ok",
-            details={"distilled": distilled or {"status": "nothing_to_distill"}},
+            details={"distilled": distilled or {"status": "nothing_to_distill"}, "ended": not failed},
         )
-        return {"ended": conversation_id, "distilled": distilled or {"status": "nothing_to_distill", "count": 0}}
+        return {
+            "ended": conversation_id if not failed else None,
+            "status": "active" if failed else "ended",
+            "distilled": distilled or {"status": "nothing_to_distill", "count": 0},
+        }
+
+    def sweep_abandoned(self) -> dict[str, Any]:
+        """Finalize active threads the UI can no longer reach (boot backstop).
+
+        The UI resumes exactly one thread — the most-recently-active 'active'
+        conversation (``loadRecentConversation``: status=active&limit=1). Every
+        *older* active thread is therefore abandoned: nothing will add to it and
+        no 'New Thread' click will ever fire on it, so a short thread that never
+        reached the auto-distill threshold would keep its turns out of searchable
+        memory forever. This promotes each such thread and marks it 'ended'. The
+        single resume target is left open and untouched.
+
+        Loss-safe and idempotent: it never calls the ordering-fragile
+        ``end_session`` path — it distills first and only ends a thread whose
+        distill did not hard-fail, so an embedder/model outage at boot leaves the
+        thread 'active' to retry next boot rather than stranding it 'ended'. A
+        thread with nothing left to distill is a clean end; an already-distilled
+        thread promotes nothing on a second pass.
+        """
+        active = self.db.list_conversations(status="active", limit=10_000)
+        # active[0] mirrors the UI's resume target (same ORDER BY); sweep the rest.
+        abandoned = active[1:]
+        ended: list[int] = []
+        deferred: list[int] = []
+        promoted = 0
+        for conversation in abandoned:
+            conversation_id = int(conversation["id"])
+            try:
+                result = self.distill(conversation_id, min_turns=1, only_aged_out=False)
+            except Exception:
+                result = {"status": "extraction_failed"}
+            if result is not None and result.get("status") == "extraction_failed":
+                deferred.append(conversation_id)  # keep active; retry next boot
+                continue
+            if result is not None and result.get("status") == "ok":
+                promoted += int(result.get("count", 0))
+            self.db.update_conversation_status(conversation_id, status="ended")
+            ended.append(conversation_id)
+        if ended or deferred:
+            self.db.audit(
+                actor="conversation",
+                action="conversation.sweep_abandoned",
+                target="conversation:*",
+                permission_tier="L1_MEMORY_WRITE",
+                status="ok",
+                details={
+                    "active": len(active),
+                    "ended": ended,
+                    "deferred": deferred,
+                    "memories_promoted": promoted,
+                    "kept_open": int(active[0]["id"]) if active else None,
+                },
+            )
+        return {
+            "active": len(active),
+            "ended": ended,
+            "deferred": deferred,
+            "memories_promoted": promoted,
+            "kept_open": int(active[0]["id"]) if active else None,
+        }
 
     def get(self, conversation_id: int, *, turn_limit: int = 50) -> dict[str, Any]:
         conversation = self.db.get_conversation(conversation_id)

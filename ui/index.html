@@ -793,6 +793,19 @@
     byId('micBtn').addEventListener('click', toggleMic);
     byId('newThreadBtn').addEventListener('click', newThread);
 
+    // Promote the open thread's durable knowledge when the tab closes or
+    // navigates away. This distills but does NOT end the thread, so reopening
+    // still resumes it (loadRecentConversation). It's a timeliness win only —
+    // the server boot-sweep is the actual guarantee. keepalive lets the POST
+    // (with its X-Zade-Token header) survive unload; sendBeacon can't carry it.
+    window.addEventListener('pagehide', () => {
+      if (!state.conversationId) return;
+      try {
+        fetch('/conversations/' + encodeURIComponent(state.conversationId) + '/distill',
+          { method: 'POST', headers: headers(), keepalive: true });
+      } catch (e) { /* best-effort */ }
+    });
+
     renderGreeting(null);
     ensureToken();
     loadRecentConversation().then(renderThread);
