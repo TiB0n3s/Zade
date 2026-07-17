@@ -3560,6 +3560,25 @@ def _extract_step_execution(message: str) -> tuple[int | None, bool] | None:
     return None
 
 
+# Meta narration ABOUT execution claims — Zade's own honesty vocabulary from
+# the false-completion arc. A turn discussing whether work was done is never
+# step instructions (live incident item #69: "Because I reported them done in
+# prose..." became a delegated brief because it contained a numbered list).
+_META_NARRATION_RE = re.compile(
+    r"""(?ix)
+    \breported\s+(?:them|it|this|that|the\s+\w+)\s+done\b
+    | \bdone\s+in\s+prose\b
+    | \bprose\s+is\s+not\s+execution\b
+    | \bexecution\s+evidence\b
+    | \bno\s+real\s+work\b
+    | \bwork\s+was\s+(?:not\s+)?(?:confirmed|verified)\b
+    | \byou\s+must\s+confirm\b
+    | \bi\s+take\s+full\s+responsibility\b
+    | \bcritical\s+distinction\b
+    | \bfalse\s+completion\s+claims?\b
+    """
+)
+
 _SYNTHETIC_REPLY_MARKERS_RE = re.compile(
     r"(?m)^(?:Ran|Started|Queued|Took) the (?:build|fix|step run) -"
     r"|^The (?:build|fix|step run) is NOT done -"
@@ -3605,22 +3624,31 @@ def _resolve_step_instructions(
             if not anchor:
                 continue
             candidate = content[anchor.start() : anchor.start() + 1500]
-            if _FABRICATED_COMPLETION_CLAIM_RE.search(
-                _normalize_reply_for_patterns(candidate)
-            ) or _BULLET_COMPLETION_CLAIM_RE.search(_normalize_reply_for_patterns(candidate)):
-                # A completion NARRATIVE mentioning the step ("Step 5 ... has
-                # been completed") is not instructions — resolving it into a
-                # brief poisoned two live runs. Keep looking further back.
+            if _looks_like_non_instruction_text(candidate):
+                # A completion NARRATIVE or meta discussion mentioning the
+                # step is not instructions — resolving one into a brief
+                # poisoned three live runs. Keep looking further back.
                 continue
             return candidate
         if _STEP_STRUCTURE_RE.search(content) or "```" in content:
             candidate = content[:1500]
-            if _FABRICATED_COMPLETION_CLAIM_RE.search(
-                _normalize_reply_for_patterns(candidate)
-            ) or _BULLET_COMPLETION_CLAIM_RE.search(_normalize_reply_for_patterns(candidate)):
+            if _looks_like_non_instruction_text(candidate):
                 continue
             return candidate
     return ""
+
+
+def _looks_like_non_instruction_text(candidate: str) -> bool:
+    """True for text that mentions steps but is not runnable instructions:
+    completion narratives ("Step 5 ... has been completed") and meta
+    discussion about whether work was done ("Because I reported them done in
+    prose ...")."""
+    plain = _normalize_reply_for_patterns(candidate)
+    return bool(
+        _FABRICATED_COMPLETION_CLAIM_RE.search(plain)
+        or _BULLET_COMPLETION_CLAIM_RE.search(plain)
+        or _META_NARRATION_RE.search(plain)
+    )
 
 
 def _anaphoric_build_task(

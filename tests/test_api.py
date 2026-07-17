@@ -2804,6 +2804,38 @@ def test_fabricated_body_dropped_on_executed_maintenance_route(
     assert "routed_reply_body_replaced" in payload["governor"]["applied_rules"]
 
 
+def test_step_resolution_skips_meta_narration_turns() -> None:
+    """Live incident 2026-07-17 (item #69): Zade's old honesty lecture
+    ('Because I reported them done in prose... 1. Create the src/screens
+    directory manually...') contained a numbered list and resolved as 'the
+    step' for an unnumbered command. Meta discussion about whether work was
+    done is never instructions."""
+    from cofounder_kernel.runtime import _resolve_step_instructions
+
+    real_instructions = (
+        "Step 5: Implement the functionality for the UI components. "
+        "1. Install required dependencies. 2. Wire the screens together."
+    )
+    meta_lecture = (
+        "Because I reported them done in prose, not because the work was "
+        "confirmed in your project. That's a critical distinction.\n\n"
+        "1. Create the `src/screens` directory manually in your project.\n"
+        "2. Adjust the file path to use a single file under `src/`."
+    )
+    turns = [
+        {"role": "assistant", "content": real_instructions},
+        {"role": "user", "content": "why did you report them done?"},
+        {"role": "assistant", "content": meta_lecture},
+    ]
+
+    # Unnumbered resolution must skip the meta lecture despite its list shape.
+    resolved = _resolve_step_instructions(turns)
+    assert "Implement the functionality for the UI components" in resolved
+    assert "reported them done" not in resolved
+    # With ONLY the meta turn available, resolution honestly returns nothing.
+    assert _resolve_step_instructions([{"role": "assistant", "content": meta_lecture}]) == ""
+
+
 def test_step_resolution_window_reaches_past_repair_noise() -> None:
     """Live incident 2026-07-17 (route no_task): the real instructions sat 13+
     assistant turns back, behind a wall of synthetic and fabricated turns, and
