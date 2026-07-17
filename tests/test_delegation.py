@@ -210,7 +210,7 @@ def test_native_engine_dispatches_coding_agent_without_subprocess(tmp_path: Path
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -255,7 +255,7 @@ def test_native_capability_error_never_escalates_to_bridge(tmp_path: Path, monke
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def failing_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def failing_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": False,
             "status": "capability_error",
@@ -289,7 +289,7 @@ def test_native_unverified_claim_is_flagged_in_evidence(tmp_path: Path, monkeypa
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -330,7 +330,7 @@ def test_native_claim_backed_by_audited_step_is_not_flagged(tmp_path: Path, monk
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -477,7 +477,7 @@ def test_workspace_target_native_engine_passes_workspace(tmp_path: Path, monkeyp
 
     captured = {}
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         captured["workspace"] = workspace
         return {
             "ok": True,
@@ -555,7 +555,7 @@ def test_workspace_target_dispatch_refuses_bad_targets(tmp_path: Path, monkeypat
 # ---- directed runs: full auto on a founder command ------------------------------
 
 def _fake_native_ok(workspace_holder: dict):
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         workspace_holder["workspace"] = workspace
         return {
             "ok": True,
@@ -631,7 +631,7 @@ def test_directed_needs_decision_files_founder_question(tmp_path: Path, monkeypa
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": False,
             "status": "needs_decision",
@@ -685,7 +685,7 @@ def test_founder_decision_item_resolves_without_typed_phrase(tmp_path: Path, mon
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": False,
             "status": "needs_decision",

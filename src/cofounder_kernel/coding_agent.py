@@ -154,6 +154,7 @@ class CodingAgentService:
         context: str = "",
         max_rounds: int | None = None,
         model: str | None = None,
+        verify_always: bool = False,
     ) -> dict[str, Any]:
         """Run the coding loop. Returns a structured result; raises only on
         programmer error. Model/tool failures come back as status fields so the
@@ -307,7 +308,12 @@ class CodingAgentService:
         # LAST check's outcome, not the model's claim.
         auto_verification: dict[str, Any] | None = None
         verify_targets = real_change_targets() if state["status"] == "ok" else []
-        if state["status"] == "ok" and verify_targets:
+        # verify_always (set for delegated execution briefs): the Check leg
+        # tests the GOAL state, not just this run's delta — a no-change run in
+        # a workspace whose checks fail is NOT done (live incident item #71:
+        # a broken .tsx inherited from the previous run went unchecked because
+        # this run changed nothing).
+        if state["status"] == "ok" and (verify_targets or verify_always):
             auto_verification = self._run_verification(
                 tools, root, verify_targets, steps=steps, rounds=state["rounds"]
             )

@@ -441,7 +441,9 @@ class DelegationService:
     ) -> dict[str, Any]:
         """Delegated build via the native local coding agent (no subprocess)."""
         assert self.coding_agent is not None  # guarded by run_from_work_item
-        result = self.coding_agent.run(task=task, context=brief, workspace=workspace or None)
+        result = self.coding_agent.run(
+            task=task, context=brief, workspace=workspace or None, verify_always=True
+        )
         if str(result.get("status")) == "needs_decision":
             # The agent stopped on a genuine founder decision. That is a
             # successful outcome of the run — the pending work moves to a

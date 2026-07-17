@@ -2141,7 +2141,7 @@ def test_runtime_rerun_step_command_routes_and_executes(
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -2475,7 +2475,7 @@ def test_step_route_resolves_instructions_buried_beyond_prompt_window(
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         assert "Implement the functionality for the UI components" in task
         return {
             "ok": True,
@@ -2568,7 +2568,7 @@ def test_run_with_only_failed_edits_reports_not_done(
     project = tmp_path / "RealProject"
     project.mkdir()
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -2629,7 +2629,7 @@ def test_route_reports_real_disk_changes_from_workspace_diff(
     project = tmp_path / "RealProject"
     project.mkdir()
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -2693,7 +2693,7 @@ def test_command_only_changes_block_no_effect_status(
     project = tmp_path / "RealProject"
     project.mkdir()
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -2759,7 +2759,7 @@ def test_fabricated_body_dropped_on_executed_maintenance_route(
     project = tmp_path / "RealProject"
     project.mkdir()
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -5557,7 +5557,7 @@ def test_runtime_directed_build_executes_and_reports_real_outcome(
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -5620,7 +5620,7 @@ def test_runtime_directed_build_failed_check_reports_not_done(
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -5684,7 +5684,7 @@ def test_runtime_directed_build_without_any_check_reports_unverified(
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": True,
             "status": "ok",
@@ -5742,7 +5742,7 @@ def test_runtime_directed_build_surfaces_founder_decision(
 
     from cofounder_kernel.coding_agent import CodingAgentService
 
-    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
         return {
             "ok": False,
             "status": "needs_decision",

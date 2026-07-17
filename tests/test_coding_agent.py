@@ -485,6 +485,48 @@ def test_verification_plan_adds_tsc_for_typescript_workspaces(tmp_path: Path) ->
     assert unchecked == ["notes.txt"]
 
 
+def test_verify_always_checks_goal_state_on_no_change_runs(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    """Live incident item #71: a no-change run in a workspace broken by the
+    PREVIOUS run reported 'executed / no files changed' and never ran a check.
+    Delegated execution briefs (verify_always) test the GOAL state: inherited
+    breakage fails the check, feeds the repair prompt, and reports honestly."""
+    script = [
+        {"content": "The step is already implemented; nothing to change."},
+        # Repair round (after KERNEL CHECK FAILED) — model still does nothing.
+    ]
+    svc, ollama = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="carry out step 5", verify_always=True)
+
+    verification = result["auto_verification"]
+    assert verification is not None
+    assert verification["ok"] is False  # fixture repo's test suite fails as shipped
+    assert result["changed_files"] == []
+    verify_steps = [s for s in result["steps"] if s.get("auto_verify")]
+    assert verify_steps and verify_steps[0]["ok"] is False
+    repair_calls = [
+        c for c in ollama.calls
+        if any("KERNEL CHECK FAILED" in str(m.get("content", "")) for m in c["messages"])
+    ]
+    assert repair_calls, "inherited breakage must reach the model for repair"
+
+
+def test_no_verify_always_keeps_review_runs_check_free(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    """Direct (non-delegated) runs keep the old semantics: no changes, no
+    checks — a review-only run must not trigger repair theater."""
+    script = [
+        {"tool_calls": [_call("read_file", path="calc.py")]},
+        {"content": "Reviewed the code; nothing to change."},
+    ]
+    svc, _ = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="review calc.py")
+    assert result["auto_verification"] is None
+    assert not any(s.get("auto_verify") for s in result["steps"])
+
+
 def test_workspace_diff_catches_command_created_files(tmp_path: Path) -> None:
     """Live gap: npm installs and python one-liners mutate the workspace
     invisibly to write-tool tracking ("Changed 1 file(s)" undercounts). The
