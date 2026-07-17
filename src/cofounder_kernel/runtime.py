@@ -1473,6 +1473,21 @@ The founder's current message is supplied separately as the user-role message. D
             notes.append(
                 "Replaced a challenged execution/completion claim with an evidence-boundary answer."
             )
+        if (
+            not (chat_action_route or research_route or build_route)
+            and _is_unrouted_execution_command(message)
+            and _FABRICATED_COMPLETION_CLAIM_RE.search(text or "")
+        ):
+            # The founder commanded execution, nothing routed, and the model
+            # still narrated a finished job. A chat reply cannot execute — a
+            # real run always arrives with a route block. Replace the
+            # fabrication with the honest state and the exact routable phrase.
+            text = _unrouted_execution_fabrication_fallback(message)
+            applied_rules.append("unrouted_execution_fabrication_repaired")
+            notes.append(
+                "Replaced a fabricated completion claim on an execution command that "
+                "did not route; nothing was executed this turn."
+            )
         if _is_ambiguous_action_followup(message) and not (
             chat_action_route or research_route or build_route
         ):
@@ -2385,6 +2400,42 @@ _EXECUTION_CLAIM_CHALLENGE_RE = re.compile(
 _COMPLETION_CLAIM_RE = re.compile(
     r"(?i)\b(?:complete(?:d)?|done|execut(?:ed|ion)|implement(?:ed|ation)?|created|changed|fixed|built)\b"
 )
+
+# An execution command that did NOT route (live incident: "Re-run Step 5 in
+# the actual project at <path>" before re-run joined the step verbs) must never
+# come back as a narrated success. A real run always arrives with a route
+# block; first-person this-turn completion claims without one are fabrication.
+_UNROUTED_EXEC_COMMAND_RE = re.compile(
+    r"""(?ix)^\s*(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?
+    (?:re-?run|redo|retry|perform|complete|execute|carry\s+out|handle|
+       implement|build|fix|write|finish|run|do)\b
+    """
+)
+_FABRICATED_COMPLETION_CLAIM_RE = re.compile(
+    r"""(?ix)
+    \bi\s+have\s+(?:confirmed|re-?run|created|implemented|installed|updated|completed|executed|verified)\b
+    | \b(?:has|have)\s+been\s+(?:completed|created|implemented|installed|updated|executed|verified)\b
+    | \bfollowing\s+has\s+been\s+completed\b
+    """
+)
+
+
+def _is_unrouted_execution_command(message: str) -> bool:
+    stripped = _POLITENESS_PREFIX_RE.sub("", (message or "").strip(), count=1).strip()
+    if not _UNROUTED_EXEC_COMMAND_RE.match(stripped):
+        return False
+    return bool(_STEP_REF_WORD_RE.search(stripped) or _STEP_REF_NUM_RE.search(stripped))
+
+
+def _unrouted_execution_fabrication_fallback(message: str) -> str:
+    step = _STEP_REF_NUM_RE.search(message or "")
+    routable = f"perform step {step.group(1)}" if step else "perform step N (or name the build/fix directly)"
+    return (
+        "Nothing executed this turn. That command didn't route into a delegated run — "
+        "no files changed, nothing installed, and no check ran, so disregard any completion "
+        f"language in prose. Say `{routable}` and the kernel routes it through the coding "
+        "agent immediately, with the real outcome appended to the reply."
+    )
 _FILE_REFERENCE_RE = re.compile(
     r"`?([A-Za-z0-9][A-Za-z0-9_.\\/-]*\.[A-Za-z0-9][A-Za-z0-9_.-]{0,12})`?"
 )
@@ -2756,6 +2807,7 @@ _WORK_START_CLAIM_PATTERNS = tuple(
         r"\bi\s+(?:have|'ve)\s+(?:started|begun)\s+(?:the|a|an|this|that)\b",
         r"\bi\s+am\s+(?:now\s+)?(?:monitoring|running|executing|processing)\b",
         r"\bi\s+(?:will|'ll)\s+get\s+to\s+work\b",
+        r"\bi\s+(?:will|'ll)\s+(?:re-?run|redo|retry)\b",
     )
 )
 
@@ -3381,7 +3433,7 @@ def _extract_project_target(turns: list[Any], *, current_message: str = "") -> s
 _STEP_EXEC_VERB_RE = re.compile(
     r"""(?ix)^\s*(?:
         perform | do | complete | execute | carry\s+out | handle |
-        implement | write | finish | run
+        implement | write | finish | run | re-?run | redo | retry
     )\b"""
 )
 _STEP_REF_WORD_RE = re.compile(r"(?i)\b(?:steps?|tasks?|phases?)\b")

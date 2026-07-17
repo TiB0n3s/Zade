@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `ae6b50b` 2026-07-17 - Step referents ignore synthetic replies; workspace mechanics never ask the founder
 - `404c889` 2026-07-17 - Delegated runs enforce Goal -> Act -> Check -> Repeat; no more false completions
 - `2377f24` 2026-07-16 - Founder decisions answer with a click; capability limits never ask the founder
 - `aee0158` 2026-07-16 - Cutover Gate B: fresh-task confirmation passes end-to-end
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `e131e20` 2026-07-16 - Update Zade autonomous execution policy
 - `465a5e8` 2026-07-16 - Delegated artifacts cannot carry unexecuted verification claims
 - `d80dc8f` 2026-07-16 - Routed replies drop contradictory "I cannot execute" bodies
-- `ba0255f` 2026-07-16 - Step-execution route: "perform the tasks in step 5" / "do it" now executes
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -2111,6 +2111,135 @@ def test_step_resolution_skips_runtime_generated_replies() -> None:
     assert "Ran the step run" not in resolved
 
 
+def test_step_route_matches_rerun_verb() -> None:
+    """Live incident 2026-07-17 (runtime event 327): 'Re-run Step 5** in the
+    actual project at `C:\\BookCatalogingApp\\TheDarkIndex`' did not route (no
+    re-run verb), fell through to plain chat, and the model fabricated a full
+    completion report. The verb must route."""
+    from cofounder_kernel.runtime import _extract_step_execution
+
+    assert _extract_step_execution(
+        "Re-run Step 5** in the actual project at `C:\\BookCatalogingApp\\TheDarkIndex`"
+    ) == (5, False)
+    assert _extract_step_execution("Redo step 2") == (2, False)
+    assert _extract_step_execution("Retry the step 3 tasks") == (3, False)
+
+
+def test_runtime_rerun_step_command_routes_and_executes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """End to end: 'Re-run Step 5' now dispatches a real delegated run and the
+    reply reports the actual outcome, not model prose."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 2,
+            "used_tools": True,
+            "steps": [{"tool": "write_file", "arguments": {"path": "src/screens/BarcodeScannerScreen.js"}, "ok": True}],
+            "changed_files": ["src/screens/BarcodeScannerScreen.js"],
+            "auto_verification": {
+                "mode": "none",
+                "ok": None,
+                "checks": [],
+                "unchecked_files": ["src/screens/BarcodeScannerScreen.js"],
+                "argv": None,
+                "returncode": None,
+                "repair_rounds": 0,
+            },
+            "response": "Implemented the scanner screen.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation = client.post("/conversations", json={"title": "Library app"})
+    conversation_id = conversation.json()["conversation"]["id"]
+    client.app.state.conversations.record_assistant_turn(
+        conversation_id,
+        content=(
+            "Step 5: Implement the functionality for the UI components. Wire the "
+            "BarcodeScannerScreen into navigation."
+        ),
+        task_type="coding",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Re-run Step 5 from our conversation",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"] is not None
+    assert payload["build"]["kind"] == "step"
+    assert payload["build"]["status"] == "executed"
+    assert "Ran the step run" in payload["response"]
+
+
+def test_runtime_replaces_fabricated_completion_on_unrouted_execution_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Defense in depth for the next verb gap: an execution-shaped command that
+    does NOT route (here blocked by a terminal paste) must never come back as a
+    narrated success — the deterministic honest reply replaces the fabrication."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    fabrication = (
+        "I have confirmed the project path and re-run Step 5 in your project. "
+        "The following has been completed:\n\n- Files created and implemented.\n"
+        "- Dependencies installed — react-native-camera has been installed and verified."
+    )
+
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=fabrication, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, fabricating_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                "Complete step 5 now\n"
+                "PS C:\\BookCatalogingApp> npm audit\n"
+                "found 0 vulnerabilities"
+            ),
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"] is None
+    assert "Nothing executed this turn" in payload["response"]
+    assert "perform step 5" in payload["response"]
+    assert "has been completed" not in payload["response"]
+    assert "unrouted_execution_fabrication_repaired" in payload["governor"]["applied_rules"]
+
+
 def test_runtime_claim_challenge_without_step_context_does_not_invent_step_5(
     tmp_path: Path, monkeypatch
 ) -> None:
