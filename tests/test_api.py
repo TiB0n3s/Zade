@@ -1481,8 +1481,11 @@ def test_runtime_prompt_includes_code_model_prompt_only_for_coding_tasks(
     authority = runtime.authority.evaluate(
         AuthorityRequest(action="runtime.respond", permission_tier="L0_READ", target="local_runtime", metadata={})
     )
+    # The keyword router now correctly infers coding for engineering messages
+    # ("Refactor the parser." routes build), so the general side must use a
+    # genuinely general message.
     general_context = runtime.context(
-        message="Refactor the parser.",
+        message="Summarize the notes from this morning's meeting.",
         task_type="general",
         use_memory=False,
         use_semantic_memory=False,
@@ -1497,7 +1500,10 @@ def test_runtime_prompt_includes_code_model_prompt_only_for_coding_tasks(
     )
 
     general_prompt = runtime._build_governed_prompt(
-        message="Refactor the parser.", context=general_context, authority=authority, conversation_block=""
+        message="Summarize the notes from this morning's meeting.",
+        context=general_context,
+        authority=authority,
+        conversation_block="",
     )
     coding_prompt = runtime._build_governed_prompt(
         message="Refactor the parser.", context=coding_context, authority=authority, conversation_block=""

@@ -20,6 +20,7 @@ from .ingestion import IngestionService
 from .investigation import InvestigationService
 from .ollama import OllamaClient
 from .prompts import DEFAULT_PROFILE_ID, ModelMessage, PromptProfileRegistry, PromptRuntimeBindings
+from .routing import RouteDecision, route_message
 from .self_knowledge.prompt import prompt_self_knowledge_mode, render_prompt_self_knowledge
 from .skills import SkillService
 from .trading_bot import TradingBotBridge
@@ -109,38 +110,27 @@ App and SaaS build requests:
 - If this local kernel cannot edit files or invoke an external builder for the requested artifact, say that exact limitation and provide the next concrete artifact Zade can produce in-chat."""
 
 
-_SOFTWARE_BUILD_ACTION_RE = re.compile(
-    r"\b(build(?:\s+out)?|create|develop|implement|code|ship|make|design)\b",
-    re.IGNORECASE,
-)
-_SOFTWARE_BUILD_SUBJECT_RE = re.compile(
-    r"\b("
-    r"mobile\s+app|web\s+app|phone\s+app|ios|android|iphone|app\s+store|apple\s+store|google\s+play|"
-    r"application|app|software|frontend|backend|api|react\s+native|expo|flutter|"
-    r"saas\s+(?:app|application|product|platform|tool|software)"
-    r")\b",
-    re.IGNORECASE,
-)
-
-
 def _infer_runtime_defaults(
     *,
     message: str,
     task_type: ModelRole,
     profile: str | None,
-) -> tuple[ModelRole, str | None]:
-    if not _looks_like_software_build_request(message):
-        return task_type, profile
-    inferred_task_type = "coding" if task_type == "general" else task_type
-    inferred_profile = profile or "build"
-    return inferred_task_type, inferred_profile
+) -> tuple[ModelRole, str | None, RouteDecision]:
+    """Run the lexical keyword router (routing.py) over the inference text.
 
-
-def _looks_like_software_build_request(message: str) -> bool:
-    text = re.sub(r"\s+", " ", (message or "").strip())
-    if not text:
-        return False
-    return bool(_SOFTWARE_BUILD_ACTION_RE.search(text) and _SOFTWARE_BUILD_SUBJECT_RE.search(text))
+    An explicitly requested profile always wins; otherwise a confident route
+    fills the profile slot (same precedence the old build-only inference had).
+    Build routes also pull the coding task type. The decision is returned for
+    the runtime event log regardless."""
+    decision = route_message(message)
+    if profile:
+        return task_type, profile, decision
+    inferred = decision.inferred_profile
+    if inferred == "build":
+        return ("coding" if task_type == "general" else task_type), "build", decision
+    if inferred:
+        return task_type, inferred, decision
+    return task_type, profile, decision
 
 
 def _code_model_prompt_block(context: dict[str, Any]) -> str:
@@ -316,7 +306,7 @@ class RuntimeService:
         conversation_id: int | None = None,
     ) -> dict[str, Any]:
         if profile_id is None:
-            task_type, profile = _infer_runtime_defaults(
+            task_type, profile, _route_decision = _infer_runtime_defaults(
                 message=self._runtime_mode_inference_text(message=message, conversation_id=conversation_id),
                 task_type=task_type,
                 profile=profile,
@@ -488,7 +478,7 @@ class RuntimeService:
         contrarian: bool | None = None,
         use_tools: bool | None = None,
     ) -> dict[str, Any]:
-        task_type, profile = _infer_runtime_defaults(
+        task_type, profile, route_decision = _infer_runtime_defaults(
             message=self._runtime_mode_inference_text(message=message, conversation_id=conversation_id),
             task_type=task_type,
             profile=profile,
@@ -711,6 +701,7 @@ class RuntimeService:
                 "chat_action_route": _chat_action_route_summary(chat_action_route),
                 "research_route": _research_route_summary(research_route),
                 "build_route": _build_route_summary(build_route),
+                "profile_route": route_decision.summary(),
                 "prompt_profile": context.get("prompt_profile"),
                 "investigation": investigation_summary,
             },
