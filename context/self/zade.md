@@ -128,6 +128,8 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `c6fe6ce` 2026-07-16 - Materialize the DT->Zade cutover checklist; add delegated-work integrity gate
+- `f01f7d6` 2026-07-16 - Remove stray pytest output scratch files
 - `82e341a` 2026-07-16 - Directed founder commands execute at full auto; agent queues only real decisions
 - `e131e20` 2026-07-16 - Update Zade autonomous execution policy
 - `465a5e8` 2026-07-16 - Delegated artifacts cannot carry unexecuted verification claims
@@ -138,8 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `9115fc8` 2026-07-16 - Use full claude.exe path for delegation agent
 - `5aa7eec` 2026-07-16 - Route founder build commands into gated delegation work
 - `98c6a44` 2026-07-16 - v1 - skills
-- `c7268aa` 2026-07-16 - Add investigation tool loop: Zade now runs real reads instead of narrating them
-- `2062f37` 2026-07-16 - Merge fix/zade-live-trading-data: live trade/PnL data + repo change evidence together
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
