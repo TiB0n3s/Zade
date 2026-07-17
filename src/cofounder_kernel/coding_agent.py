@@ -132,12 +132,16 @@ class CodingAgentService:
         db: KernelDatabase,
         ollama: OllamaClient,
         inventory: ModelInventoryService | None = None,
+        notifier: Any | None = None,
     ):
         self.config = config
         self.db = db
         self.ollama = ollama
         self.inventory = inventory or ModelInventoryService(config=config, ollama=ollama)
         self.prompt_profiles = PromptProfileRegistry()
+        # Optional NotificationBus: send_progress raises native toasts so the
+        # founder sees milestones during long runs without the run ending.
+        self.notifier = notifier
 
     # ---- public ------------------------------------------------------------
     def available(self) -> bool:
@@ -177,7 +181,10 @@ class CodingAgentService:
                 "response": "",
             }
         question_box: dict[str, Any] = {}
-        tools = self._build_tools(root, question_box=question_box)
+        progress_notes: list[str] = []
+        tools = self._build_tools(
+            root, question_box=question_box, progress_notes=progress_notes
+        )
         schemas = _tool_schemas(tools)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_message(root, tools)},
@@ -358,6 +365,30 @@ class CodingAgentService:
             if final_snapshot is not None:
                 workspace_changes = _diff_snapshots(before_snapshot, final_snapshot)
 
+        # Fresh-context verifier (advisory): a separate model call with NO
+        # memory of how the work was produced judges the changed files against
+        # the task. Fresh-context review outperforms self-critique; it never
+        # flips run status — mechanical checks are the ground truth — but its
+        # verdict rides the artifact and the route flags a FAIL.
+        verifier_review: dict[str, Any] | None = None
+        if state["status"] == "ok":
+            review_targets = sorted(
+                set(changed_files)
+                | set((workspace_changes or {}).get("added") or [])
+                | set((workspace_changes or {}).get("modified") or [])
+            )
+            if review_targets:
+                verifier_review = self._fresh_context_verifier(
+                    task=task, root=root, targets=review_targets, model=selected_model
+                )
+                if verifier_review is not None:
+                    state["final_text"] = (
+                        str(state["final_text"]).strip()
+                        + "\n\n--- Fresh-context verifier (advisory; fresh eyes, not the builder) ---\n"
+                        + f"VERDICT: {verifier_review['verdict'].upper()}\n"
+                        + str(verifier_review.get("notes") or "")
+                    ).strip()
+
         status = state["status"]
         rounds = state["rounds"]
         used_tools = state["used_tools"]
@@ -385,6 +416,8 @@ class CodingAgentService:
             "changed_files": sorted(changed_files),
             "workspace_changes": workspace_changes,
             "auto_verification": auto_verification,
+            "verifier_review": verifier_review,
+            "progress_notes": progress_notes,
             "response": final_text.strip(),
         }
         # Redacted per-run telemetry: role, provider, model, endpoint, outcome —
@@ -411,6 +444,60 @@ class CodingAgentService:
         except Exception:  # noqa: BLE001 - telemetry must not break the run
             pass
         return result
+
+    # ---- fresh-context verifier -------------------------------------------------
+    def _fresh_context_verifier(
+        self, *, task: str, root: Path, targets: list[str], model: str
+    ) -> dict[str, Any] | None:
+        """One fresh-context model call reviewing the changed files against the
+        task. Returns {"verdict": "pass"|"fail", "notes": ...} or None (no
+        reviewable files, unparseable verdict, or model error). Advisory only."""
+        excerpts: list[str] = []
+        for rel in targets[:6]:
+            path = root / rel
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            excerpts.append(f"--- {rel} ---\n{text[:4000]}")
+        if not excerpts:
+            return None
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a fresh-eyes verifier with no memory of how this work was "
+                    "produced. Judge ONLY what is in front of you against the task. "
+                    "First line: exactly 'VERDICT: PASS' or 'VERDICT: FAIL'. Then at "
+                    "most five short bullets naming concrete issues (file + problem). "
+                    "No praise, no restating the task, no suggestions beyond defects."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Task:\n{task[:1200]}\n\nChanged files:\n" + "\n\n".join(excerpts),
+            },
+        ]
+        try:
+            generated = self.ollama.chat(
+                messages=messages,
+                model=model,
+                think=self.config.ollama.think_for_role("coding"),
+                temperature=0.1,
+                num_predict=700,
+            )
+        except OllamaError:
+            return None
+        text = (generated.response or "").strip()
+        if re.search(r"(?im)^\s*verdict:\s*fail\b", text):
+            verdict = "fail"
+        elif re.search(r"(?im)^\s*verdict:\s*pass\b", text):
+            verdict = "pass"
+        else:
+            return None
+        return {"verdict": verdict, "notes": text[:1500]}
 
     # ---- auto-verification ------------------------------------------------------
     def _verification_argv(self, root: Path) -> list[str] | None:
@@ -665,12 +752,41 @@ class CodingAgentService:
 
     # ---- tools -----------------------------------------------------------------
     def _build_tools(
-        self, root: Path, *, question_box: dict[str, Any] | None = None
+        self,
+        root: Path,
+        *,
+        question_box: dict[str, Any] | None = None,
+        progress_notes: list[str] | None = None,
     ) -> dict[str, AgentTool]:
         tools: dict[str, AgentTool] = {}
 
         def add(tool: AgentTool) -> None:
             tools[tool.name] = tool
+
+        if progress_notes is not None:
+            add(
+                AgentTool(
+                    name="send_progress",
+                    description=(
+                        "Send one short progress line to the founder while you keep working "
+                        "(it raises a native notification immediately and does NOT end the "
+                        "run). Use at real milestones — a file finished, checks starting, a "
+                        "blocker routed around. Statements only, never questions; questions "
+                        "go through ask_founder."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "description": "One short progress statement (max ~200 chars).",
+                            }
+                        },
+                        "required": ["message"],
+                    },
+                    handler=lambda args: self._tool_send_progress(progress_notes, args),
+                )
+            )
 
         if question_box is not None:
             add(
@@ -855,6 +971,38 @@ class CodingAgentService:
             pass
 
     # ---- tool implementations ---------------------------------------------------
+    def _tool_send_progress(
+        self, progress_notes: list[str], args: dict[str, Any]
+    ) -> dict[str, Any]:
+        message = str(args.get("message") or "").strip()
+        if not message:
+            return {"ok": False, "error": "message is required"}
+        if message.rstrip().endswith("?"):
+            return {
+                "ok": False,
+                "error": (
+                    "send_progress carries statements, not questions. If you genuinely "
+                    "need the founder's input, use ask_founder; otherwise resolve it "
+                    "yourself and report what you did."
+                ),
+            }
+        message = message[:300]
+        progress_notes.append(message)
+        if self.notifier is not None:
+            try:
+                self.notifier.notify(
+                    topic="delegation.progress",
+                    title="Zade build progress",
+                    body=message,
+                    severity="info",
+                )
+            except Exception:  # noqa: BLE001 - progress delivery must not break the run
+                pass
+        return {
+            "ok": True,
+            "note": "Delivered to the founder. Keep working — this does not end the run.",
+        }
+
     def _tool_ask_founder(self, question_box: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
         question = str(args.get("question") or "").strip()
         if not question:

@@ -262,7 +262,9 @@ def create_app(config: KernelConfig | None = None) -> FastAPI:
     # Local model inventory + native coding agent: the default delegated-build
     # engine. Everything model-shaped runs on the loopback Ollama client above.
     inventory = ModelInventoryService(config=cfg, ollama=ollama)
-    coding_agent = CodingAgentService(config=cfg, db=db, ollama=ollama, inventory=inventory)
+    coding_agent = CodingAgentService(
+        config=cfg, db=db, ollama=ollama, inventory=inventory, notifier=bus
+    )
     delegation = DelegationService(
         config=cfg,
         db=db,

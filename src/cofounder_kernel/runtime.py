@@ -1969,6 +1969,11 @@ The founder's current message is supplied separately as the user-role message. D
                 "workspace_changes": workspace_changes,
                 "unverified_claims": dispatch.get("unverified_claims", []),
                 "auto_verification": verification,
+                "verifier_review": (
+                    dispatch.get("verifier_review")
+                    if isinstance(dispatch.get("verifier_review"), dict)
+                    else None
+                ),
                 "evidence_id": dispatch.get("evidence_id"),
                 "error": dispatch.get("error", ""),
             }
@@ -4025,6 +4030,12 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
             )
         else:
             verify_line = ""
+        verifier = dispatch.get("verifier_review")
+        if isinstance(verifier, dict) and verifier.get("verdict") == "fail":
+            verify_line += (
+                " A fresh-context verifier reviewed the changed files and FLAGGED concerns "
+                f"— its notes are on item #{item_id}."
+            )
         return (
             f"Ran the {noun} - {task}.{target_line} Executed just now by my local coding agent "
             f"({dispatch.get('model') or 'local model'}).{changed_line}{verify_line}{evidence_line}"

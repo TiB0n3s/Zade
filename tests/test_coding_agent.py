@@ -444,6 +444,81 @@ def test_uncheckable_changed_files_are_reported_unverified(tmp_path: Path) -> No
     assert "UNVERIFIED" in result["response"]
 
 
+class _CapturingNotifier:
+    def __init__(self):
+        self.sent: list[dict[str, str]] = []
+
+    def notify(self, *, topic: str, title: str, body: str = "", severity: str = "info"):
+        self.sent.append({"topic": topic, "title": title, "body": body, "severity": severity})
+        return {"id": len(self.sent)}
+
+
+def test_send_progress_reaches_founder_and_run_continues(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    """The send-to-user tool: one short line raises a native notification mid-
+    run and the run keeps going — it never ends the turn."""
+    script = [
+        {"tool_calls": [_call("send_progress", message="Finished the data layer; starting checks.")]},
+        {"content": "Done."},
+    ]
+    cfg = _config(tmp_path, fixture_repo)
+    notifier = _CapturingNotifier()
+    ollama = ScriptedOllama(cfg.ollama, script)
+    svc = CodingAgentService(
+        config=cfg, db=_db(tmp_path), ollama=ollama, inventory=_StubInventory(), notifier=notifier
+    )
+    result = svc.run(task="build the thing")
+
+    assert result["status"] == "ok"  # the run continued and finished
+    assert result["progress_notes"] == ["Finished the data layer; starting checks."]
+    assert notifier.sent and notifier.sent[0]["topic"] == "delegation.progress"
+    assert "Finished the data layer" in notifier.sent[0]["body"]
+
+
+def test_send_progress_rejects_questions(tmp_path: Path, fixture_repo: Path) -> None:
+    script = [
+        {"tool_calls": [_call("send_progress", message="Should I use SQLite here?")]},
+        {"content": "Proceeding with the safest option."},
+    ]
+    svc, ollama = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="build the thing")
+    assert result["progress_notes"] == []
+    bounce = next(
+        m for m in ollama.calls[1]["messages"]
+        if m.get("role") == "tool" and "statements, not questions" in str(m.get("content", ""))
+    )
+    assert "ask_founder" in str(bounce["content"])
+
+
+def test_fresh_context_verifier_reviews_changed_files(tmp_path: Path) -> None:
+    """A separate fresh-context model call reviews the changed files against
+    the task. Advisory: a FAIL rides the artifact but never flips run status —
+    mechanical checks stay the ground truth."""
+    ws = tmp_path / "bare-ws"
+    ws.mkdir(parents=True)
+    script = [
+        {"tool_calls": [_call("write_file", path="app.py", content="def ok():\n    return 1\n")]},
+        {"content": "Wrote app.py."},
+        # Next chat call is the fresh-context verifier (mechanical syntax
+        # check runs through subprocess, not chat).
+        {"content": "VERDICT: FAIL\n- app.py: does not implement the requested screen"},
+    ]
+    svc, ollama = _service(tmp_path, ws, script)
+    result = svc.run(task="implement the screen module")
+
+    assert result["ok"] is True  # advisory: status not flipped
+    review = result["verifier_review"]
+    assert review is not None and review["verdict"] == "fail"
+    assert "Fresh-context verifier" in result["response"]
+    assert "VERDICT: FAIL" in result["response"]
+    # The verifier call carried a FRESH context: no build conversation in it.
+    verifier_call = ollama.calls[-1]
+    roles = [m.get("role") for m in verifier_call["messages"]]
+    assert roles == ["system", "user"]
+    assert "fresh-eyes verifier" in str(verifier_call["messages"][0].get("content", ""))
+
+
 def test_verification_plan_adds_tsc_for_typescript_workspaces(tmp_path: Path) -> None:
     """Live incident item #70: a type-broken .tsx shipped under 'verification
     passed' because jest never imported it. TypeScript workspaces get tsc as a

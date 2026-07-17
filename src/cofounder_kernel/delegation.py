@@ -542,6 +542,8 @@ class DelegationService:
             "workspace_changes": workspace_changes,
             "unverified_claims": unverified_claims,
             "auto_verification": auto_verification,
+            "verifier_review": result.get("verifier_review"),
+            "progress_notes": result.get("progress_notes", []),
             "artifact": artifact,
             "evidence_id": evidence_id,
             "error": error or str(result.get("error") or ""),
