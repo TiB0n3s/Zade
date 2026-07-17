@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `1ee2563` 2026-07-17 - A routeless reply can never claim execution; model fabrications never become briefs
 - `59fd7b7` 2026-07-17 - Scored keyword router: profile, skill hints, and workflow flags before prompt assembly
 - `3f5a9d9` 2026-07-17 - "Re-run step N" routes; an unrouted execution command can never claim success
 - `ae6b50b` 2026-07-17 - Step referents ignore synthetic replies; workspace mechanics never ask the founder
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `cb8c040` 2026-07-16 - Materialize the DT->Zade cutover checklist; add delegated-work integrity gate
 - `f01f7d6` 2026-07-16 - Remove stray pytest output scratch files
 - `82e341a` 2026-07-16 - Directed founder commands execute at full auto; agent queues only real decisions
-- `e131e20` 2026-07-16 - Update Zade autonomous execution policy
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -1464,8 +1464,11 @@ The founder's current message is supplied separately as the user-role message. D
             notes.append(
                 "Replaced a challenged execution/completion claim with an evidence-boundary answer."
             )
+        build_route_executing = bool(build_route) and str(
+            (build_route or {}).get("status") or ""
+        ) in {"executed", "verify_failed", "needs_decision", "run_failed", "queued"}
         if (
-            not (chat_action_route or research_route or build_route)
+            not (chat_action_route or research_route or build_route_executing)
             and _is_fabricated_execution_reply(message=message, response=text or "")
         ):
             # No route fired this turn, and the drafted reply still narrated a
@@ -2409,13 +2412,29 @@ _FABRICATED_COMPLETION_CLAIM_RE = re.compile(
     | \bfollowing\s+has\s+been\s+completed\b
     """
 )
+# Bullet-fragment completion claims ("- Dependencies installed:", "- Project
+# initialized with:") — live incident: a fabricated re-narration used ONLY this
+# shape and slipped the auxiliary-verb patterns above.
+_BULLET_COMPLETION_CLAIM_RE = re.compile(
+    r"(?im)^\s*[-•]\s*[^\n]{0,80}?\b(?:installed|initialized|implemented|confirmed|verified|updated|created)\b"
+)
+
+
+def _normalize_reply_for_patterns(text: str) -> str:
+    """Markdown emphasis and contractions defeat literal patterns ("I will
+    **re-run**", "I'm re-running") — strip emphasis and expand I'm before any
+    promise/claim matching."""
+    plain = re.sub(r"[*_`]+", "", text or "").replace("’", "'")
+    return re.sub(r"(?i)\bi'm\b", "i am", plain)
+
+
 # Execution-context nouns that turn a completion claim into an execution claim
 # (files, installs, directories, steps) — a reply "I have completed the summary"
 # is chat work; "I have completed step 5, files created, dependencies installed"
 # with no route this turn is fabrication.
 _EXECUTION_CONTEXT_RE = re.compile(
     r"""(?ix)
-    \bstep\s*#?\s*\d+\b | \bdependenc\w+\b | \binstall\w*\b | \bdirector(?:y|ies)\b |
+    \bstep\s*\#?\s*\d+\b | \bdependenc\w+\b | \binstall\w*\b | \bdirector(?:y|ies)\b |
     \bnpm\b | \brepo(?:sitory)?\b |
     [\w/-]+\.(?:js|jsx|ts|tsx|py|json|md|css|html|toml|yml|yaml)\b
     """
@@ -2437,9 +2456,13 @@ def _is_fabricated_execution_reply(*, message: str, response: str) -> bool:
     in a routeless reply are fabrication — regardless of whether the founder's
     message was itself a command (live incident: 'I already gave you the
     project path' drew a full fabricated completion report)."""
-    if not _FABRICATED_COMPLETION_CLAIM_RE.search(response or ""):
+    plain = _normalize_reply_for_patterns(response)
+    if not (
+        _FABRICATED_COMPLETION_CLAIM_RE.search(plain)
+        or _BULLET_COMPLETION_CLAIM_RE.search(plain)
+    ):
         return False
-    if _EXECUTION_CONTEXT_RE.search(response or ""):
+    if _EXECUTION_CONTEXT_RE.search(plain):
         return True
     return _is_unrouted_execution_command(message)
 
@@ -2826,12 +2849,13 @@ _WORK_START_CLAIM_PATTERNS = tuple(
         r"\bi\s+am\s+(?:now\s+)?(?:monitoring|running|executing|processing)\b",
         r"\bi\s+(?:will|'ll)\s+get\s+to\s+work\b",
         r"\bi\s+(?:will|'ll)\s+(?:re-?run|redo|retry)\b",
+        r"\bi\s+am\s+(?:now\s+)?re-?running\b",
     )
 )
 
 
 def _claims_background_work_start(text: str) -> bool:
-    normalized = text.replace("’", "'")
+    normalized = _normalize_reply_for_patterns(text)
     return any(pattern.search(normalized) for pattern in _WORK_START_CLAIM_PATTERNS)
 
 
@@ -3481,12 +3505,23 @@ def _extract_step_execution(message: str) -> tuple[int | None, bool] | None:
         return None
     if _STEP_PURE_ANAPHORA_RE.match(stripped):
         return None, True
-    if not _STEP_EXEC_VERB_RE.match(stripped):
-        return None
-    if not _STEP_REF_WORD_RE.search(stripped):
-        return None
-    match = _STEP_REF_NUM_RE.search(stripped)
-    return (int(match.group(1)) if match else None), False
+    if _STEP_EXEC_VERB_RE.match(stripped) and _STEP_REF_WORD_RE.search(stripped):
+        match = _STEP_REF_NUM_RE.search(stripped)
+        return (int(match.group(1)) if match else None), False
+    # A command verb buried behind a lead-in clause still commands (live
+    # incidents: "Let's try this again, re-run all tasks for Steps 1 - 5" and
+    # "You already have the project path, you have the steps, complete all
+    # tasks associated with steps 1 - 5" both went unrouted). Scan clauses;
+    # verb and step reference must sit in the SAME clause so "the steps are
+    # done, complete honesty matters" can never route.
+    for clause in re.split(r"[,;.!?]+", stripped):
+        clause = _POLITENESS_PREFIX_RE.sub("", clause.strip(), count=1).strip()
+        if not clause:
+            continue
+        if _STEP_EXEC_VERB_RE.match(clause) and _STEP_REF_WORD_RE.search(clause):
+            match = _STEP_REF_NUM_RE.search(clause) or _STEP_REF_NUM_RE.search(stripped)
+            return (int(match.group(1)) if match else None), False
+    return None
 
 
 _SYNTHETIC_REPLY_MARKERS_RE = re.compile(
@@ -3523,7 +3558,10 @@ def _resolve_step_instructions(
     ]
     if latest_only:
         assistant_turns = assistant_turns[-1:]
-    for content in reversed(assistant_turns[-12:]):
+    # 24-turn window: threads under repair accumulate synthetic and fabricated
+    # turns fast, and a 12-turn window starved a live run of the real
+    # instructions (route no_task) while poison sat closer to the surface.
+    for content in reversed(assistant_turns[-24:]):
         if not content.strip():
             continue
         if step_number is not None:
@@ -3531,7 +3569,9 @@ def _resolve_step_instructions(
             if not anchor:
                 continue
             candidate = content[anchor.start() : anchor.start() + 1500]
-            if _FABRICATED_COMPLETION_CLAIM_RE.search(candidate):
+            if _FABRICATED_COMPLETION_CLAIM_RE.search(
+                _normalize_reply_for_patterns(candidate)
+            ) or _BULLET_COMPLETION_CLAIM_RE.search(_normalize_reply_for_patterns(candidate)):
                 # A completion NARRATIVE mentioning the step ("Step 5 ... has
                 # been completed") is not instructions — resolving it into a
                 # brief poisoned two live runs. Keep looking further back.
@@ -3539,7 +3579,9 @@ def _resolve_step_instructions(
             return candidate
         if _STEP_STRUCTURE_RE.search(content) or "```" in content:
             candidate = content[:1500]
-            if _FABRICATED_COMPLETION_CLAIM_RE.search(candidate):
+            if _FABRICATED_COMPLETION_CLAIM_RE.search(
+                _normalize_reply_for_patterns(candidate)
+            ) or _BULLET_COMPLETION_CLAIM_RE.search(_normalize_reply_for_patterns(candidate)):
                 continue
             return candidate
     return ""

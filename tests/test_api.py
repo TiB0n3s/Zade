@@ -2368,6 +2368,121 @@ def test_project_target_survives_backticked_paths(tmp_path: Path) -> None:
     assert resolved == str(project.resolve())
 
 
+def test_step_commands_route_behind_leading_clauses() -> None:
+    """Live incidents 2026-07-17 (events 330/332): 'Let's try this again,
+    re-run all tasks for Steps 1 - 5' and 'You already have the project path,
+    you have the steps, complete all tasks associated with steps 1 - 5' both
+    went unrouted because the command verb sat behind a lead-in clause."""
+    from cofounder_kernel.runtime import _extract_step_execution
+
+    assert _extract_step_execution(
+        "Let's try this again, re-run all tasks for Steps 1 - 5"
+    ) == (None, False)
+    assert _extract_step_execution(
+        "You already have the project path, you have the steps, complete all "
+        "tasks associated with steps 1 - 5"
+    ) == (None, False)
+    # Verb and step reference must share a clause: statements never route.
+    assert _extract_step_execution(
+        "the steps are done, complete honesty is important"
+    ) is None
+    assert _extract_step_execution(
+        "If you've not completed the tasks for steps 1 - 5 then why did you "
+        "report them done?"
+    ) is None
+
+
+def test_markdown_and_bullet_shapes_are_caught() -> None:
+    """Markdown emphasis and bullet-fragment claims defeated the literal
+    patterns in live replies (events 330/332)."""
+    from cofounder_kernel.runtime import (
+        _claims_background_work_start,
+        _is_fabricated_execution_reply,
+    )
+
+    assert _claims_background_work_start(
+        "I will **re-run all tasks for Steps 1–5** in your actual project."
+    )
+    assert _claims_background_work_start("I'm re-running Steps 1–5 now.")
+    assert _is_fabricated_execution_reply(
+        message="Wrong, this still hasn't been done",
+        response=(
+            "### ✅ **Step 1: Set Up the Project**\n"
+            "- Project initialized with: npx @react-native-community/cli init\n"
+            "- Dependencies installed: react-native-camera, expo-sqlite\n"
+        ),
+    )
+    # Plan bullets (imperatives) are not completion claims.
+    assert not _is_fabricated_execution_reply(
+        message="Wrong, this still hasn't been done",
+        response=(
+            "#### Step 1: Set Up the Project\n"
+            "- Initialize a new React Native project.\n"
+            "- Confirm the project path.\n"
+        ),
+    )
+
+
+def test_no_task_step_route_still_replaces_fabricated_body(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Live incident 2026-07-17: 'Perform step 5' routed but resolution came
+    back empty (no_task), and the model's fabricated 'I have performed Step 5
+    ✅' body survived because a no_task route counted as a route. A route that
+    executed nothing gives no license to claim execution."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    fabrication = (
+        "I have **performed Step 5** in your actual project. Here is the "
+        "confirmation:\n\n### ✅ Step 5\n- `src/screens/BarcodeScannerScreen.js` "
+        "— Created and implemented.\n- Dependencies installed and verified."
+    )
+
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=fabrication, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, fabricating_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Perform step 5",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"] is not None
+    assert payload["build"]["status"] == "no_task"
+    assert "I have **performed Step 5**" not in payload["response"]
+    assert "Created and implemented" not in payload["response"]
+    assert "unrouted_execution_fabrication_repaired" in payload["governor"]["applied_rules"]
+
+
+def test_step_resolution_window_reaches_past_repair_noise() -> None:
+    """Live incident 2026-07-17 (route no_task): the real instructions sat 13+
+    assistant turns back, behind a wall of synthetic and fabricated turns, and
+    the 12-turn window starved the route."""
+    from cofounder_kernel.runtime import _resolve_step_instructions
+
+    real_instructions = (
+        "Step 5: Implement the functionality for the UI components. "
+        "1. Install required dependencies. 2. Wire the screens together."
+    )
+    turns: list[dict[str, str]] = [{"role": "assistant", "content": real_instructions}]
+    for i in range(14):
+        turns.append({"role": "user", "content": f"filler question {i}"})
+        turns.append({"role": "assistant", "content": f"filler answer {i} with no step mention"})
+
+    resolved = _resolve_step_instructions(turns, step_number=5)
+    assert "Implement the functionality for the UI components" in resolved
+
+
 def test_runtime_claim_challenge_without_step_context_does_not_invent_step_5(
     tmp_path: Path, monkeypatch
 ) -> None:
