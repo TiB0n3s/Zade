@@ -552,6 +552,15 @@ class CodingAgentService:
                 "claim an action you did not perform with a tool."
             ),
             (
+                "Tool mechanics that matter: replace_in_file old_text must be one CONTIGUOUS "
+                "region copied exactly from a read_file result — to remove several separated "
+                "lines, make one replace call per line. A failed edit is not done: re-read the "
+                "file and retry differently. To delete a file, use run_command with python, e.g. "
+                '["python", "-c", "import os; os.remove(\'path/to/file\')"]. If a path is '
+                "blocked because a stray file sits where a directory should be, remove that file "
+                "the same way and continue."
+            ),
+            (
                 "When you are done, reply with plain text and no tool calls. Lead with the "
                 "outcome: your first sentence answers what happened, then the detail that "
                 "changes what the reader does next — no fabricated test results, no padding."

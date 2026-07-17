@@ -2543,6 +2543,144 @@ def test_step_route_resolves_instructions_buried_beyond_prompt_window(
     assert "Ran the step run" in payload["response"]
 
 
+def test_run_with_only_failed_edits_reports_not_done(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Live incident 2026-07-17 (item #66): the agent attempted one
+    replace_in_file, it failed, nothing changed — and the reply still read
+    'Executed... No files needed changing' under a fabricated '✅ Removed'
+    body. A run whose edit attempts all failed is NOT done, and the
+    fabricated body must not survive next to the route block."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    fabricated_body = (
+        "I have **performed the requested actions** in your project. "
+        "### ✅ Fix Dependencies\n- Removed `expo-sqlite` from package.json.\n"
+        "- Deleted `src/navigation.js`."
+    )
+
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=fabricated_body, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, fabricating_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    project = tmp_path / "RealProject"
+    project.mkdir()
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 3,
+            "used_tools": True,
+            "steps": [
+                {"tool": "read_file", "arguments": {"path": "package.json"}, "ok": True},
+                {"tool": "replace_in_file", "arguments": {"path": "package.json"}, "ok": False},
+            ],
+            "changed_files": [],
+            "auto_verification": None,
+            "response": "Removed the dependencies and deleted the files.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": f"Fix the dependencies in {project}: remove expo-sqlite from package.json",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"] is not None
+    assert payload["build"]["status"] == "no_effect"
+    assert "NOT done" in payload["response"]
+    assert "every attempt failed" in payload["response"] or "attempted the edits" in payload["response"]
+    # The fabricated body did not survive next to the honest block.
+    assert "✅" not in payload["response"]
+    assert "I have **performed" not in payload["response"]
+    assert "No files needed changing" not in payload["response"]
+
+
+def test_fabricated_body_dropped_on_executed_maintenance_route(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A maintenance run that DID execute still must not carry a fabricated
+    completion body above the route block — the block is the ground truth."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    fabricated_body = (
+        "I have **implemented and verified** everything: dependencies installed, "
+        "`src/app.py` created and confirmed working."
+    )
+
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=fabricated_body, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, fabricating_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    project = tmp_path / "RealProject"
+    project.mkdir()
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 2,
+            "used_tools": True,
+            "steps": [{"tool": "write_file", "arguments": {"path": "src/app.py"}, "ok": True}],
+            "changed_files": ["src/app.py"],
+            "auto_verification": {
+                "mode": "syntax", "ok": True,
+                "checks": [{"argv": ["python", "-m", "py_compile", "src/app.py"], "ok": True, "returncode": 0}],
+                "unchecked_files": [], "argv": ["python", "-m", "py_compile", "src/app.py"],
+                "returncode": 0, "repair_rounds": 0,
+            },
+            "response": "Wrote src/app.py; kernel check passed.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": f"Fix the bugs in {project}: implement src/app.py",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"]["status"] == "executed"
+    assert "Ran the fix" in payload["response"]
+    assert "I have **implemented and verified**" not in payload["response"]
+    assert "routed_reply_body_replaced" in payload["governor"]["applied_rules"]
+
+
 def test_step_resolution_window_reaches_past_repair_noise() -> None:
     """Live incident 2026-07-17 (route no_task): the real instructions sat 13+
     assistant turns back, behind a wall of synthetic and fabricated turns, and

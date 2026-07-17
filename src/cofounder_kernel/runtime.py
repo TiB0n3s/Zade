@@ -1475,7 +1475,7 @@ The founder's current message is supplied separately as the user-role message. D
             )
         build_route_executing = bool(build_route) and str(
             (build_route or {}).get("status") or ""
-        ) in {"executed", "verify_failed", "needs_decision", "run_failed", "queued"}
+        ) in {"executed", "verify_failed", "no_effect", "needs_decision", "run_failed", "queued"}
         if (
             not (chat_action_route or research_route or build_route_executing)
             and _is_fabricated_execution_reply(message=message, response=text or "")
@@ -1542,8 +1542,10 @@ The founder's current message is supplied separately as the user-role message. D
             # this turn. State exactly what was queued (or why it couldn't be) so
             # the reply points at a real item instead of narrating construction.
             text = _remove_build_deferral_question(text)
-            if build_route.get("status") in {"queued", "executed", "verify_failed", "needs_decision", "run_failed"} and (
-                build_route.get("kind") == "step" or _EXECUTION_INABILITY_RE.search(text)
+            if build_route.get("status") in {"queued", "executed", "verify_failed", "no_effect", "needs_decision", "run_failed"} and (
+                build_route.get("kind") == "step"
+                or _EXECUTION_INABILITY_RE.search(text)
+                or _is_fabricated_execution_reply(message=message, response=text)
             ):
                 # The drafted body either denies an execution that actually
                 # queued ("I'm not able to...") or restates step instructions
@@ -1880,6 +1882,17 @@ The founder's current message is supplied separately as the user-role message. D
                 # result FAILED. The report must lead with that, not "executed".
                 route["status"] = "verify_failed"
                 route["verification"] = verification
+            elif dispatch.get("ok") and not dispatch.get("changed_files") and any(
+                isinstance(step, dict)
+                and step.get("tool") in {"write_file", "replace_in_file"}
+                and not step.get("ok")
+                for step in dispatch.get("steps") or []
+            ):
+                # The agent ATTEMPTED edits, every one failed, and nothing
+                # changed (live incident item #66: one failed replace_in_file,
+                # then a fabricated completion story). "Executed / no files
+                # needed changing" would be a lie — the task needed changes.
+                route["status"] = "no_effect"
             elif dispatch.get("ok"):
                 route["status"] = "executed"
                 route["auto_verified"] = (
@@ -2416,8 +2429,9 @@ _UNROUTED_EXEC_COMMAND_RE = re.compile(
 _FABRICATED_COMPLETION_CLAIM_RE = re.compile(
     r"""(?ix)
     \bi\s+have\s+(?:confirmed|re-?run|created|implemented|installed|updated|executed
+        |performed|removed|deleted
         |(?:completed|verified)(?!\s+(?:the\s+|my\s+|this\s+)?(?:analysis|review|summary|assessment|reading)))\b
-    | \b(?:has|have)\s+been\s+(?:completed|created|implemented|installed|updated|executed|verified)\b
+    | \b(?:has|have)\s+been\s+(?:completed|created|implemented|installed|updated|executed|verified|removed|deleted)\b
     | \bfollowing\s+has\s+been\s+completed\b
     """
 )
@@ -2425,7 +2439,8 @@ _FABRICATED_COMPLETION_CLAIM_RE = re.compile(
 # initialized with:") — live incident: a fabricated re-narration used ONLY this
 # shape and slipped the auxiliary-verb patterns above.
 _BULLET_COMPLETION_CLAIM_RE = re.compile(
-    r"(?im)^\s*[-•]\s*[^\n]{0,80}?\b(?:installed|initialized|implemented|confirmed|verified|updated|created)\b"
+    r"(?im)^\s*[-•]\s*(?:Removed|Deleted|Installed|Created|Implemented|Updated"
+    r"|[^\n]{0,80}?\b(?:installed|initialized|implemented|confirmed|verified|updated|created)\b)"
 )
 
 
@@ -3716,6 +3731,14 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
             f"Ran the {noun} - {task}.{target_line} Executed just now by my local coding agent "
             f"({dispatch.get('model') or 'local model'}).{changed_line}{verify_line}{evidence_line}"
         )
+    if status == "no_effect":
+        dispatch = route.get("dispatch") or {}
+        return (
+            f"The {noun} is NOT done - {task}.{target_line} My local coding agent "
+            f"({dispatch.get('model') or 'local model'}) attempted the edits and every attempt "
+            "failed — nothing changed on disk. The failed attempts are audited on item "
+            f"#{item_id}. Say go again and I'll run another pass, or redirect me."
+        )
     if status == "needs_decision":
         question = route.get("question") or {}
         q_text = str(question.get("question") or "").strip() or "I need your direction to continue."
@@ -3816,6 +3839,11 @@ def _build_route_note(route: dict[str, Any]) -> str:
             f"Detected a directed {kind} command; the run executed but the kernel's own check on "
             "the result failed, so the reply reports the work as NOT done, with the real output."
         )
+    if status == "no_effect":
+        return (
+            f"Detected a directed {kind} command; the run's edit attempts all failed and nothing "
+            "changed on disk, so the reply reports the work as NOT done."
+        )
     if status == "needs_decision":
         return (
             f"Detected a directed {kind} command; the run started and paused on a genuine founder "
@@ -3846,7 +3874,7 @@ def _build_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
         "anaphoric": route.get("anaphoric", False),
         "workspace": route.get("workspace", ""),
     }
-    if route.get("status") in {"queued", "executed", "verify_failed", "needs_decision", "run_failed"}:
+    if route.get("status") in {"queued", "executed", "verify_failed", "no_effect", "needs_decision", "run_failed"}:
         summary |= {
             "item_id": route.get("item_id"),
             "queue_status": route.get("queue_status"),
