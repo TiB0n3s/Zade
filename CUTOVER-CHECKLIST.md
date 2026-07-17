@@ -62,9 +62,21 @@ no longer silently carry verification claims that were never executed.
 
 - [x] Option B bundled-asset shell (v0.4.0) launches, renders all pages,
       frameless chrome, native toasts, autostart — verified 2026-07-15.
-- [ ] **OPEN:** mutation path through the Tauri bridge (webview POST +
-      `X-Zade-Token` via `kernel_request`) end-to-end — confirm with one chat
-      in the installed shell (`POST /runtime/respond` 200).
+- [x] **Mutation path through the Tauri bridge — VERIFIED 2026-07-16.** Driven
+      from inside the real shell webview (`http://tauri.localhost/index.html`,
+      attached via WebView2 CDP + Playwright, page's own bridged `window.fetch`):
+      bridged GET `/session/token` 200 → bridged `POST /runtime/respond` with
+      `X-Zade-Token` returned **200** in 3.8s ("Hello, Ellie.", qwen3:14b,
+      event 301 / model call 300, full governed response). Negative control:
+      the same POST **without** the token → 401 "Local mutation token
+      required" — the guard runs on bridged requests and the forwarded header
+      is what passes it. (Native cross-origin fetch could never return a
+      readable 200 from the no-CORS kernel, so the readable responses are
+      themselves proof the requests rode `invoke("kernel_request")`.)
+      Operational note: the first attempts hit 503 "Ollama request timed out"
+      (180s client cap) — NOT a bridge failure; timed-out generations keep
+      running server-side and `OLLAMA_NUM_PARALLEL=1` queues retries behind
+      them. Let the GPU drain before judging a 503.
 - [ ] Kernel survives a shell force-kill; shell respawns a stopped kernel.
 
 ## Gate D — the live cutover run (decommission steps, in order)
