@@ -167,9 +167,19 @@ def _write(stdout: TextIO, message: dict[str, Any]) -> None:
 def build_server(config: KernelConfig | None = None) -> McpServer:
     cfg = config or load_config()
     db = KernelDatabase(cfg.paths.database_path)
-    # Read-only tools open the same DB the kernel uses; reads need no coordination
-    # and land their audit rows in the founder-visible ledger.
-    surface = AgentSurface(ToolRegistry(db), exposed=dict(LIVE_EXPOSED))
+    # Reads open the same DB the kernel uses; their audit rows land in the
+    # founder-visible ledger. memory.write is routed through the governed
+    # ingestion path (secret filter + dedupe + embedding + mirror) and HELD for
+    # founder approval — the surface never applies an external write on its own.
+    from .ingestion import IngestionService
+    from .ollama import OllamaClient
+
+    ingestion = IngestionService(config=cfg, db=db, embedder=OllamaClient(cfg.ollama))
+    surface = AgentSurface(
+        ToolRegistry(db, ingestion=ingestion),
+        exposed=dict(LIVE_EXPOSED),
+        require_write_approval=True,
+    )
     return McpServer(surface)
 
 

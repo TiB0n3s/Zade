@@ -129,9 +129,19 @@ class AgentSurface:
     ``manifest()`` to advertise tools and ``call()`` to invoke one on behalf of a
     named external client."""
 
-    def __init__(self, tools: ToolRegistry, *, exposed: dict[str, str] | None = None):
+    def __init__(
+        self,
+        tools: ToolRegistry,
+        *,
+        exposed: dict[str, str] | None = None,
+        require_write_approval: bool = True,
+    ):
         self.tools = tools
         self.exposed = dict(exposed if exposed is not None else EXPOSED)
+        # External-agent writes are HELD for founder approval by default. Since
+        # every call through this surface is an external (mcp:) actor, this gates
+        # all surface writes without gating the kernel's own internal writes.
+        self.require_write_approval = require_write_approval
 
     def manifest(self) -> list[SurfaceTool]:
         """The tools this surface advertises — allowlist ∩ what the registry
@@ -177,6 +187,147 @@ class AgentSurface:
         if name == "memory.write" and not args.get("source"):
             args = {**args, "source": actor}
 
+        # Approval gate: an external agent's memory write is HELD for founder
+        # review rather than applied autonomously. Memory feeds recall/grounding,
+        # so an unreviewed external write must not silently enter it. The write is
+        # applied only when the founder approves (approve_pending_write), through
+        # the same governed path as any other write.
+        if name == "memory.write" and self.require_write_approval:
+            return self._hold_write_for_approval(args, actor)
+
         # Delegate to the registry: its authority evaluation + audit still apply.
         # The registry records the call under our attributed actor.
         return self.tools.call(name, args, actor=actor)
+
+    def _hold_write_for_approval(self, args: dict[str, Any], actor: str) -> ToolResult:
+        """File a pending founder-approval request carrying the proposed write and
+        return 'awaiting_approval' without touching memory."""
+        payload = {
+            key: args.get(key)
+            for key in ("kind", "title", "content", "source", "metadata")
+            if args.get(key) is not None
+        }
+        request, _created = self.tools.db.ensure_approval_request(
+            source_type="mcp_memory_write",
+            source_id=None,
+            title=f"{actor} wants to write a memory",
+            detail=str(args.get("title") or "")[:200],
+            action="memory.write",
+            target="memories",
+            permission_tier="L1_MEMORY_WRITE",
+            authority_decision="approval_required",
+            authority={"reason": "External-agent memory write held for founder approval."},
+            requested_by=actor,
+            metadata={"write": payload, "actor": actor},
+        )
+        audit_id = self.tools.db.audit(
+            actor=actor,
+            action="mcp.write.gated",
+            target="memories",
+            permission_tier="L1_MEMORY_WRITE",
+            status="pending",
+            details={"approval_request_id": request.id, "title": args.get("title")},
+        )
+        return ToolResult(
+            ok=True,
+            data={
+                "status": "awaiting_approval",
+                "approval_request_id": request.id,
+                "message": "Write held for founder approval; not stored yet.",
+                "audit_id": audit_id,
+            },
+        )
+
+
+# --- founder-side resolution of held external writes -----------------------
+# These operate on the shared DB (and, for approve, the governed ingestion path).
+# They live here because they are surface-domain logic; the kernel HTTP layer
+# (which has the ingestion service) exposes them as endpoints. Deny can also go
+# through the generic approvals console — this is the convenience pair.
+
+_WRITE_SOURCE_TYPE = "mcp_memory_write"
+
+
+def list_pending_writes(db: Any) -> list[dict[str, Any]]:
+    """External-agent writes awaiting the founder's decision."""
+    out: list[dict[str, Any]] = []
+    for request in db.list_approval_requests(status="pending", limit=500):
+        if request.source_type != _WRITE_SOURCE_TYPE:
+            continue
+        meta = request.metadata or {}
+        write = meta.get("write", {})
+        out.append(
+            {
+                "approval_request_id": request.id,
+                "actor": meta.get("actor"),
+                "title": write.get("title"),
+                "requested_by": request.requested_by,
+                "created_at": request.created_at,
+            }
+        )
+    return out
+
+
+def _load_pending_write(db: Any, request_id: int) -> Any:
+    request = db.get_approval_request(request_id)
+    if request is None or request.source_type != _WRITE_SOURCE_TYPE:
+        raise ValueError(f"Not an MCP memory-write request: {request_id}")
+    if request.status not in {"pending", "deferred"}:
+        raise ValueError(f"Request already {request.status}.")
+    return request
+
+
+def approve_pending_write(db: Any, ingestion: Any, request_id: int, *, resolved_by: str = "founder") -> dict[str, Any]:
+    """Founder approves a held write: apply it through the GOVERNED path (secret
+    filter + dedupe + embedding + mirror), keeping the agent's provenance and
+    attribution, then resolve the request. A secret still gets blocked here even
+    though the founder approved — defense in depth."""
+    request = _load_pending_write(db, request_id)
+    meta = request.metadata or {}
+    write = meta.get("write", {})
+    actor = str(meta.get("actor") or "mcp:unknown")
+    result = ingestion.save_memory(
+        kind=str(write.get("kind") or "note"),
+        title=str(write.get("title") or ""),
+        content=str(write.get("content") or ""),
+        source=str(write.get("source") or actor),
+        metadata=dict(write.get("metadata") or {}),
+    )
+    write_status = result.get("status")
+    db.resolve_approval_request(
+        request_id, status="approved", resolved_by=resolved_by, resolution_note=f"write:{write_status}"
+    )
+    db.audit(
+        actor=actor,
+        action="mcp.write.approved",
+        target="memories",
+        permission_tier="L1_MEMORY_WRITE",
+        status="ok" if write_status == "written" else str(write_status),
+        details={
+            "approval_request_id": request_id,
+            "write_status": write_status,
+            "memory_id": result.get("memory_id"),
+            "approved_by": resolved_by,
+        },
+    )
+    out = {"approval_request_id": request_id, "write_status": write_status, "approved_by": resolved_by}
+    for key in ("memory_id", "duplicate_of", "reason", "degraded"):
+        if key in result:
+            out[key] = result[key]
+    return out
+
+
+def deny_pending_write(db: Any, request_id: int, *, resolved_by: str = "founder") -> dict[str, Any]:
+    """Founder denies a held write: nothing is written, the request is closed."""
+    request = _load_pending_write(db, request_id)
+    actor = str((request.metadata or {}).get("actor") or "mcp:unknown")
+    db.resolve_approval_request(request_id, status="denied", resolved_by=resolved_by, resolution_note="denied")
+    db.audit(
+        actor=actor,
+        action="mcp.write.denied",
+        target="memories",
+        permission_tier="L1_MEMORY_WRITE",
+        status="denied",
+        details={"approval_request_id": request_id, "denied_by": resolved_by},
+    )
+    return {"approval_request_id": request_id, "status": "denied"}

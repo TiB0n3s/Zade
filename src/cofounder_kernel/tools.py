@@ -34,8 +34,13 @@ class ToolDefinition:
 
 
 class ToolRegistry:
-    def __init__(self, db: KernelDatabase, authority: AuthorityPolicy | None = None):
+    def __init__(self, db: KernelDatabase, authority: AuthorityPolicy | None = None, ingestion: Any | None = None):
         self.db = db
+        # The governed write path (secret filter + semantic dedupe + embedding +
+        # file mirror). When present, memory.write routes through it instead of a
+        # raw db.add_memory, so every write — internal or via the agent surface —
+        # is secret-blocked and made recallable.
+        self.ingestion = ingestion
         default_root = db.path.parent
         self.authority = authority or AuthorityPolicy(hot_root=default_root, cold_root=default_root, data_dir=default_root)
         self._tools: dict[str, ToolDefinition] = {}
@@ -181,13 +186,27 @@ class ToolRegistry:
             )
 
     def _memory_write(self, args: dict[str, Any]) -> ToolResult:
-        memory_id = self.db.add_memory(
-            kind=str(args.get("kind") or "note"),
-            title=str(args["title"]),
-            content=str(args["content"]),
-            source=str(args.get("source") or "local"),
-            metadata=dict(args.get("metadata") or {}),
-        )
+        kind = str(args.get("kind") or "note")
+        title = str(args.get("title") or "")
+        content = str(args.get("content") or "")
+        source = str(args.get("source") or "local")
+        metadata = dict(args.get("metadata") or {})
+        if self.ingestion is not None:
+            # Governed write: refuses obvious secrets, dedupes, embeds, mirrors.
+            result = self.ingestion.save_memory(
+                kind=kind, title=title, content=content, source=source, metadata=metadata
+            )
+            status = result.get("status")
+            if status == "written":
+                return ToolResult(ok=True, data={"memory_id": result["memory_id"], "degraded": result.get("degraded", False)})
+            if status == "duplicate":
+                return ToolResult(ok=True, data={"status": "duplicate", "duplicate_of": result.get("duplicate_of")})
+            if status == "blocked_secret":
+                # A credential/token was refused before it could land in memory.
+                return ToolResult(ok=False, data={"error": "blocked_secret", "reason": result.get("reason")})
+            return ToolResult(ok=False, data={"error": status or "write_failed"})
+        # No ingestion wired (should not happen in the kernel/surface): raw insert.
+        memory_id = self.db.add_memory(kind=kind, title=title, content=content, source=source, metadata=metadata)
         return ToolResult(ok=True, data={"memory_id": memory_id})
 
     def _memory_forget(self, args: dict[str, Any]) -> ToolResult:

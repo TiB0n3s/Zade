@@ -184,8 +184,10 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     db.migrate()
     ollama = OllamaClient(cfg.ollama)
     authority = AuthorityPolicy.from_config(cfg)
-    tools = ToolRegistry(db, authority=authority)
     ingestion = IngestionService(config=cfg, db=db, embedder=ollama)
+    # memory.write routes through the governed ingestion path (secret filter +
+    # dedupe + embedding + mirror), not a raw insert.
+    tools = ToolRegistry(db, authority=authority, ingestion=ingestion)
     founder = FounderService(config=cfg, db=db)
     skills = SkillService(config=cfg, db=db, embedder=ollama)
     handlers = ActionHandlerRegistry(db=db, config=cfg)
@@ -1364,6 +1366,31 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     @app.get("/evidence/gaps")
     def evidence_gaps() -> dict[str, Any]:
         return teaching.evidence_gaps()
+
+    # External-agent (MCP surface) memory writes held for founder approval.
+    @app.get("/mcp/writes")
+    def mcp_pending_writes() -> dict[str, Any]:
+        from .agent_surface import list_pending_writes
+
+        return {"pending": list_pending_writes(db)}
+
+    @app.post("/mcp/writes/{request_id}/approve")
+    def mcp_approve_write(request_id: int) -> dict[str, Any]:
+        from .agent_surface import approve_pending_write
+
+        try:
+            return approve_pending_write(db, ingestion, request_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/mcp/writes/{request_id}/deny")
+    def mcp_deny_write(request_id: int) -> dict[str, Any]:
+        from .agent_surface import deny_pending_write
+
+        try:
+            return deny_pending_write(db, request_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/experiments")
     def list_experiments(status: str | None = None, limit: int = 50) -> dict[str, Any]:

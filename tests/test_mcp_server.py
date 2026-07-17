@@ -103,19 +103,21 @@ def test_tools_call_off_list_is_refused(tmp_path: Path) -> None:
     assert db.search_memories("secret", 5)
 
 
-def test_tools_call_write_succeeds_and_is_attributed(tmp_path: Path) -> None:
+def test_tools_call_write_is_held_for_founder_approval(tmp_path: Path) -> None:
     server, db = _server(tmp_path)
     _init(server, client="codex")
     resp = server.handle(
         {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
          "params": {"name": "memory.write", "arguments": {"title": "Agent note", "content": "written via mcp"}}}
     )
+    # Not an error: the write is accepted but HELD for founder approval, not applied.
     assert resp["result"]["isError"] is False
-    assert resp["result"]["structuredContent"]["memory_id"]
-    # persisted, with the source stamped to the calling agent
-    matches = db.search_memories("Agent note", 5)
-    assert matches and matches[0].source == "mcp:codex"
-    assert any(e["actor"] == "mcp:codex" and e["action"] == "tool.call" for e in db.recent_audit_events(10))
+    assert resp["result"]["structuredContent"]["status"] == "awaiting_approval"
+    assert resp["result"]["structuredContent"]["approval_request_id"]
+    # Nothing entered memory autonomously.
+    assert db.search_memories("Agent note", 5) == []
+    # Audited as gated, attributed to the calling agent.
+    assert any(e["actor"] == "mcp:codex" and e["action"] == "mcp.write.gated" for e in db.recent_audit_events(10))
 
 
 def test_unknown_method_errors_but_notification_is_silent(tmp_path: Path) -> None:

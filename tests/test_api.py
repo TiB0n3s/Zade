@@ -6,7 +6,9 @@ from fastapi.testclient import TestClient
 import cofounder_kernel.handlers as handlers_module
 import cofounder_kernel.research as research_module
 from cofounder_kernel import netguard
+from cofounder_kernel.agent_surface import AgentSurface
 from cofounder_kernel.api import _build_prompt, create_app
+from cofounder_kernel.tools import ToolRegistry
 from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, PromptProfileConfig, SecurityConfig
 from cofounder_kernel.ollama import GenerateResult, OllamaClient, OllamaThinkingUnsupported
 from cofounder_kernel.trading_bot import TradingBotBridge
@@ -255,6 +257,56 @@ def test_optional_local_mutation_token_guard(tmp_path: Path, monkeypatch) -> Non
     assert blocked.status_code == 401
     assert allowed.status_code == 200
     assert allowed.json()["memory_id"] > 0
+
+
+def test_mcp_writes_approval_endpoints(tmp_path: Path, monkeypatch) -> None:
+    """Founder-facing channel for external-agent (MCP) memory writes: list the
+    held queue, approve (token-gated, applies the write through the governed
+    path), and deny (discards). Mirrors the module-level gate that mcp_server
+    files writes into."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        security=SecurityConfig(local_token="secret"),
+    )
+    app = create_app(config)
+    db = app.state.db
+    # Two external writes arrive via the surface and are HELD (as the MCP server does).
+    surface = AgentSurface(ToolRegistry(db))
+    approve_id = surface.call(
+        "memory.write", {"title": "Pilot signed", "content": "Meridian signed the pilot."}, client="codex"
+    ).data["approval_request_id"]
+    deny_id = surface.call(
+        "memory.write", {"title": "Reject me", "content": "should not persist"}, client="codex"
+    ).data["approval_request_id"]
+    client = TestClient(app)
+    token = {"X-Zade-Token": "secret"}
+
+    # GET is a read (no token) and lists both held writes, attributed to the agent.
+    pending = client.get("/mcp/writes")
+    assert pending.status_code == 200
+    listed = pending.json()["pending"]
+    assert {p["title"] for p in listed} == {"Pilot signed", "Reject me"}
+    assert all(p["actor"] == "mcp:codex" for p in listed)
+
+    # Approve is mutation-guarded, and applies the held write when authorized.
+    assert client.post(f"/mcp/writes/{approve_id}/approve").status_code == 401
+    approved = client.post(f"/mcp/writes/{approve_id}/approve", headers=token)
+    assert approved.status_code == 200
+    assert approved.json()["write_status"] == "written"
+    assert db.search_memories("Meridian", 5)  # now in memory
+
+    # Deny discards without writing.
+    denied = client.post(f"/mcp/writes/{deny_id}/deny", headers=token)
+    assert denied.status_code == 200
+    assert db.search_memories("Reject me", 5) == []
+
+    # A resolved or unknown request 404s, and nothing is left pending.
+    assert client.post(f"/mcp/writes/{approve_id}/approve", headers=token).status_code == 404
+    assert client.post("/mcp/writes/999999/approve", headers=token).status_code == 404
+    assert client.get("/mcp/writes").json()["pending"] == []
 
 
 def test_authority_and_self_inventory_routes(tmp_path: Path, monkeypatch) -> None:

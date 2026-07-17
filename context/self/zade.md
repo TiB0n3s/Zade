@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `e8762dd` 2026-07-17 - MCP Surface
 - `9505598` 2026-07-17 - co-founder kernel enhancement
 - `a10199c` 2026-07-17 - MCP and agent surface
 - `1dfe938` 2026-07-17 - Co-founder memory
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `f80d547` 2026-07-17 - Structured output: JSON contracts enforced server-side via Ollama format
 - `0120f68` 2026-07-17 - Grounded answers: tagged recall citations audited by the kernel
 - `9171acf` 2026-07-17 - Fresh-context verifier subagent + send_progress tool for delegated runs
-- `1aadc7a` 2026-07-17 - Work ledger: steps are rows, not prose; work-status answers come from the kernel
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
