@@ -327,6 +327,21 @@ class ScreenConfig:
 
 
 @dataclass(frozen=True)
+class EgressConfig:
+    """Data-class egress gate (see egress.py and EGRESS-DESIGN.md).
+
+    ``standing_grants`` are durable ``"data_class:vendor"`` authorizations for
+    the matrix's STANDING cells — e.g. ``"founder_audio:deepgram"`` re-enables
+    cloud STT. Empty by default: under the shipped local-first posture nothing
+    cloud egresses, and the gate is inert anyway while
+    ``[ollama] provider_policy`` stays ``local_only``. The gate reads
+    provider_policy from the ollama section; it is not duplicated here.
+    """
+
+    standing_grants: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class PromptProfileConfig:
     default: str = "general"
 
@@ -349,6 +364,7 @@ class KernelConfig:
     roles: RolesConfig = RolesConfig()
     delegation: DelegationConfig = DelegationConfig()
     screen: ScreenConfig = ScreenConfig()
+    egress: EgressConfig = EgressConfig()
     prompt_profiles: PromptProfileConfig = PromptProfileConfig()
 
 
@@ -538,6 +554,10 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         keep_last=int(screen_raw.get("keep_last", 20)),
         max_windows=int(screen_raw.get("max_windows", 60)),
     )
+    egress_raw = raw.get("egress", {})
+    egress = EgressConfig(
+        standing_grants=_segments(egress_raw.get("standing_grants"), ()),
+    )
     prompt_profiles_raw = raw.get("prompt_profiles", {})
     prompt_profiles = PromptProfileConfig(
         default=str(os.getenv("ZADE_PROMPT_PROFILE", prompt_profiles_raw.get("default", "general"))).strip()
@@ -560,6 +580,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         roles=roles,
         delegation=delegation,
         screen=screen,
+        egress=egress,
         prompt_profiles=prompt_profiles,
     )
 

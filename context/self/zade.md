@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `c3b1df8` 2026-07-17 - Short threads reach memory: boot sweep + loss-safe end_session
 - `6ab6318` 2026-07-17 - Fix self-knowledge CI under Python 3.11
 - `036596e` 2026-07-17 - Review verify_failed reads as a finding, not a broken run
 - `059f780` 2026-07-17 - Review route: 'review <project>' runs a read-only inspection; workspace run-record answers status questions
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `280a45b` 2026-07-17 - TypeScript workspaces get tsc --noEmit as a second mandatory kernel check
 - `a222d24` 2026-07-17 - Meta narration about execution claims is never step instructions
 - `231b8ad` 2026-07-17 - Run reports carry the REAL change set: kernel diffs the workspace before/after
-- `620ebb2` 2026-07-17 - A run whose edits all failed is NOT done; fabricated bodies never ride an honest route block
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

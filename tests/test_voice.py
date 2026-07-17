@@ -8,7 +8,14 @@ from fastapi.testclient import TestClient
 
 import cofounder_kernel.voice as voice_module
 from cofounder_kernel.api import create_app
-from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, VoiceConfig
+from cofounder_kernel.config import (
+    AppConfig,
+    EgressConfig,
+    KernelConfig,
+    OllamaConfig,
+    PathConfig,
+    VoiceConfig,
+)
 from cofounder_kernel.ollama import GenerateResult, OllamaClient
 
 
@@ -79,6 +86,20 @@ def _config(tmp_path: Path, voice: VoiceConfig | None = None) -> KernelConfig:
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
         ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
         voice=voice or VoiceConfig(),
+    )
+
+
+def _cloud_ready_config(tmp_path: Path, voice: VoiceConfig) -> KernelConfig:
+    """Cloud voice deliberately re-enabled: provider_policy raised off local_only
+    and the two voice standing grants enabled. This is the explicit opt-in the
+    egress gate requires — the default posture ([ollama] local_only, no grants)
+    refuses cloud voice (see test_cloud_voice_refused_by_default_egress_policy)."""
+    return KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy="local_preferred"),
+        voice=voice,
+        egress=EgressConfig(standing_grants=("founder_audio:deepgram", "reply_text:elevenlabs")),
     )
 
 
@@ -288,7 +309,7 @@ def test_cloud_engines_report_status_and_missing_keys(tmp_path: Path, monkeypatc
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-    client = TestClient(create_app(_config(tmp_path, _cloud_voice_config())))
+    client = TestClient(create_app(_cloud_ready_config(tmp_path, _cloud_voice_config())))
 
     status = client.get("/voice/status")
     transcribe = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
@@ -325,7 +346,7 @@ def test_deepgram_and_elevenlabs_adapters(tmp_path: Path, monkeypatch) -> None:
         raise AssertionError(f"Unexpected URL: {request.full_url}")
 
     monkeypatch.setattr(voice_module.urllib.request, "urlopen", fake_urlopen)
-    client = TestClient(create_app(_config(tmp_path, _cloud_voice_config())))
+    client = TestClient(create_app(_cloud_ready_config(tmp_path, _cloud_voice_config())))
 
     transcribed = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
     spoken = client.post("/voice/speak", json={"text": "Evidence first."})
@@ -362,7 +383,7 @@ def test_browser_webm_mime_reaches_deepgram(tmp_path: Path, monkeypatch) -> None
         return FakeHttpResponse(json.dumps(body).encode("utf-8"))
 
     monkeypatch.setattr(voice_module.urllib.request, "urlopen", fake_urlopen)
-    cfg = _config(tmp_path, VoiceConfig(stt_engine="deepgram", tts_engine="elevenlabs"))
+    cfg = _cloud_ready_config(tmp_path, VoiceConfig(stt_engine="deepgram", tts_engine="elevenlabs"))
     client = TestClient(create_app(cfg))
 
     # The browser's MediaRecorder produces webm/opus; the codecs suffix is stripped.
@@ -392,7 +413,7 @@ def test_cloud_converse_end_to_end_and_http_errors(tmp_path: Path, monkeypatch) 
         return FakeHttpResponse(b"MP3FAKE")
 
     monkeypatch.setattr(voice_module.urllib.request, "urlopen", fake_urlopen)
-    client = TestClient(create_app(_config(tmp_path, _cloud_voice_config())))
+    client = TestClient(create_app(_cloud_ready_config(tmp_path, _cloud_voice_config())))
 
     converse = client.post("/voice/converse", json={"audio_base64": FAKE_AUDIO, "use_semantic_memory": False})
 
@@ -443,3 +464,34 @@ def test_engine_failure_and_tts_degradation_are_handled(tmp_path: Path, monkeypa
     assert converse.json()["response"]
     assert converse.json()["speech"] is None
     assert "exit 3" in converse.json()["speech_error"]
+
+
+def test_cloud_voice_refused_by_default_egress_policy(tmp_path: Path, monkeypatch) -> None:
+    """Default posture ([ollama] local_only, no [egress] standing grants): cloud
+    STT/TTS is refused by the egress gate BEFORE any bytes leave — even with the
+    API keys set — and the refusal names the local engine as the way forward.
+    The refusal is audited (redacted). No network call is made."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-key")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
+
+    def exploding_urlopen(request, timeout=120):
+        raise AssertionError("egress gate must refuse before any network call")
+
+    monkeypatch.setattr(voice_module.urllib.request, "urlopen", exploding_urlopen)
+    # Cloud engines selected, but provider_policy stays local_only and no grants.
+    client = TestClient(create_app(_config(tmp_path, _cloud_voice_config())))
+
+    transcribe = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
+    speak = client.post("/voice/speak", json={"text": "hello"})
+    audit = client.get("/audit/recent")
+
+    assert transcribe.status_code == 503
+    assert "egress policy" in transcribe.json()["detail"]
+    assert "command" in transcribe.json()["detail"]
+    assert speak.status_code == 503
+    assert "egress policy" in speak.json()["detail"]
+    # The refusal is recorded, and the audit row carries no audio/text payload.
+    events = audit.json()["events"]
+    egress_events = [e for e in events if e["action"] == "egress.decision"]
+    assert egress_events and all(e["status"] == "refused" for e in egress_events)

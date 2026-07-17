@@ -17,6 +17,7 @@ from typing import Any
 from . import netguard
 from .config import KernelConfig
 from .db import KernelDatabase
+from .egress import DataClass, EgressPolicy, EgressRequest
 from .runtime import RuntimeService
 
 
@@ -262,6 +263,13 @@ class VoiceService:
         }
 
     def _transcribe_deepgram(self, audio_bytes: bytes, *, mime: str = "audio/wav") -> str:
+        # Raw founder audio is the most sensitive continuous stream in the system.
+        # Gate it through the data-class egress policy BEFORE the key is read or a
+        # single byte is sent — under the shipped local-first posture this refuses,
+        # and the local 'command' STT engine is the intended path.
+        self._assert_egress_allowed(
+            data_class=DataClass.FOUNDER_AUDIO, vendor="deepgram", purpose="voice.transcribe"
+        )
         api_key = self._require_api_key(self.config.voice.stt_api_key_env, engine="Deepgram")
         params = urllib.parse.urlencode({"model": self.config.voice.stt_model, "smart_format": "true"})
         request = urllib.request.Request(
@@ -278,6 +286,10 @@ class VoiceService:
         return str(transcript).strip()
 
     def _speak_elevenlabs(self, text: str) -> bytes:
+        # Reply text can embed answers and strategy — gate it before it leaves.
+        self._assert_egress_allowed(
+            data_class=DataClass.REPLY_TEXT, vendor="elevenlabs", purpose="voice.speak"
+        )
         api_key = self._require_api_key(self.config.voice.tts_api_key_env, engine="ElevenLabs")
         voice_id = urllib.parse.quote(self.config.voice.tts_voice, safe="")
         request = urllib.request.Request(
@@ -296,6 +308,34 @@ class VoiceService:
         if not api_key:
             raise VoiceNotConfigured(f"{engine} API key environment variable is not set: {env_name}")
         return api_key
+
+    def _assert_egress_allowed(self, *, data_class: DataClass, vendor: str, purpose: str) -> None:
+        """Run the data-class egress gate before any cloud voice bytes leave.
+
+        Composes with — does not replace — the netguard SSRF check in
+        ``_http_call``: this decides whether data of this class may go to this
+        vendor at all; netguard decides whether the network target is safe. Both
+        must pass. Every decision is audited (redacted — no audio, no text). A
+        refusal is surfaced as VoiceNotConfigured so the API returns 503 with
+        guidance, and so ``converse`` degrades to a text-only reply rather than
+        crashing when TTS is refused."""
+        decision = EgressPolicy.from_config(self.config).decide(
+            EgressRequest(request_id=_stamp(), data_class=data_class, vendor=vendor, purpose=purpose)
+        )
+        self.db.audit(
+            actor="voice",
+            action="egress.decision",
+            target=vendor,
+            permission_tier="L3_EXTERNAL_ACTION",
+            status="ok" if decision.allowed else "refused",
+            details=decision.audit_record(),
+        )
+        if not decision.allowed:
+            raise VoiceNotConfigured(
+                f"Cloud voice is disabled by egress policy ({decision.reason}). "
+                "Use the local 'command' STT/TTS engine (whisper.cpp / piper), or enable a "
+                "deliberate [egress] standing grant and raise [ollama] provider_policy."
+            )
 
     def _http_call(self, request: urllib.request.Request, *, engine: str) -> bytes:
         netguard.assert_allowed(request.full_url, require_https=True, allowed_hosts=_VOICE_ALLOWED_HOSTS)

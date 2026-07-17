@@ -100,7 +100,25 @@ class DeepThoughtTeachingBridge:
             limit=limit,
         )
         imported = []
+        already_imported = 0
         for candidate in candidates:
+            if candidate.get("status") == "imported":
+                # Idempotent: an already-imported candidate is never re-imported.
+                # The explicit candidate_ids path has no status filter, so without
+                # this a repeat import would mint a second evidence row for the same
+                # source. Return its existing ids (recorded at first import) and
+                # create nothing new.
+                existing_meta = candidate.get("metadata") or {}
+                already_imported += 1
+                imported.append(
+                    candidate
+                    | {
+                        "evidence_id": existing_meta.get("evidence_id"),
+                        "document_id": existing_meta.get("document_id"),
+                        "status": "already_imported",
+                    }
+                )
+                continue
             text = self._read_candidate_text(candidate)
             if not text:
                 text = candidate["excerpt"]
@@ -149,7 +167,11 @@ class DeepThoughtTeachingBridge:
             target="teaching_candidates",
             permission_tier="L1_MEMORY_WRITE",
             status="ok",
-            details={"imported_count": len(imported), "candidate_ids": [item["id"] for item in imported]},
+            details={
+                "imported_count": len(imported) - already_imported,
+                "already_imported": already_imported,
+                "candidate_ids": [item["id"] for item in imported],
+            },
         )
         return {"imported": imported, "count": len(imported)}
 
@@ -165,30 +187,48 @@ class DeepThoughtTeachingBridge:
     ) -> dict[str, Any]:
         normalized = _normalize_target_type(to_type)
         self._attach_evidence_id(normalized, to_id, evidence_id, relation=relation)
-        link = self.founder.create_link(
-            {
-                "from_type": "evidence",
-                "from_id": evidence_id,
-                "relation": relation,
-                "to_type": normalized,
-                "to_id": to_id,
-                "strength": strength,
-                "metadata": {
-                    "source": "teach.deepthought",
-                    "entity_boundary": "Deep Thought-derived evidence linked to Zade operating object.",
-                    **(metadata or {}),
-                },
-            }
-        )
+        existing = self._find_link(evidence_id, to_type=normalized, to_id=to_id, relation=relation)
+        if existing is not None:
+            # Idempotent: the same (evidence, relation, target) link already exists.
+            # Return it instead of inserting a duplicate founder_links row — the
+            # /teach/deepthought/link endpoint can be called repeatedly, and
+            # create_link is a bare INSERT with no dedup of its own.
+            link_record = existing
+            link_id = int(existing["id"])
+            deduped = True
+        else:
+            link = self.founder.create_link(
+                {
+                    "from_type": "evidence",
+                    "from_id": evidence_id,
+                    "relation": relation,
+                    "to_type": normalized,
+                    "to_id": to_id,
+                    "strength": strength,
+                    "metadata": {
+                        "source": "teach.deepthought",
+                        "entity_boundary": "Deep Thought-derived evidence linked to Zade operating object.",
+                        **(metadata or {}),
+                    },
+                }
+            )
+            link_record = link.record
+            link_id = link.id
+            deduped = False
         self.db.audit(
             actor="teaching.deepthought",
             action="teach.deepthought.link",
             target=f"{normalized}:{to_id}",
             permission_tier="L1_MEMORY_WRITE",
             status="ok",
-            details={"evidence_id": evidence_id, "link_id": link.id, "relation": relation},
+            details={"evidence_id": evidence_id, "link_id": link_id, "relation": relation, "deduped": deduped},
         )
-        return {"link": link.record, "evidence_id": evidence_id, "target": {"type": normalized, "id": to_id}}
+        return {
+            "link": link_record,
+            "evidence_id": evidence_id,
+            "target": {"type": normalized, "id": to_id},
+            "deduped": deduped,
+        }
 
     def evidence_gaps(self) -> dict[str, Any]:
         integrity = self.founder.run_integrity_check()
@@ -493,21 +533,29 @@ class DeepThoughtTeachingBridge:
                 (utc_now(), json.dumps(evidence, sort_keys=True), prediction_id),
             )
 
-    def _link_exists(self, evidence_id: int, *, to_type: str, to_id: int, relation: str) -> bool:
+    def _find_link(self, evidence_id: int, *, to_type: str, to_id: int, relation: str) -> dict[str, Any] | None:
         with self.db.connect() as conn:
             row = conn.execute(
                 """
-                SELECT id FROM founder_links
+                SELECT * FROM founder_links
                 WHERE from_type = 'evidence'
                   AND from_id = ?
                   AND relation = ?
                   AND to_type = ?
                   AND to_id = ?
+                ORDER BY id ASC
                 LIMIT 1
                 """,
                 (evidence_id, relation, to_type, to_id),
             ).fetchone()
-        return row is not None
+        if row is None:
+            return None
+        data = dict(row)
+        data["metadata"] = json.loads(data.pop("metadata_json", None) or "{}")
+        return data
+
+    def _link_exists(self, evidence_id: int, *, to_type: str, to_id: int, relation: str) -> bool:
+        return self._find_link(evidence_id, to_type=to_type, to_id=to_id, relation=relation) is not None
 
     def _resolve_weak_evidence_warnings(self) -> list[dict[str, Any]]:
         resolved = []
