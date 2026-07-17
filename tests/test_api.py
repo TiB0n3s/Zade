@@ -3388,10 +3388,15 @@ def test_runtime_executes_browser_open_command_from_chat(tmp_path: Path, monkeyp
 
 
 def _research_config(tmp_path: Path) -> KernelConfig:
+    # Research egress now passes through the data-class gate: raise off local_only
+    # and grant the STANDING public_derived:public_web lane (the founder opt-in).
+    from cofounder_kernel.config import EgressConfig
+
     return KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
-        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy="local_preferred"),
+        egress=EgressConfig(standing_grants=("public_derived:public_web",)),
     )
 
 

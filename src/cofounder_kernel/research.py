@@ -11,10 +11,16 @@ The autonomy is deliberately split from the egress:
     network, and it is an L3 external action: it runs only through an approved
     work item + the typed confirmation phrase, exactly like a connector sync.
 
-The web-fetch lane is a deliberate, bounded exception to the kernel's otherwise
-local-only egress: https only, public hosts only (netguard blocks private /
-internal), redirects refused, and a byte cap — one fetch policy reviewed in one
-place. Fetched pages are salience-scored against the topic and filed as graded
+The web-fetch lane is bounded and now unified under the data-class egress gate:
+https only, public hosts only (netguard blocks private / internal), redirects
+refused, and a byte cap — one fetch policy reviewed in one place. Each run is
+classified ``public_derived -> public_web`` and passes through ``authorize_egress``
+before any fetch, so research egress shows up in the same egress ledger as
+everything else and honors provider_policy (under ``local_only`` it is refused —
+research is no longer a special exception; local-only means nothing leaves). A
+STANDING ``public_derived:public_web`` grant is the founder's config-level opt-in;
+the per-run L3 typed-phrase approval remains the real decision. Fetched pages are
+salience-scored against the topic and filed as graded
 evidence (external claim, never native certainty), reusing the same ingestion +
 evidence path connectors use. The fetcher is injectable so all of this is
 testable without a live network.
@@ -31,6 +37,7 @@ from typing import Any, Callable
 from . import netguard
 from .config import KernelConfig
 from .db import KernelDatabase, WorkItem, utc_now
+from .egress import DataClass, EgressPolicy, EgressRequest, authorize_egress
 from .founder import FounderService
 from .ingestion import IngestionService
 
@@ -216,6 +223,35 @@ class ResearchService:
             raise ValueError("Research work item is missing a topic or URLs.")
         # Re-validate egress at dispatch time (the item may have been edited).
         urls = self._validate_urls(urls)
+        # Data-class egress gate: this run's fetches are public_derived -> public_web
+        # (a query/URL to the open web). The gate CLASSIFIES + audits the egress and
+        # defers the real decision to research's own L3 approval via a STANDING grant
+        # — but it also means research is now part of the unified posture: under
+        # provider_policy=local_only (or without the standing grant) it is refused,
+        # so "local_only" truly means nothing leaves, research included.
+        egress = authorize_egress(
+            self.db,
+            EgressPolicy.from_config(self.config),
+            EgressRequest(
+                request_id=f"research:{item.id}",
+                data_class=DataClass.PUBLIC_DERIVED,
+                vendor="public_web",
+                purpose=f"web research: {topic[:80]}",
+                byte_estimate=len(urls),
+            ),
+            preview=f"web research on '{topic[:80]}' ({len(urls)} source(s))",
+        )
+        if not egress.allowed:
+            self.db.audit(
+                actor="approved-handler", action=RESEARCH_RUN_ACTION, target="web-research",
+                permission_tier=item.permission_tier, status="refused",
+                details={"work_item_id": item.id, "egress": egress.audit_record()},
+            )
+            return {
+                "handler": RESEARCH_RUN_ACTION, "status": "refused", "ok": False,
+                "topic": topic, "reason": egress.reason, "matched_rule": egress.matched_rule,
+                "fetched": 0, "filed": 0, "findings": [],
+            }
         fetcher = self._fetcher or fetch_url
         allowed = frozenset(self.config.research.allow_hosts) or None
         findings: list[dict[str, Any]] = []

@@ -6,7 +6,14 @@ from fastapi.testclient import TestClient
 
 import cofounder_kernel.research as research_module
 from cofounder_kernel.api import create_app
-from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, ResearchConfig
+from cofounder_kernel.config import (
+    AppConfig,
+    EgressConfig,
+    KernelConfig,
+    OllamaConfig,
+    PathConfig,
+    ResearchConfig,
+)
 from cofounder_kernel.ollama import OllamaClient
 from cofounder_kernel.research import _html_to_text, _salience
 
@@ -26,10 +33,14 @@ def fake_embed(self: OllamaClient, *, text: str, model: str | None = None) -> li
 
 
 def _config(tmp_path: Path) -> KernelConfig:
+    # Research egress now passes through the data-class gate: raise off local_only
+    # and grant the STANDING public_derived:public_web lane, the founder's config
+    # opt-in for open-web research (the per-run L3 approval is still the real gate).
     return KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
-        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy="local_preferred"),
+        egress=EgressConfig(standing_grants=("public_derived:public_web",)),
     )
 
 
@@ -118,6 +129,41 @@ def test_research_run_fetches_scores_and_files_evidence(tmp_path: Path, monkeypa
 
     evidence = client.get("/founder/evidence").json()["items"]
     assert any(item["evidence_type"] == "web_research" for item in evidence)
+
+
+def test_research_refused_by_egress_gate_under_local_only(tmp_path: Path, monkeypatch) -> None:
+    """Research egress is now unified under the data-class gate: under
+    provider_policy=local_only an APPROVED run is still refused before any fetch —
+    local-only truly means nothing leaves, research included."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy="local_only"),
+    )
+    app = create_app(config)
+    client = TestClient(app)
+
+    called = {"n": 0}
+
+    def fake_fetch(url, *, timeout=20.0, max_bytes=2_000_000, allowed_hosts=None):
+        called["n"] += 1
+        return "<html><body>should never run</body></html>"
+
+    monkeypatch.setattr(research_module, "fetch_url", fake_fetch)
+
+    queued = client.post("/research/run", json={"topic": "pricing", "urls": [PUBLIC]})
+    assert queued.status_code == 200, queued.text
+    approved = _approve_and_dispatch(client, queued.json()["item_id"])
+    result = approved["dispatch_result"]
+
+    assert result["status"] == "refused"
+    assert result["matched_rule"] == "policy.local_only"
+    assert result["fetched"] == 0
+    assert called["n"] == 0  # the gate stopped it before the network was touched
+    # the refusal is in the egress ledger
+    audit = {e["action"] for e in client.get("/audit/recent").json()["events"]}
+    assert "egress.decision" in audit
 
 
 def test_research_dispatch_marks_work_item_error_when_all_fetches_fail(tmp_path: Path, monkeypatch) -> None:
