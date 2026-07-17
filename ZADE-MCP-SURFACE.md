@@ -30,8 +30,10 @@ Landed in [`agent_surface.py`](src/cofounder_kernel/agent_surface.py) as `EXPOSE
 |---|---|---|
 | `memory.search` | read | FTS over Zade's memory |
 | `audit.recent` | read | recent audit events |
-| `memory.write` | write | mutating but non-destructive; stays L1/audited; `source` auto-stamped to the calling agent |
+| `memory.write` | write | **live (promoted 2026-07-17)**; non-destructive/append-only, L1/audited, `source` auto-stamped to the calling agent |
 | ~~`memory.forget`~~ | — | **deliberately excluded** — destructive; an external agent must not delete founder memory |
+
+> **Governance note — external writes are currently autonomous.** `memory.write` routes through the authority policy as a known-local L1 action, which is auto-allowed (no founder approval), attributed, and audited. It is append-only (an agent cannot edit or delete), but because memory feeds Zade's recall/grounding, an agent could append unreviewed records. If that's too permissive, the follow-up is to force approval for `mcp:`-actor writes, or quarantine externally-written memory out of grounding until reviewed. Not done — flagged for your call.
 
 Everything else the kernel can do (shell, vault, trading, browser, delegation, founder-OS mutations) is **absent**. Anything off-list is refused *before* it reaches kernel dispatch (`not_exposed`, fail closed).
 
@@ -68,7 +70,7 @@ Built to these constraints:
 
 - **Off by default** — runs only via `python -m cofounder_kernel mcp` ([`__main__.py`](src/cofounder_kernel/__main__.py)), never auto-started, never in the tray autostart. The kernel's HTTP server is untouched.
 - **No network boundary** — stdio only: the agent spawns it as a subprocess, so it listens on no port and is reachable only by whoever can spawn the process (the local user). It reads the same SQLite DB the kernel owns; read tools need no coordination and their audit rows land in the founder-visible ledger.
-- **Read-first** — `LIVE_EXPOSED` = `{memory.search, audit.recent}`. `memory.write` is defined in `agent_surface.EXPOSED` but deliberately **not on the wire** yet; promote it after watching the read-only doorway behave.
+- **Read-first, then promoted** — shipped `LIVE_EXPOSED` = `{memory.search, audit.recent}`; after the read doorway was verified with a real agent, `memory.write` was promoted to the wire (2026-07-17). `memory.forget` stays off.
 
 ### Connecting a client
 Point a local MCP client (Claude Desktop, Codex) at the command:

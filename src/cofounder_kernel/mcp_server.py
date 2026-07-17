@@ -24,7 +24,7 @@ import json
 import sys
 from typing import Any, TextIO
 
-from .agent_surface import READ, AgentSurface
+from .agent_surface import READ, WRITE, AgentSurface
 from .config import KernelConfig, load_config
 from .db import KernelDatabase
 from .tools import ToolRegistry
@@ -34,10 +34,12 @@ from .tools import ToolRegistry
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {"name": "zade", "title": "Zade governed surface", "version": "0.1.0"}
 
-# The LIVE surface for the shipped server: read-only. Mutating tools stay off the
-# wire until the founder promotes them (agent_surface.EXPOSED knows about
-# memory.write; the server just doesn't expose it yet).
-LIVE_EXPOSED = {"memory.search": READ, "audit.recent": READ}
+# The LIVE surface for the shipped server. Two reads plus memory.write —
+# promoted to the wire 2026-07-17 after the read-only doorway was verified with a
+# real agent. memory.write is non-destructive (append-only), stays L1/audited via
+# the registry, and is attributed to the calling agent. Destructive tools
+# (memory.forget) remain off the wire — see agent_surface.EXPOSED.
+LIVE_EXPOSED = {"memory.search": READ, "audit.recent": READ, "memory.write": WRITE}
 
 # JSON-RPC error codes.
 _PARSE_ERROR = -32700

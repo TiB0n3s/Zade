@@ -34,14 +34,16 @@ def _init(server: McpServer, client: str = "codex") -> dict:
     )
 
 
-def test_live_surface_is_read_only(tmp_path: Path) -> None:
-    assert set(LIVE_EXPOSED.values()) == {READ}
+def test_live_surface_contents(tmp_path: Path) -> None:
+    # two reads + the promoted non-destructive write; destructive stays off-wire.
+    assert set(LIVE_EXPOSED) == {"memory.search", "audit.recent", "memory.write"}
+    assert LIVE_EXPOSED["memory.search"] == READ
     server, _ = _server(tmp_path)
     _init(server)
     listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {t["name"] for t in listed["result"]["tools"]}
-    assert names == {"memory.search", "audit.recent"}
-    assert "memory.write" not in names and "memory.forget" not in names
+    assert names == {"memory.search", "audit.recent", "memory.write"}
+    assert "memory.forget" not in names  # destructive remains excluded
 
 
 def test_initialize_handshake(tmp_path: Path) -> None:
@@ -90,8 +92,7 @@ def test_tools_call_off_list_is_refused(tmp_path: Path) -> None:
     server, db = _server(tmp_path)
     memory_id = db.add_memory(kind="note", title="secret", content="x", source="local", metadata={})
     _init(server)
-    for name, args in [("memory.write", {"title": "t", "content": "c"}),
-                       ("memory.forget", {"memory_id": memory_id}),
+    for name, args in [("memory.forget", {"memory_id": memory_id}),
                        ("shell.rm", {})]:
         resp = server.handle(
             {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": name, "arguments": args}}
@@ -100,6 +101,21 @@ def test_tools_call_off_list_is_refused(tmp_path: Path) -> None:
         assert resp["result"]["structuredContent"]["error"] == "not_exposed", name
     # the memory that forget targeted is untouched
     assert db.search_memories("secret", 5)
+
+
+def test_tools_call_write_succeeds_and_is_attributed(tmp_path: Path) -> None:
+    server, db = _server(tmp_path)
+    _init(server, client="codex")
+    resp = server.handle(
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+         "params": {"name": "memory.write", "arguments": {"title": "Agent note", "content": "written via mcp"}}}
+    )
+    assert resp["result"]["isError"] is False
+    assert resp["result"]["structuredContent"]["memory_id"]
+    # persisted, with the source stamped to the calling agent
+    matches = db.search_memories("Agent note", 5)
+    assert matches and matches[0].source == "mcp:codex"
+    assert any(e["actor"] == "mcp:codex" and e["action"] == "tool.call" for e in db.recent_audit_events(10))
 
 
 def test_unknown_method_errors_but_notification_is_silent(tmp_path: Path) -> None:
