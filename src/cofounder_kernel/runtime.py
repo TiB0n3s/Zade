@@ -4221,7 +4221,8 @@ def _conversation_build_context(
         if content:
             lines.append(f"{role}: {content[:600]}")
     if current_message.strip():
-        lines.append(f"user: {re.sub(r'\\s+', ' ', current_message.strip())[:600]}")
+        normalized_message = re.sub(r"\s+", " ", current_message.strip())
+        lines.append(f"user: {normalized_message[:600]}")
     text = "\n".join(lines)
     return text[-max_chars:] if len(text) > max_chars else text
 

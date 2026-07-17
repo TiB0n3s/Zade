@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `036596e` 2026-07-17 - Review verify_failed reads as a finding, not a broken run
 - `059f780` 2026-07-17 - Review route: 'review <project>' runs a read-only inspection; workspace run-record answers status questions
 - `f80d547` 2026-07-17 - Structured output: JSON contracts enforced server-side via Ollama format
 - `0120f68` 2026-07-17 - Grounded answers: tagged recall citations audited by the kernel
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `231b8ad` 2026-07-17 - Run reports carry the REAL change set: kernel diffs the workspace before/after
 - `620ebb2` 2026-07-17 - A run whose edits all failed is NOT done; fabricated bodies never ride an honest route block
 - `a866e4f` 2026-07-17 - Step routes read deep conversation history, not the 12-turn prompt window
-- `17c24fa` 2026-07-17 - Step commands route behind lead-in clauses; no_task routes give no license to claim execution
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
