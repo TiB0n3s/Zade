@@ -1282,10 +1282,12 @@ class RuntimeService:
             domain_evidence_rule = ""
         memory_block = _brief_hits(
             context["memory_hits"],
-            "kind",
+            "id",
             "title",
             "content",
             empty="No local memory hits.",
+            tag="M",
+            note_key="kind",
         )
         semantic_block = _brief_hits(
             context["semantic_hits"],
@@ -1293,6 +1295,7 @@ class RuntimeService:
             "document_title",
             "text",
             empty="No semantic document hits.",
+            tag="S",
         )
         skill_block = context.get("skill_prompt_block", "No operating skills matched this request.")
         code_model_block = _code_model_prompt_block(context)
@@ -1378,6 +1381,12 @@ Semantic: {semantic_block}
 Skills: {skill_block}
 Trading-bot: {trading_bot_block}
 
+----------  Grounding discipline (facts stay traceable)  ----------
+- Facts about Ellie, her company, project state, past work, numbers, and dates come ONLY from the blocks in this prompt (recall above, Trading-bot, working model, founder state, the conversation, or text Ellie pasted) or from a route block the kernel appends. General engineering knowledge is fair game; filling gaps in HER world from general knowledge is fabrication.
+- Recall hits above carry tags ([M12] = memory record, [S4] = semantic document). When a claim rests on one, cite its tag inline once. Only tags printed above exist — the kernel strips invented tags, so an invented citation just becomes an unsupported claim.
+- Keep the record and your read separate: state what a record or block actually says, and mark anything you derived as your read or your bet — never dressed as a recorded fact.
+- "I don't have that on file" is a complete answer. When no block covers the ask, say so plainly and name the exact check or data that would answer it — do not fill the gap.
+
 ----------  Before you answer  ----------
 Answer as yourself — decisive, concrete, tight, with your dry edge. No hedging, no generic-assistant voice, no throat-clearing. Lead with the move.
 {domain_evidence_rule}
@@ -1452,6 +1461,21 @@ The founder's current message is supplied separately as the user-role message. D
             applied_rules.append("skill_router_scoped_context")
         if not context["evidence_state"]["local_evidence_present"]:
             notes.append("No local memory or semantic evidence matched the request.")
+        # Citation audit: [M#]/[S#] tags in the draft must point at recall
+        # actually injected this turn. A tag with no matching hit is an
+        # invented source — stripped, so it reads as the unsupported claim it
+        # is instead of manufacturing false auditability.
+        citation_audit = _audit_citations(text, _valid_citation_tags(context))
+        if citation_audit["fabricated"]:
+            text = citation_audit["text"]
+            applied_rules.append("fabricated_citation_stripped")
+            notes.append(
+                "Stripped citation tag(s) with no matching recall this turn: "
+                + ", ".join(citation_audit["fabricated"])
+                + ". The claims they decorated are unsupported."
+            )
+        elif citation_audit["cited"]:
+            applied_rules.append("citations_verified")
         third_person_hit = _detect_third_person_self_reference(text, self.config.identity.name)
         if third_person_hit:
             applied_rules.append("first_person_self_reference_checked")
@@ -1621,6 +1645,10 @@ The founder's current message is supplied separately as the user-role message. D
                 "notes": notes,
                 "applied_rules": applied_rules,
                 "evidence_state": context["evidence_state"],
+                "citation_audit": {
+                    "cited": citation_audit["cited"],
+                    "fabricated_stripped": citation_audit["fabricated"],
+                },
             },
         }
 
@@ -2606,6 +2634,9 @@ _BULLET_COMPLETION_CLAIM_RE = re.compile(
     r"(?im)^\s*[-•]\s*(?:Removed|Deleted|Installed|Created|Implemented|Updated"
     r"|[^\n]{0,80}?\b(?:installed|initialized|implemented|confirmed|verified|updated|created)\b)"
 )
+_COMPLETION_VERB_FRAGMENT = (
+    r"(?:completed|created|implemented|installed|updated|executed|verified|removed|deleted)"
+)
 
 
 def _normalize_reply_for_patterns(text: str) -> str:
@@ -2636,6 +2667,31 @@ def _is_unrouted_execution_command(message: str) -> bool:
     return bool(_STEP_REF_WORD_RE.search(stripped) or _STEP_REF_NUM_RE.search(stripped))
 
 
+def _fabricated_claim_match_is_negated(plain: str, match: re.Match[str]) -> bool:
+    """True when a completion-claim-shaped match is actually a negative status
+    fact ("no files have been created"), not a claim of execution."""
+    fragment = plain[max(0, match.start() - 90) : min(len(plain), match.end() + 40)]
+    verb = _COMPLETION_VERB_FRAGMENT
+    return bool(
+        re.search(rf"(?i)\b(?:has|have)\s+not\s+(?:yet\s+)?been\s+{verb}\b", fragment)
+        or re.search(rf"(?i)\bnothing\s+(?:[\w'-]+\s+){{0,5}}(?:has|have)\s+been\s+{verb}\b", fragment)
+        or re.search(rf"(?i)\bnone\s+(?:[\w'-]+\s+){{0,8}}(?:has|have)\s+been\s+{verb}\b", fragment)
+        or re.search(rf"(?i)\bzero\s+(?:[\w'./\\-]+\s+){{0,8}}(?:has|have)\s+been\s+{verb}\b", fragment)
+        or re.search(rf"(?i)\bno\s+(?:[\w'./\\-]+\s+){{0,10}}(?:has|have)\s+been\s+{verb}\b", fragment)
+        or re.search(rf"(?i)\bno\s+(?:[\w'./\\-]+\s+){{0,10}}{verb}\b", fragment)
+    )
+
+
+def _has_positive_fabricated_completion_claim(plain: str) -> bool:
+    for match in _FABRICATED_COMPLETION_CLAIM_RE.finditer(plain):
+        if not _fabricated_claim_match_is_negated(plain, match):
+            return True
+    for match in _BULLET_COMPLETION_CLAIM_RE.finditer(plain):
+        if not _fabricated_claim_match_is_negated(plain, match):
+            return True
+    return False
+
+
 def _is_fabricated_execution_reply(*, message: str, response: str) -> bool:
     """True when a drafted reply claims this-turn execution and no route fired.
 
@@ -2645,10 +2701,7 @@ def _is_fabricated_execution_reply(*, message: str, response: str) -> bool:
     message was itself a command (live incident: 'I already gave you the
     project path' drew a full fabricated completion report)."""
     plain = _normalize_reply_for_patterns(response)
-    if not (
-        _FABRICATED_COMPLETION_CLAIM_RE.search(plain)
-        or _BULLET_COMPLETION_CLAIM_RE.search(plain)
-    ):
+    if not _has_positive_fabricated_completion_claim(plain):
         return False
     if _EXECUTION_CONTEXT_RE.search(plain):
         return True
@@ -4449,6 +4502,8 @@ def _brief_hits(
     text_key: str,
     *,
     empty: str,
+    tag: str = "",
+    note_key: str = "",
 ) -> str:
     if not items:
         return empty
@@ -4456,8 +4511,47 @@ def _brief_hits(
     for item in items[:5]:
         title = str(item.get(title_key, "untitled"))
         text = str(item.get(text_key, ""))[:500]
-        lines.append(f"- [{item.get(id_key)}] {title}: {text}")
+        note = f" ({item.get(note_key)})" if note_key and item.get(note_key) else ""
+        lines.append(f"- [{tag}{item.get(id_key)}]{note} {title}: {text}")
     return "\n".join(lines)
+
+
+# Citation tags a reply may carry: [M<id>] = local memory record, [S<id>] =
+# semantic document. Only tags rendered into THIS turn's recall blocks are
+# real; anything else the model writes in this shape is an invented source.
+_CITATION_TAG_RE = re.compile(r"\[(?P<tag>[MS]\d{1,10})\]")
+
+
+def _valid_citation_tags(context: dict[str, Any]) -> set[str]:
+    """The citable tag set for this turn — mirrors what _brief_hits rendered
+    (same top-5 cut) so the audit and the prompt can never disagree."""
+    tags: set[str] = set()
+    for item in (context.get("memory_hits") or [])[:5]:
+        if item.get("id") is not None:
+            tags.add(f"M{item['id']}")
+    for item in (context.get("semantic_hits") or [])[:5]:
+        if item.get("document_id") is not None:
+            tags.add(f"S{item['document_id']}")
+    return tags
+
+
+def _audit_citations(text: str, valid_tags: set[str]) -> dict[str, Any]:
+    """Deterministic citation audit: every [M#]/[S#] tag in the reply must have
+    been injected into this turn's recall blocks. Invented tags are stripped —
+    a citation to evidence that was never supplied is worse than no citation,
+    because it manufactures false auditability."""
+    cited = [match.group("tag") for match in _CITATION_TAG_RE.finditer(text)]
+    if not cited:
+        return {"text": text, "cited": [], "fabricated": []}
+    fabricated = sorted({tag for tag in cited if tag not in valid_tags})
+    cleaned = text
+    for tag in fabricated:
+        cleaned = re.sub(r"\s*\[" + re.escape(tag) + r"\]", "", cleaned)
+    return {
+        "text": cleaned,
+        "cited": sorted({tag for tag in cited if tag in valid_tags}),
+        "fabricated": fabricated,
+    }
 
 
 def _brief_decision_recommendations(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

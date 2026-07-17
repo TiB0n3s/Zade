@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `9171acf` 2026-07-17 - Fresh-context verifier subagent + send_progress tool for delegated runs
 - `1aadc7a` 2026-07-17 - Work ledger: steps are rows, not prose; work-status answers come from the kernel
 - `b3a06c6` 2026-07-17 - Delegated runs verify the GOAL state, not just this run''s delta
 - `280a45b` 2026-07-17 - TypeScript workspaces get tsc --noEmit as a second mandatory kernel check
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `1ee2563` 2026-07-17 - A routeless reply can never claim execution; model fabrications never become briefs
 - `59fd7b7` 2026-07-17 - Scored keyword router: profile, skill hints, and workflow flags before prompt assembly
 - `3f5a9d9` 2026-07-17 - "Re-run step N" routes; an unrouted execution command can never claim success
-- `ae6b50b` 2026-07-17 - Step referents ignore synthetic replies; workspace mechanics never ask the founder
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

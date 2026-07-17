@@ -105,6 +105,15 @@ class InvestigationService:
             "in the Inbox. Never present output she pasted (or that you remember) as "
             "something you just fetched, and never narrate an action as performed."
         )
+        lines.append(
+            "Ground the final answer in this turn's tool results: every number, count, "
+            "date, and status fact must appear in a tool result from this turn, and the "
+            "answer names which read it came from. If the results come back without the "
+            "asked-for fact, say the read did not return it and name exactly what is "
+            "missing — do not fill the gap from earlier conversation or general knowledge. "
+            "A partial answer grounded in real reads beats a complete-sounding one that "
+            "is not."
+        )
         return "\n".join(lines)
 
     def _register_tools(self) -> None:
