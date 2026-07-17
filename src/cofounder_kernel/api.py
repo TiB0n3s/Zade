@@ -1392,6 +1392,74 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    # External-agent memory quarantined from grounding until the founder reviews it.
+    @app.get("/memory/quarantine")
+    def memory_quarantine_list(limit: int = 200) -> dict[str, Any]:
+        return {"quarantined": db.list_memories_by_grounding_status("quarantined", limit=limit)}
+
+    @app.post("/memory/quarantine/{memory_id}/release")
+    def memory_quarantine_release(memory_id: int) -> dict[str, Any]:
+        released = db.set_memory_grounding_status(memory_id, "active")
+        if released is None:
+            raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
+        db.audit(
+            actor="founder",
+            action="memory.grounding.release",
+            target=f"memory:{memory_id}",
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={"memory_id": memory_id, "source": released.get("source")},
+        )
+        return {"released": released}
+
+    @app.post("/memory/quarantine/{memory_id}/hold")
+    def memory_quarantine_hold(memory_id: int) -> dict[str, Any]:
+        held = db.set_memory_grounding_status(memory_id, "quarantined")
+        if held is None:
+            raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
+        db.audit(
+            actor="founder",
+            action="memory.grounding.hold",
+            target=f"memory:{memory_id}",
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={"memory_id": memory_id, "source": held.get("source")},
+        )
+        return {"held": held}
+
+    # -- per-request egress grants (the egress gate's PER_REQUEST half) --------
+    @app.get("/egress/grants")
+    def egress_grants() -> dict[str, Any]:
+        from .egress import list_pending_grants
+
+        return {"pending": list_pending_grants(db)}
+
+    @app.post("/egress/grants/{request_id}/approve")
+    def egress_approve_grant(request_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        from .egress import approve_egress_grant
+
+        request = payload or ApprovalResolveRequest()
+        try:
+            return approve_egress_grant(
+                db,
+                request_id,
+                resolved_by=request.resolved_by,
+                typed_phrase=request.typed_confirmation,
+                typed_confirmation_phrase=authority.summary()["typed_confirmation_phrase"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/egress/grants/{request_id}/deny")
+    def egress_deny_grant(request_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
+        from .egress import deny_egress_grant
+
+        request = payload or ApprovalResolveRequest()
+        try:
+            return deny_egress_grant(db, request_id, resolved_by=request.resolved_by, note=request.note)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.get("/experiments")
     def list_experiments(status: str | None = None, limit: int = 50) -> dict[str, Any]:
         return {"items": experiments.list_experiments(status=status, limit=limit)}

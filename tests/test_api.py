@@ -309,6 +309,51 @@ def test_mcp_writes_approval_endpoints(tmp_path: Path, monkeypatch) -> None:
     assert client.get("/mcp/writes").json()["pending"] == []
 
 
+def test_egress_grant_endpoints(tmp_path: Path, monkeypatch) -> None:
+    """Founder-facing channel for per-request egress grants: list the queue,
+    approve (token + typed phrase issues the grant), deny (discards)."""
+    from cofounder_kernel.egress import DataClass, EgressRequest, active_grant_for, request_egress_grant
+
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        security=SecurityConfig(local_token="secret"),
+    )
+    app = create_app(config)
+    db = app.state.db
+    req = EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic", purpose="strategy review")
+    request_egress_grant(db, req, preview="curated Q3 brief")
+    client = TestClient(app)
+    token = {"X-Zade-Token": "secret"}
+
+    listed = client.get("/egress/grants")
+    assert listed.status_code == 200
+    pending = listed.json()["pending"]
+    assert len(pending) == 1
+    grant_id = pending[0]["approval_request_id"]
+    assert pending[0]["vendor"] == "anthropic" and pending[0]["preview"] == "curated Q3 brief"
+
+    # Approve needs the token AND the typed confirmation phrase.
+    assert client.post(f"/egress/grants/{grant_id}/approve").status_code == 401
+    assert client.post(f"/egress/grants/{grant_id}/approve", headers=token, json={"typed_confirmation": "nope"}).status_code == 400
+    ok = client.post(
+        f"/egress/grants/{grant_id}/approve", headers=token, json={"typed_confirmation": "make the jump to hyperspace"}
+    )
+    assert ok.status_code == 200 and ok.json()["granted"] is True
+    # The grant is now active for that exact request (the gate would ALLOW it).
+    assert active_grant_for(db, req) is not None
+
+    # Deny discards a fresh grant, and the queue ends empty.
+    req2 = EgressRequest(request_id="op-2", data_class=DataClass.SOURCE_CODE, vendor="openai")
+    request_egress_grant(db, req2)
+    grant2 = client.get("/egress/grants").json()["pending"][0]["approval_request_id"]
+    assert client.post(f"/egress/grants/{grant2}/deny", headers=token).status_code == 200
+    assert active_grant_for(db, req2) is None
+    assert client.get("/egress/grants").json()["pending"] == []
+
+
 def test_authority_and_self_inventory_routes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     config = KernelConfig(

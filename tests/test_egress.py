@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from cofounder_kernel.db import KernelDatabase
 from cofounder_kernel.egress import (
     DataClass,
     Disposition,
@@ -16,12 +17,26 @@ from cofounder_kernel.egress import (
     EgressRequest,
     VendorTier,
     Verdict,
+    active_grant_for,
+    approve_egress_grant,
+    authorize_egress,
+    consume_grant,
+    deny_egress_grant,
+    list_pending_grants,
     parse_standing_grants,
 )
+
+PHRASE = "make the jump to hyperspace"
 
 
 def _req(data_class: DataClass, vendor: str, request_id: str = "r1") -> EgressRequest:
     return EgressRequest(request_id=request_id, data_class=data_class, vendor=vendor, purpose="test")
+
+
+def _db(tmp_path) -> KernelDatabase:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    return db
 
 
 # ---- Invariant 1: local-only is inert-by-default --------------------------
@@ -229,3 +244,113 @@ def test_from_config_default_is_local_only_and_inert() -> None:
     assert gate.provider_policy == "local_only"
     # default posture: cloud voice refused
     assert gate.decide(_req(DataClass.FOUNDER_AUDIO, "deepgram")).verdict is Verdict.DENY
+
+
+# ---- Per-request grant flow ------------------------------------------------
+def _pending_grants(db: KernelDatabase) -> list:
+    from cofounder_kernel.egress import GRANT_SOURCE_TYPE
+
+    return [r for r in db.list_approval_requests(status="pending", limit=100) if r.source_type == GRANT_SOURCE_TYPE]
+
+
+def test_authorize_files_a_pending_grant_on_auth_required(tmp_path) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    req = EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic", purpose="strategy review")
+
+    decision = authorize_egress(db, gate, req, preview="Q3 strategy brief (curated)")
+    assert decision.verdict is Verdict.AUTH_REQUIRED
+    # a pending founder grant now exists, carrying the preview but not a payload
+    pend = list_pending_grants(db)
+    assert len(pend) == 1
+    assert pend[0]["data_class"] == "founder_brief" and pend[0]["vendor"] == "anthropic"
+    assert pend[0]["preview"] == "Q3 strategy brief (curated)"
+
+
+def test_authorize_is_idempotent_no_duplicate_grants(tmp_path) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    req = EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic")
+    authorize_egress(db, gate, req)
+    authorize_egress(db, gate, req)
+    assert len(_pending_grants(db)) == 1
+
+
+def test_approve_then_allow(tmp_path) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    req = EgressRequest(request_id="op-1", data_class=DataClass.SOURCE_CODE, vendor="anthropic", purpose="review diff")
+
+    assert authorize_egress(db, gate, req).verdict is Verdict.AUTH_REQUIRED
+    grant_id = _pending_grants(db)[0].id
+    result = approve_egress_grant(db, grant_id, typed_phrase=PHRASE)
+    assert result["granted"] is True
+    # now the same request is ALLOWed by the stored grant
+    decision = authorize_egress(db, gate, req)
+    assert decision.verdict is Verdict.ALLOW
+    assert decision.matched_rule == "matrix.per_request_granted"
+
+
+def test_grant_requires_typed_phrase(tmp_path) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    req = EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic")
+    authorize_egress(db, gate, req)
+    grant_id = _pending_grants(db)[0].id
+    with pytest.raises(ValueError):
+        approve_egress_grant(db, grant_id, typed_phrase="wrong words")
+    # still not authorized
+    assert authorize_egress(db, gate, req).verdict is Verdict.AUTH_REQUIRED
+
+
+def test_grant_is_single_use(tmp_path) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    req = EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic")
+    authorize_egress(db, gate, req)
+    approve_egress_grant(db, _pending_grants(db)[0].id, typed_phrase=PHRASE)
+    assert authorize_egress(db, gate, req).verdict is Verdict.ALLOW
+    # the caller performs the send, then consumes the grant
+    assert consume_grant(db, req) is True
+    # a replay is no longer authorized — it files a fresh pending grant
+    assert authorize_egress(db, gate, req).verdict is Verdict.AUTH_REQUIRED
+    assert consume_grant(db, req) is False  # nothing left to consume
+
+
+def test_grant_does_not_match_a_different_request(tmp_path) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    granted = EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic")
+    authorize_egress(db, gate, granted)
+    approve_egress_grant(db, _pending_grants(db)[0].id, typed_phrase=PHRASE)
+    # a different operation id, and a different vendor, each get nothing
+    other_op = EgressRequest(request_id="op-2", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic")
+    other_vendor = EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="openai")
+    assert active_grant_for(db, other_op) is None
+    assert active_grant_for(db, other_vendor) is None
+    assert active_grant_for(db, granted) is not None
+
+
+def test_deny_leaves_it_unauthorized(tmp_path) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    req = EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic")
+    authorize_egress(db, gate, req)
+    deny_egress_grant(db, _pending_grants(db)[0].id)
+    # denied: authorize files a NEW pending request (deny doesn't grant anything)
+    assert authorize_egress(db, gate, req).verdict is Verdict.AUTH_REQUIRED
+
+
+def test_forbidden_and_local_only_never_file_a_grant(tmp_path) -> None:
+    # raw founder_state is FORBIDDEN even under a raised policy -> DENY, no grant
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="cloud_allowed")
+    d1 = authorize_egress(db, gate, EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_STATE, vendor="anthropic"))
+    assert d1.verdict is Verdict.DENY
+    assert _pending_grants(db) == []
+    # and under local_only, a per-request cell DENYs (inert) -> no grant
+    db2 = _db(tmp_path / "b")
+    gate2 = EgressPolicy(provider_policy="local_only")
+    d2 = authorize_egress(db2, gate2, EgressRequest(request_id="op-1", data_class=DataClass.FOUNDER_BRIEF, vendor="anthropic"))
+    assert d2.verdict is Verdict.DENY
+    assert _pending_grants(db2) == []

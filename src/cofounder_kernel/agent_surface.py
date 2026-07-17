@@ -195,6 +195,12 @@ class AgentSurface:
         if name == "memory.write" and self.require_write_approval:
             return self._hold_write_for_approval(args, actor)
 
+        # Even an ungated external write is quarantined from grounding: external
+        # provenance is independent of the approval gate. The surface sets this
+        # (not the agent's args), so a client cannot opt itself into recall.
+        if name == "memory.write":
+            args = {**args, "grounding_status": "quarantined"}
+
         # Delegate to the registry: its authority evaluation + audit still apply.
         # The registry records the call under our attributed actor.
         return self.tools.call(name, args, actor=actor)
@@ -292,6 +298,9 @@ def approve_pending_write(db: Any, ingestion: Any, request_id: int, *, resolved_
         content=str(write.get("content") or ""),
         source=str(write.get("source") or actor),
         metadata=dict(write.get("metadata") or {}),
+        # External-authored: quarantined from grounding until the founder releases
+        # it. Approving the WRITE authorizes storage, not entry into Zade's recall.
+        grounding_status="quarantined",
     )
     write_status = result.get("status")
     db.resolve_approval_request(

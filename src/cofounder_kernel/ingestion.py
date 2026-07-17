@@ -451,7 +451,9 @@ class IngestionService:
                 failed += 1
         return {"embedded": embedded, "skipped": skipped, "failed": failed, "total": len(chunks), "model": model}
 
-    def search_memories_hybrid(self, *, query: str, limit: int = 5, mode: str = "hybrid") -> list[dict]:
+    def search_memories_hybrid(
+        self, *, query: str, limit: int = 5, mode: str = "hybrid", include_quarantined: bool = True
+    ) -> list[dict]:
         """Recall durable memories by hybrid keyword+vector fusion, so a paraphrase
         that shares no words with a memory still finds it. Degrades to keyword-only
         when the embedder is unavailable (or nothing is embedded yet) instead of
@@ -472,7 +474,7 @@ class IngestionService:
                 vector = self.embedder.embed(
                     text=_nomic_task_prefix(embed_model, "query") + query, model=embed_model
                 )
-                vector_hits = self.db.semantic_search_memories(vector, limit=pool)
+                vector_hits = self.db.semantic_search_memories(vector, limit=pool, include_quarantined=include_quarantined)
             except Exception as exc:
                 if mode == "vector":
                     raise
@@ -489,7 +491,7 @@ class IngestionService:
                     "metadata": record.metadata,
                     "score": 0.0,
                 }
-                for record in self.db.search_memories(query, limit=pool)
+                for record in self.db.search_memories(query, limit=pool, include_quarantined=include_quarantined)
             ]
         if mode == "vector":
             matches = [
@@ -533,6 +535,7 @@ class IngestionService:
         metadata: dict | None = None,
         dedupe: bool = True,
         dedupe_threshold: float = 0.93,
+        grounding_status: str = "active",
     ) -> dict:
         """The governed write path for durable memory: refuses obvious secrets,
         rejects near-IDENTICAL re-saves, writes the row, and embeds it so it is
@@ -571,7 +574,9 @@ class IngestionService:
                     "duplicate_title": top[0]["title"],
                     "score": round(top[0]["score"], 4),
                 }
-        memory_id = self.db.add_memory(kind=kind, title=title, content=content, source=source, metadata=metadata or {})
+        memory_id = self.db.add_memory(
+            kind=kind, title=title, content=content, source=source, metadata=metadata or {}, grounding_status=grounding_status
+        )
         if vector:
             self.db.upsert_memory_embedding(
                 memory_id=memory_id, model=model, vector=vector, content_hash=sha256_text(embed_text)

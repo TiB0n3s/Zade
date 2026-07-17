@@ -1,6 +1,6 @@
 # Egress Classification Matrix + Per-Request Provider-Authorization Gate
 
-**Status:** matrix decided (§7 resolved); gate wired into the voice lane (Phase 2).
+**Status:** matrix decided (§7 resolved); gate wired into the voice lane (Phase 2); **per-request grant flow built** — the PER_REQUEST half of the matrix is now live-capable (`egress.authorize_egress` + founder `/egress/grants` endpoints).
 **Date:** 2026-07-17
 **Owner:** founder (Ellie) / Zade kernel
 **Prereq for:** any OpenAI / Anthropic / OpenClaw integration. Nothing cloud is safe before this.
@@ -123,6 +123,31 @@ request = EgressRequest(request_id, data_class, vendor, purpose)
 - **Authority policy** decides *the action* runs → **egress gate** decides *the data may leave to that vendor* → **netguard** decides *the target is network-safe*. All three must pass. The gate slots between the existing approval console and the existing SSRF check; it does not duplicate either.
 - The per-request grant carries `typed_phrase_ok`, so a PER_REQUEST unlock rides the *existing* typed-confirmation gate (`authority.AuthorityPolicy.typed_confirmation_phrase`) rather than inventing a parallel approval path.
 
+### The per-request grant flow (built)
+
+`EgressPolicy.decide` can *demand* a grant (`AUTH_REQUIRED`) but cannot *mint* one — a grant must come from the founder. The flow that turns a demand into a founder decision lives in `egress.py` and reuses the same `approval_requests` table as the `mcp_memory_write` gate:
+
+```
+caller: authorize_egress(db, policy, request, preview=…)
+   │  active grant?  ── yes ─▶ ALLOW
+   │  no → policy.decide → AUTH_REQUIRED → files a pending "egress_grant" (idempotent)
+   ▼
+founder: GET /egress/grants → POST /egress/grants/{id}/approve   (X-Zade-Token + typed phrase)
+   │  mints the grant, persisted as the approved approval_request
+   ▼
+caller: authorize_egress(…) again ─▶ ALLOW ─▶ send ─▶ consume_grant(…)  (single-use; replay re-queues)
+```
+
+Properties (all test-pinned in [test_egress.py](tests/test_egress.py) + [test_api.py](tests/test_api.py)):
+- **Founder-issued, never self-minted** — approval requires the token *and* the typed confirmation phrase; a click alone won't do it.
+- **Bound to the exact request** — a grant for `(request_id, data_class, vendor)` authorizes only that; a different op id or vendor gets nothing.
+- **Single-use** — `consume_grant` marks it spent; a replay re-files a pending request.
+- **Idempotent queue** — retrying a not-yet-granted request reuses its pending row, never stacks duplicates.
+- **Hard boundaries still win** — `FORBIDDEN` cells (raw `founder_state`) and `local_only` DENY *before* any grant is offered; `authorize_egress` never files a pending request for a DENY.
+- **Redacted** — the founder sees a `preview` (what would be sent), never the payload.
+
+This makes the surviving PER_REQUEST cloud paths — `founder_brief`→model, `source_code`→model, `screen_pixels`→model — operable. What's still absent is a *consumer*: no cloud client sends anything yet. `authorize_egress` is the gate a future consumer calls; building e.g. the `founder_brief`→Anthropic review is the next step, and it now has a real authorization path.
+
 ---
 
 ## 5. Config surface (proposed — not yet wired)
@@ -151,7 +176,8 @@ A malformed or unknown grant fails loud at load (`egress.parse_standing_grants`)
 | **1** | Reference module + tests, decoupled. | ✅ landed |
 | **2** | `[egress]` config + load (`EgressConfig`); gate wired into the **voice** cloud methods ([voice.py](src/cofounder_kernel/voice.py) `_assert_egress_allowed`) as the first real call site. Each decision audited (redacted, `action="egress.decision"`). Cloud voice now refused by default; local `command` engine unaffected. | ✅ landed |
 | **3** | Wire the **research** lane; classify the fetch as `public_derived` (STANDING — the gate adds classification + audit, deferring to research's own approval). Surface AUTH_REQUIRED decisions in the approval console as a founder card. | next |
-| **4** | First *new* cloud vendor (whichever the founder picks) behind PER_REQUEST. Grant issuance flows through the approval console + typed phrase. | gated by that vendor's design review |
+| **3.5** | **Per-request grant flow** — `authorize_egress` + `request/approve/deny/consume` + `/egress/grants` founder endpoints. Turns AUTH_REQUIRED into a founder decision; makes the PER_REQUEST cloud cells operable. | ✅ built (see §4 "The per-request grant flow") |
+| **4** | First *new* cloud vendor (whichever the founder picks) behind PER_REQUEST — a real *consumer* that calls `authorize_egress` then sends. Grant issuance already flows through the typed phrase. | gated by that vendor's design review |
 | **—** | **Cross-channel founder authentication** (prereq for any CHANNEL egress; see §7 #3). | not started |
 
 **Nothing in any phase flips `provider_policy` off `local_only` on its own.** Raising the policy stays a deliberate, separate founder act. Phase 2 changed no default runtime behavior: the default config ships local voice, and the gate refuses the cloud lanes it was already the case no one had enabled.

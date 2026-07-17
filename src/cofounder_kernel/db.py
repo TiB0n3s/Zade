@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -25,6 +25,11 @@ COLUMN_PATCHES: tuple[tuple[str, str, str], ...] = (
     # v25: content hash on document-chunk embeddings, so re-embedding (e.g. after
     # adding retrieval prefixes) can skip unchanged chunks.
     ("chunk_embeddings", "content_hash", "content_hash TEXT NOT NULL DEFAULT ''"),
+    # v26: grounding quarantine. External-agent-authored memory is held OUT of the
+    # grounding/recall context (the prompt-injection surface) until a founder
+    # releases it. 'active' = eligible for recall; 'quarantined' = stored and
+    # explicitly searchable, but never auto-injected into Zade's reasoning.
+    ("memories", "grounding_status", "grounding_status TEXT NOT NULL DEFAULT 'active'"),
 )
 
 
@@ -374,14 +379,15 @@ class KernelDatabase:
         content: str,
         source: str = "local",
         metadata: dict[str, Any] | None = None,
+        grounding_status: str = "active",
     ) -> int:
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO memories (created_at, kind, title, content, source, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO memories (created_at, kind, title, content, source, metadata_json, grounding_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (utc_now(), kind, title, content, source, json.dumps(metadata or {}, sort_keys=True)),
+                (utc_now(), kind, title, content, source, json.dumps(metadata or {}, sort_keys=True), grounding_status),
             )
             memory_id = int(cur.lastrowid)
             conn.execute(
@@ -410,6 +416,33 @@ class KernelDatabase:
             )
             conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
             return {"id": memory_id, "kind": row["kind"], "title": row["title"], "source": row["source"]}
+
+    def list_memories_by_grounding_status(self, status: str, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Memories in a grounding state — used to surface the quarantine queue."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, kind, title, content, source, metadata_json, grounding_status
+                FROM memories WHERE grounding_status = ? ORDER BY id DESC LIMIT ?
+                """,
+                (status, limit),
+            ).fetchall()
+        out = []
+        for row in rows:
+            data = _memory_row_to_dict(row)
+            data["grounding_status"] = row["grounding_status"]
+            out.append(data)
+        return out
+
+    def set_memory_grounding_status(self, memory_id: int, status: str) -> dict[str, Any] | None:
+        """Release a memory into grounding ('active') or hold it ('quarantined').
+        Returns the updated summary, or None if the memory does not exist."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT id, title, source FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if row is None:
+                return None
+            conn.execute("UPDATE memories SET grounding_status = ? WHERE id = ?", (status, memory_id))
+        return {"id": memory_id, "title": row["title"], "source": row["source"], "grounding_status": status}
 
     def memory_stats(self) -> dict[str, int]:
         with self.connect() as conn:
@@ -1138,28 +1171,35 @@ class KernelDatabase:
             for row in rows
         ]
 
-    def search_memories(self, query: str, limit: int = 8) -> list[MemoryRecord]:
+    def search_memories(self, query: str, limit: int = 8, *, include_quarantined: bool = True) -> list[MemoryRecord]:
+        """Keyword/FTS recall over memory. ``include_quarantined`` defaults True so
+        an explicit search (e.g. the agent's memory.search tool) still finds every
+        record; the grounding recall path passes False so external-agent memory
+        held in quarantine never auto-enters Zade's reasoning context."""
         query = query.strip()
         if not query:
             return []
         with self.connect() as conn:
-            rows = self._search_fts(conn, query, limit)
+            rows = self._search_fts(conn, query, limit, include_quarantined=include_quarantined)
             if not rows:
                 token_query = _token_fts_query(query)
                 if token_query and token_query != query:
-                    rows = self._search_fts(conn, token_query, limit)
+                    rows = self._search_fts(conn, token_query, limit, include_quarantined=include_quarantined)
             if not rows:
-                rows = self._search_like(conn, query, limit)
+                rows = self._search_like(conn, query, limit, include_quarantined=include_quarantined)
             return [_memory_from_row(row) for row in rows]
 
-    def _search_fts(self, conn: sqlite3.Connection, query: str, limit: int) -> list[sqlite3.Row]:
+    def _search_fts(
+        self, conn: sqlite3.Connection, query: str, limit: int, *, include_quarantined: bool = True
+    ) -> list[sqlite3.Row]:
+        quarantine_clause = "" if include_quarantined else " AND m.grounding_status != 'quarantined'"
         try:
             return conn.execute(
-                """
+                f"""
                 SELECT m.*
                 FROM memory_fts f
                 JOIN memories m ON m.id = f.rowid
-                WHERE memory_fts MATCH ?
+                WHERE memory_fts MATCH ?{quarantine_clause}
                 ORDER BY bm25(memory_fts)
                 LIMIT ?
                 """,
@@ -1168,7 +1208,9 @@ class KernelDatabase:
         except sqlite3.OperationalError:
             return []
 
-    def _search_like(self, conn: sqlite3.Connection, query: str, limit: int) -> list[sqlite3.Row]:
+    def _search_like(
+        self, conn: sqlite3.Connection, query: str, limit: int, *, include_quarantined: bool = True
+    ) -> list[sqlite3.Row]:
         tokens = _query_tokens(query)
         if not tokens:
             tokens = [query]
@@ -1178,11 +1220,12 @@ class KernelDatabase:
             clauses.append("(title LIKE ? OR content LIKE ? OR kind LIKE ? OR source LIKE ?)")
             params.extend([f"%{token}%", f"%{token}%", f"%{token}%", f"%{token}%"])
         params.append(limit)
+        quarantine_clause = "" if include_quarantined else " AND grounding_status != 'quarantined'"
         return conn.execute(
             f"""
             SELECT *
             FROM memories
-            WHERE {' OR '.join(clauses)}
+            WHERE ({' OR '.join(clauses)}){quarantine_clause}
             ORDER BY id DESC
             LIMIT ?
             """,
@@ -1219,18 +1262,23 @@ class KernelDatabase:
             ).fetchall()
         return [{"id": int(row["id"]), "title": str(row["title"]), "content": str(row["content"])} for row in rows]
 
-    def semantic_search_memories(self, query_vector: list[float], limit: int = 8) -> list[dict[str, Any]]:
+    def semantic_search_memories(
+        self, query_vector: list[float], limit: int = 8, *, include_quarantined: bool = True
+    ) -> list[dict[str, Any]]:
         """Cosine similarity over embedded memories (brute force, mirroring
-        semantic_search_chunks). Empty when nothing is embedded yet."""
+        semantic_search_chunks). Empty when nothing is embedded yet.
+        ``include_quarantined`` False drops external-agent memory held out of the
+        grounding context (the grounding recall path passes False)."""
         if not query_vector:
             return []
+        quarantine_clause = "" if include_quarantined else " WHERE m.grounding_status != 'quarantined'"
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT m.id, m.kind, m.title, m.content, m.source, m.metadata_json,
                        e.model AS embedding_model, e.vector_json
                 FROM memory_embeddings e
-                JOIN memories m ON m.id = e.memory_id
+                JOIN memories m ON m.id = e.memory_id{quarantine_clause}
                 """
             ).fetchall()
         scored = []
@@ -2207,7 +2255,8 @@ CREATE TABLE IF NOT EXISTS memories (
   title TEXT NOT NULL,
   content TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'local',
-  metadata_json TEXT NOT NULL DEFAULT '{}'
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  grounding_status TEXT NOT NULL DEFAULT 'active'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(

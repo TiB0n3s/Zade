@@ -320,10 +320,16 @@ class RuntimeService:
             # Tier 4: hybrid (vector + keyword) recall so a paraphrase still hits.
             # Degrades to keyword automatically; on any failure fall back to the
             # plain keyword store so recall never goes blind.
+            # include_quarantined=False: external-agent memory held in quarantine
+            # never auto-enters Zade's grounding/reasoning context (the prompt-
+            # injection surface). It stays explicitly searchable via memory.search.
             try:
-                memory_hits = self.ingestion.search_memories_hybrid(query=message, limit=5)
+                memory_hits = self.ingestion.search_memories_hybrid(query=message, limit=5, include_quarantined=False)
             except Exception:
-                memory_hits = [record.__dict__ for record in self.db.search_memories(message, limit=5)]
+                memory_hits = [
+                    record.__dict__
+                    for record in self.db.search_memories(message, limit=5, include_quarantined=False)
+                ]
         if message and use_memory and use_semantic_memory and semantic_limit > 0:
             try:
                 semantic_hits = self.ingestion.semantic_search(query=message, limit=semantic_limit)

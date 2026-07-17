@@ -426,3 +426,194 @@ class EgressPolicy:
             vendor_tier=vendor.tier if vendor else None,
             provider_policy=self.provider_policy,
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-request grant flow: turning AUTH_REQUIRED into a founder decision.
+# ---------------------------------------------------------------------------
+# The gate can DEMAND a per-request authorization (Verdict.AUTH_REQUIRED) but it
+# cannot MINT one — a grant must come from the founder. These functions carry a
+# PER_REQUEST egress from "the gate wants a grant" to "the founder issued one",
+# reusing the same approval_requests table as the mcp_memory_write flow. Nothing
+# here egresses; they only decide whether an egress MAY proceed. Lifecycle:
+#   1. authorize_egress(...)      -> AUTH_REQUIRED, and a pending grant is filed
+#   2. approve_egress_grant(...)  -> founder issues it (with the typed phrase)
+#   3. authorize_egress(...)      -> ALLOW (the stored grant matches the request)
+#   4. consume_grant(...)         -> after the send, so the grant can't be replayed
+#
+# `db` is the KernelDatabase (duck-typed here to keep this module import-light).
+GRANT_SOURCE_TYPE = "egress_grant"
+
+
+def _grant_matches(meta: Mapping[str, Any], request: EgressRequest) -> bool:
+    return (
+        meta.get("request_id") == request.request_id
+        and meta.get("data_class") == request.data_class.value
+        and meta.get("vendor") == request.vendor
+    )
+
+
+def request_egress_grant(db: Any, request: EgressRequest, *, preview: str = "") -> Any:
+    """File (idempotently) a pending founder grant request for one PER_REQUEST
+    egress, and return the ApprovalRequest. A matching pending request is reused,
+    so a retrying operation never stacks duplicates. ``preview`` is a short,
+    founder-facing description of WHAT would be sent — never the payload itself."""
+    for r in db.list_approval_requests(status="pending", limit=500):
+        if r.source_type == GRANT_SOURCE_TYPE and _grant_matches(r.metadata or {}, request):
+            return r
+    approval, _created = db.ensure_approval_request(
+        source_type=GRANT_SOURCE_TYPE,
+        source_id=None,
+        title=f"Egress: {request.data_class.value} → {request.vendor}",
+        detail=(request.purpose or preview)[:500],
+        action="egress.grant",
+        target=request.vendor,
+        permission_tier="L3_EXTERNAL_ACTION",
+        authority_decision="approval_required",
+        authority={"reason": "Per-request egress requires explicit founder authorization."},
+        requested_by="egress",
+        metadata={
+            "request_id": request.request_id,
+            "data_class": request.data_class.value,
+            "vendor": request.vendor,
+            "purpose": request.purpose,
+            "preview": preview[:2000],
+            "byte_estimate": request.byte_estimate,
+        },
+    )
+    db.audit(
+        actor="egress", action="egress.grant.requested", target=request.vendor,
+        permission_tier="L3_EXTERNAL_ACTION", status="pending",
+        details={"approval_request_id": approval.id, "data_class": request.data_class.value, "vendor": request.vendor},
+    )
+    return approval
+
+
+def list_pending_grants(db: Any) -> list[dict[str, Any]]:
+    """Per-request egress grants awaiting the founder's decision (redacted: the
+    preview, never the payload)."""
+    out: list[dict[str, Any]] = []
+    for r in db.list_approval_requests(status="pending", limit=500):
+        if r.source_type != GRANT_SOURCE_TYPE:
+            continue
+        m = r.metadata or {}
+        out.append(
+            {
+                "approval_request_id": r.id,
+                "data_class": m.get("data_class"),
+                "vendor": m.get("vendor"),
+                "purpose": m.get("purpose"),
+                "preview": m.get("preview"),
+                "byte_estimate": m.get("byte_estimate"),
+                "requested_by": r.requested_by,
+                "created_at": r.created_at,
+            }
+        )
+    return out
+
+
+def _load_pending_grant(db: Any, request_id: int) -> Any:
+    r = db.get_approval_request(request_id)
+    if r is None or r.source_type != GRANT_SOURCE_TYPE:
+        raise ValueError(f"Not an egress grant request: {request_id}")
+    if r.status not in {"pending", "deferred"}:
+        raise ValueError(f"Egress grant request already {r.status}.")
+    return r
+
+
+def approve_egress_grant(
+    db: Any,
+    request_id: int,
+    *,
+    resolved_by: str = "founder",
+    typed_phrase: str = "",
+    typed_confirmation_phrase: str = "make the jump to hyperspace",
+) -> dict[str, Any]:
+    """Founder issues the per-request grant. Requires the typed confirmation
+    phrase — the same ritual as any external action, so a grant is never minted
+    from a click alone. The grant persists as the approved approval_request;
+    ``active_grant_for`` reconstitutes the EgressAuthorization from it."""
+    r = _load_pending_grant(db, request_id)
+    if typed_phrase.strip() != typed_confirmation_phrase:
+        raise ValueError(f"Egress grant requires the typed confirmation phrase: {typed_confirmation_phrase}")
+    m = r.metadata or {}
+    db.resolve_approval_request(request_id, status="approved", resolved_by=resolved_by, resolution_note="egress grant issued")
+    db.audit(
+        actor=resolved_by, action="egress.grant.approved", target=m.get("vendor"),
+        permission_tier="L3_EXTERNAL_ACTION", status="approved",
+        details={"approval_request_id": request_id, "data_class": m.get("data_class"), "vendor": m.get("vendor")},
+    )
+    return {
+        "approval_request_id": request_id,
+        "granted": True,
+        "request_id": m.get("request_id"),
+        "data_class": m.get("data_class"),
+        "vendor": m.get("vendor"),
+    }
+
+
+def deny_egress_grant(db: Any, request_id: int, *, resolved_by: str = "founder", note: str = "") -> dict[str, Any]:
+    r = _load_pending_grant(db, request_id)
+    m = r.metadata or {}
+    db.resolve_approval_request(request_id, status="denied", resolved_by=resolved_by, resolution_note=note or "egress grant denied")
+    db.audit(
+        actor=resolved_by, action="egress.grant.denied", target=m.get("vendor"),
+        permission_tier="L3_EXTERNAL_ACTION", status="denied",
+        details={"approval_request_id": request_id, "data_class": m.get("data_class"), "vendor": m.get("vendor")},
+    )
+    return {"approval_request_id": request_id, "status": "denied"}
+
+
+def active_grant_for(db: Any, request: EgressRequest) -> EgressAuthorization | None:
+    """The founder-approved, not-yet-consumed grant matching this EXACT request,
+    reconstituted as an EgressAuthorization the gate will accept. None otherwise."""
+    for r in db.list_approval_requests(status="approved", limit=500):
+        if r.source_type != GRANT_SOURCE_TYPE:
+            continue
+        m = r.metadata or {}
+        if _grant_matches(m, request) and not m.get("consumed"):
+            return EgressAuthorization(
+                request_id=request.request_id,
+                data_class=request.data_class,
+                vendor=request.vendor,
+                granted_by="founder",
+                typed_phrase_ok=True,
+            )
+    return None
+
+
+def consume_grant(db: Any, request: EgressRequest) -> bool:
+    """Mark the matching approved grant consumed so it can't authorize a second
+    send — single-use is the EgressAuthorization contract, enforced across calls.
+    Returns True if a grant was consumed."""
+    for r in db.list_approval_requests(status="approved", limit=500):
+        if r.source_type != GRANT_SOURCE_TYPE:
+            continue
+        m = r.metadata or {}
+        if _grant_matches(m, request) and not m.get("consumed"):
+            db.update_approval_request(r.id, metadata={"consumed": True})
+            db.audit(
+                actor="egress", action="egress.grant.consumed", target=request.vendor,
+                permission_tier="L3_EXTERNAL_ACTION", status="ok",
+                details={"approval_request_id": r.id, "data_class": request.data_class.value, "vendor": request.vendor},
+            )
+            return True
+    return False
+
+
+def authorize_egress(db: Any, policy: EgressPolicy, request: EgressRequest, *, preview: str = "") -> EgressDecision:
+    """Decide a (possibly PER_REQUEST) egress against the gate AND persisted
+    founder grants. On AUTH_REQUIRED it files a pending founder grant request
+    (idempotent) so it can be authorized; the caller re-runs this after approval
+    to get ALLOW, then egresses and calls ``consume_grant``. Every decision is
+    audited (redacted). This is the one call an egressing caller needs."""
+    grant = active_grant_for(db, request)
+    decision = policy.decide(request, authorization=grant)
+    if decision.verdict is Verdict.AUTH_REQUIRED:
+        request_egress_grant(db, request, preview=preview)
+    db.audit(
+        actor="egress", action="egress.decision", target=request.vendor,
+        permission_tier="L3_EXTERNAL_ACTION", status=decision.verdict.value,
+        details=decision.audit_record(),
+    )
+    return decision

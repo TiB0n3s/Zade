@@ -191,10 +191,15 @@ class ToolRegistry:
         content = str(args.get("content") or "")
         source = str(args.get("source") or "local")
         metadata = dict(args.get("metadata") or {})
+        # 'grounding_status' is a caller-set control (the agent surface sets it to
+        # 'quarantined' for external writes; internal callers leave it 'active').
+        # It is not part of the tool's public schema.
+        grounding_status = str(args.get("grounding_status") or "active")
         if self.ingestion is not None:
             # Governed write: refuses obvious secrets, dedupes, embeds, mirrors.
             result = self.ingestion.save_memory(
-                kind=kind, title=title, content=content, source=source, metadata=metadata
+                kind=kind, title=title, content=content, source=source, metadata=metadata,
+                grounding_status=grounding_status,
             )
             status = result.get("status")
             if status == "written":
