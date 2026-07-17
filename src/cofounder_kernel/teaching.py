@@ -572,10 +572,37 @@ class DeepThoughtTeachingBridge:
             ).fetchall()
             for row in rows:
                 evidence_ids = json.loads(row["evidence_ids_json"] or "[]")
-                if evidence_ids:
-                    conn.execute("UPDATE integrity_warnings SET status = 'resolved' WHERE id = ?", (row["id"],))
-                    resolved.append({"warning_id": int(row["id"]), "goal_id": int(row["subject_id"]), "evidence_ids": evidence_ids})
+                # The warning says the goal's evidence is "anecdotal or absent".
+                # Resolve it ONLY when at least one attached evidence is genuinely
+                # non-anecdotal. Mere presence is not enough: a D-grade (or thin-
+                # strength) auto-import — whose grade came from a spoofable file
+                # path — must not silently clear the exact signal meant to flag
+                # thin evidence. Uses the same credibility bar as _conflict_severity.
+                credible = self._credible_evidence_ids(conn, evidence_ids)
+                if not credible:
+                    continue
+                conn.execute("UPDATE integrity_warnings SET status = 'resolved' WHERE id = ?", (row["id"],))
+                resolved.append(
+                    {
+                        "warning_id": int(row["id"]),
+                        "goal_id": int(row["subject_id"]),
+                        "evidence_ids": evidence_ids,
+                        "credible_evidence_ids": credible,
+                    }
+                )
         return resolved
+
+    def _credible_evidence_ids(self, conn: Any, evidence_ids: list[int]) -> list[int]:
+        """Subset of ``evidence_ids`` whose evidence clears the 'anecdotal' bar
+        (reliability A/B/C and strength >= 50), mirroring founder._conflict_severity."""
+        if not evidence_ids:
+            return []
+        placeholders = ",".join("?" for _ in evidence_ids)
+        rows = conn.execute(
+            f"SELECT id, reliability, strength FROM founder_evidence WHERE id IN ({placeholders})",
+            [int(evidence_id) for evidence_id in evidence_ids],
+        ).fetchall()
+        return [int(row["id"]) for row in rows if _is_credible_evidence(row["reliability"], row["strength"])]
 
     def _log_runtime_event(self, *, status: str, response: str, details: dict[str, Any]) -> int:
         with self.db.connect() as conn:
@@ -650,10 +677,15 @@ def _is_supported_file(path: Path, *, max_file_bytes: int) -> bool:
 
 
 def _reliability_for_path(path: Path) -> str:
+    """Heuristic reliability from the file path. Capped at B: a path is trivially
+    spoofable (a folder named "runtime-verified" would otherwise mint grade A /
+    strength 90), and the grade becomes the evidence's Bayesian weight. Grade A is
+    reserved for human-reviewed evidence, never granted by a bare filename scan."""
     normalized = str(path).lower()
     name = path.name.lower()
     if "runtime" in normalized and ("verified" in normalized or "validation" in normalized):
-        return "A"
+        # Would read as A on the filename alone; capped to B pending human review.
+        return "B"
     if "standing-brief" in name or "standing_brief" in name or "decision" in normalized:
         return "B"
     if "architecture" in normalized or "handoff" in name or "prd" in name:
@@ -690,6 +722,18 @@ def _overlap_score(haystack: str, phrase: str) -> int:
 
 def _strength_for_reliability(reliability: str) -> int:
     return {"A": 90, "B": 75, "C": 60, "D": 40, "F": 0}.get(reliability.upper(), 40)
+
+
+def _is_credible_evidence(reliability: Any, strength: Any) -> bool:
+    """Whether one evidence object clears the 'anecdotal' bar. Mirrors
+    founder._conflict_severity's non-green tier: at least moderate grade (A/B/C)
+    AND strength >= 50. A D-grade, or a thin-strength item, stays anecdotal."""
+    grade = str(reliability or "D").upper()
+    try:
+        value = int(strength if strength is not None else 50)
+    except (TypeError, ValueError):
+        value = 50
+    return grade in {"A", "B", "C"} and value >= 50
 
 
 def _normalize_target_type(to_type: str) -> str:

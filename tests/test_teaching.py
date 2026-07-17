@@ -16,7 +16,7 @@ from cofounder_kernel.config import (
 from cofounder_kernel.db import KernelDatabase
 from cofounder_kernel.founder import FounderService
 from cofounder_kernel.ingestion import IngestionService
-from cofounder_kernel.teaching import DeepThoughtTeachingBridge
+from cofounder_kernel.teaching import DeepThoughtTeachingBridge, _reliability_for_path
 
 
 class FakeEmbedder:
@@ -54,6 +54,19 @@ def _goal_evidence_ids(db: KernelDatabase, goal_id: int) -> list[int]:
     with db.connect() as conn:
         row = conn.execute("SELECT evidence_ids_json FROM founder_goals WHERE id = ?", (goal_id,)).fetchone()
     return json.loads(row["evidence_ids_json"] or "[]")
+
+
+def _weak_evidence_status(db: KernelDatabase, goal_id: int) -> str | None:
+    with db.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT status FROM integrity_warnings
+            WHERE warning_type = 'weak_evidence' AND subject_type = 'goal' AND subject_id = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (goal_id,),
+        ).fetchone()
+    return row["status"] if row else None
 
 
 def _write_source(tmp_path: Path, name: str = "deep-thought-standing-brief.md") -> Path:
@@ -149,3 +162,55 @@ def test_evidence_loop_second_run_adds_no_new_evidence_or_links(tmp_path: Path) 
     assert loop2["links"] == []
     assert _count(db, "founder_evidence") == evidence_after_1
     assert _count(db, "founder_links") == links_after_1
+
+
+def test_anecdotal_evidence_does_not_resolve_weak_evidence_warning(tmp_path: Path) -> None:
+    """A D-grade / thin-strength import must NOT clear the 'anecdotal or absent'
+    integrity warning — mere presence of evidence is not enough."""
+    bridge, founder, db = _make(tmp_path)
+    goal = founder.create_goal({"name": "Grow pipeline", "metric": "deals", "target": "10", "owner": "Ellie"})
+    founder.run_integrity_check()  # goal has no evidence -> weak_evidence warning opens
+    assert _weak_evidence_status(db, goal.id) == "open"
+
+    anecdote = founder.create_evidence(
+        {"evidence_type": "note", "source": "hallway chat", "reliability": "D", "strength": 40, "claim_supported": "vibes"}
+    )
+    bridge.link_evidence(evidence_id=anecdote.id, to_type="goal", to_id=goal.id, relation="supports")
+
+    resolved = bridge._resolve_weak_evidence_warnings()
+    assert resolved == []
+    assert _weak_evidence_status(db, goal.id) == "open"  # still flagged — anecdotal doesn't count
+
+
+def test_credible_evidence_resolves_weak_evidence_warning(tmp_path: Path) -> None:
+    """Genuinely credible evidence (B-grade, strength >= 50) DOES clear the
+    warning — the gate blocks anecdotal evidence, not real evidence."""
+    bridge, founder, db = _make(tmp_path)
+    goal = founder.create_goal({"name": "Grow pipeline", "metric": "deals", "target": "10", "owner": "Ellie"})
+    founder.run_integrity_check()
+    assert _weak_evidence_status(db, goal.id) == "open"
+
+    sourced = founder.create_evidence(
+        {"evidence_type": "report", "source": "pilot results", "reliability": "B", "strength": 75, "claim_supported": "conversion"}
+    )
+    bridge.link_evidence(evidence_id=sourced.id, to_type="goal", to_id=goal.id, relation="supports")
+
+    resolved = bridge._resolve_weak_evidence_warnings()
+    assert len(resolved) == 1
+    assert resolved[0]["goal_id"] == goal.id
+    assert resolved[0]["credible_evidence_ids"] == [sourced.id]
+    assert _weak_evidence_status(db, goal.id) == "resolved"
+
+
+def test_filename_scan_cannot_mint_grade_a() -> None:
+    """A spoofable path (a folder named 'runtime-verified') must not mint grade A
+    / strength 90 — auto-scan reliability caps at B."""
+    spoof = Path(r"C:\AI Brain\runtime\verified\totally-legit.md")
+    assert _reliability_for_path(spoof) == "B"
+    # Existing tiers are unchanged.
+    assert _reliability_for_path(Path("deep-thought-standing-brief.md")) == "B"
+    assert _reliability_for_path(Path(r"C:\x\architecture\notes.md")) == "C"
+    assert _reliability_for_path(Path("random.md")) == "D"
+    # Grade A is never produced by a bare filename scan.
+    for candidate in [spoof, Path("A-verified-runtime-A.md"), Path(r"C:\runtime\validation\x.md")]:
+        assert _reliability_for_path(candidate) != "A"
