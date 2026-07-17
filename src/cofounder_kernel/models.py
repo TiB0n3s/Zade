@@ -437,6 +437,10 @@ class EvidenceLoopRequest(BaseModel):
     max_import: int = Field(default=5, ge=0, le=50)
     link_goals: bool = True
     clear_resolved_warnings: bool = True
+    # Founder-approval gate. Default True: the autonomous loop surfaces Deep
+    # Thought candidates for review and does NOT import them into the belief
+    # graph. Set False only for an explicit founder-authorized import.
+    require_approval: bool = True
 
 
 class ExperimentLinkTarget(BaseModel):
@@ -527,6 +531,8 @@ class CadenceRunRequest(BaseModel):
     max_import: int = Field(default=5, ge=0, le=50)
     link_goals: bool = True
     clear_resolved_warnings: bool = True
+    # Founder-approval gate for the cadence's evidence loop (see EvidenceLoopRequest).
+    require_approval: bool = True
     experiment_review_type: str = Field(default="weekly", min_length=1, max_length=80)
     experiment_period: str | None = None
     max_experiment_reviews: int = Field(default=10, ge=0, le=100)

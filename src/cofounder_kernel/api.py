@@ -1295,6 +1295,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             max_import=request.max_import,
             link_goals=request.link_goals,
             clear_resolved_warnings=request.clear_resolved_warnings,
+            require_approval=request.require_approval,
         )
         experiment = experiments.run_loop(
             review_type=request.experiment_review_type,

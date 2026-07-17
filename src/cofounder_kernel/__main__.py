@@ -9,6 +9,14 @@ def main() -> None:
 
         raise SystemExit(run_self_knowledge(sys.argv[2:]))
 
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        # Governed external-agent surface over stdio. Off by default: it runs only
+        # when invoked explicitly here, never from autostart/tray. See
+        # ZADE-MCP-SURFACE.md and mcp_server.py.
+        from .mcp_server import run as run_mcp
+
+        raise SystemExit(run_mcp(sys.argv[2:]))
+
     import uvicorn
 
     from .api import create_app

@@ -12,10 +12,13 @@ cors_dev_origins = ["http://localhost:5173"]
 # Chat/voice sampling temperature. Default is 0.2 (deterministic, flat). Raised so
 # the charter voice has room for texture and doesn't repeat the same phrasing.
 temperature = 0.6
-# Local-first provider policy (default local_only): loopback Ollama only, no
-# cloud models, no remote hosts, no fallback. Stated explicitly here so the
-# posture survives future default changes.
-provider_policy = "local_only"
+# Provider policy. local_preferred: loopback Ollama is still the default for all
+# model inference, but the data-class egress gate (see [egress] and egress.py) is
+# now live — cloud egress is permitted ONLY for the classes/vendors granted below
+# or authorized per-request, and never as an automatic fallback. Raised off
+# local_only on 2026-07-17 to re-enable the cloud voice engines via an explicit
+# standing grant; model inference stays local.
+provider_policy = "local_preferred"
 # Native coding agent model. Probed 2026-07-16: qwen3:14b is the only installed
 # model that emits NATIVE tool_calls (qwen2.5-coder:14b and deepseek-r1:14b
 # declare "tools" but return JSON-as-text / prose from a live probe).
@@ -39,9 +42,18 @@ timeout_seconds = 1800
 max_output_chars = 40000
 
 [voice]
-# Cloud speech engines (standing grant: audio and reply text leave the machine).
-# API keys are read from the DEEPGRAM_API_KEY and ELEVENLABS_API_KEY environment
-# variables and must never be written into this file.
+# Cloud speech engines. Selecting them is NOT sufficient on its own anymore: the
+# egress gate also requires the matching [egress] standing_grants entries below,
+# and provider_policy off local_only. API keys are read from the DEEPGRAM_API_KEY
+# and ELEVENLABS_API_KEY environment variables and never written into this file.
 stt_engine = "deepgram"
 tts_engine = "elevenlabs"
 tts_voice = "ZthjuvLPty3kTMaNKVKb"
+
+[egress]
+# Data-class egress gate standing grants (see EGRESS-DESIGN.md). Each entry
+# durably permits one (data_class, vendor) cloud egress. These two re-enable the
+# cloud voice lanes; remove them (or drop provider_policy back to local_only) to
+# turn cloud voice off. Raw founder_state can never be granted here — it is
+# FORBIDDEN in the matrix regardless.
+standing_grants = ["founder_audio:deepgram", "reply_text:elevenlabs"]

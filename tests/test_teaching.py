@@ -56,6 +56,20 @@ def _goal_evidence_ids(db: KernelDatabase, goal_id: int) -> list[int]:
     return json.loads(row["evidence_ids_json"] or "[]")
 
 
+def _teaching_import_requests(db: KernelDatabase, status: str | None = None) -> list[dict]:
+    with db.connect() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT id, status FROM approval_requests WHERE source_type = 'teaching_import' AND status = ? ORDER BY id",
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, status FROM approval_requests WHERE source_type = 'teaching_import' ORDER BY id"
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _weak_evidence_status(db: KernelDatabase, goal_id: int) -> str | None:
     with db.connect() as conn:
         row = conn.execute(
@@ -151,13 +165,15 @@ def test_evidence_loop_second_run_adds_no_new_evidence_or_links(tmp_path: Path) 
     )
     bridge.scan(paths=[str(source)], limit=5)
 
-    loop1 = bridge.evidence_loop(max_import=5)
+    # Authorized path (require_approval=False) so the loop actually imports; the
+    # point here is idempotency across runs, not the gate.
+    loop1 = bridge.evidence_loop(max_import=5, require_approval=False)
     assert loop1["imported"]["count"] == 1
     assert len(loop1["links"]) >= 1
     evidence_after_1 = _count(db, "founder_evidence")
     links_after_1 = _count(db, "founder_links")
 
-    loop2 = bridge.evidence_loop(max_import=5)
+    loop2 = bridge.evidence_loop(max_import=5, require_approval=False)
     assert loop2["imported"]["count"] == 0  # already imported -> nothing new
     assert loop2["links"] == []
     assert _count(db, "founder_evidence") == evidence_after_1
@@ -200,6 +216,64 @@ def test_credible_evidence_resolves_weak_evidence_warning(tmp_path: Path) -> Non
     assert resolved[0]["goal_id"] == goal.id
     assert resolved[0]["credible_evidence_ids"] == [sourced.id]
     assert _weak_evidence_status(db, goal.id) == "resolved"
+
+
+def test_evidence_loop_gated_by_default_imports_nothing_and_files_approval(tmp_path: Path) -> None:
+    """The autonomous loop must NOT auto-import external Deep Thought material.
+    By default it surfaces a pending founder-approval request and imports nothing."""
+    bridge, founder, db = _make(tmp_path)
+    founder.create_goal({"name": "Bootstrap Zade Founder OS", "metric": "evidence", "target": "linked"})
+    source = _write_source(tmp_path)
+    bridge.scan(paths=[str(source)], limit=5)
+
+    result = bridge.evidence_loop(max_import=5)  # require_approval defaults to True
+
+    assert result["status"] == "awaiting_approval"
+    assert result["imported"]["count"] == 0
+    assert result["links"] == []
+    assert result["pending_approval"]["approval_request_id"] is not None
+    # Nothing entered the belief graph.
+    assert _count(db, "founder_evidence") == 0
+    assert _count(db, "founder_links") == 0
+    # Exactly one pending gate request, and re-running the loop refreshes it (no pile-up).
+    assert len(_teaching_import_requests(db, status="pending")) == 1
+    bridge.evidence_loop(max_import=5)
+    assert len(_teaching_import_requests(db, status="pending")) == 1
+
+
+def test_explicit_import_after_gate_imports_and_resolves_approval(tmp_path: Path) -> None:
+    """An explicit founder import IS the approval: it imports the candidate and
+    clears the pending gate request."""
+    bridge, founder, db = _make(tmp_path)
+    source = _write_source(tmp_path)
+    candidate_id = bridge.scan(paths=[str(source)], limit=5)["candidates"][0]["id"]
+
+    bridge.evidence_loop(max_import=5)  # gated -> files pending request, imports nothing
+    assert len(_teaching_import_requests(db, status="pending")) == 1
+    assert _count(db, "founder_evidence") == 0
+
+    imported = bridge.import_candidates(candidate_ids=[candidate_id])  # explicit founder action
+    assert imported["imported"][0]["status"] == "imported"
+    assert _count(db, "founder_evidence") == 1
+    assert _teaching_import_requests(db, status="pending") == []
+    assert len(_teaching_import_requests(db, status="approved")) == 1
+
+
+def test_evidence_loop_require_approval_false_imports_directly(tmp_path: Path) -> None:
+    """The explicit-authorization path (require_approval=False) still imports and
+    links, and files no gate request."""
+    bridge, founder, db = _make(tmp_path)
+    founder.create_goal({"name": "Bootstrap Zade Founder OS", "metric": "evidence", "target": "linked"})
+    source = _write_source(tmp_path)
+    bridge.scan(paths=[str(source)], limit=5)
+
+    result = bridge.evidence_loop(max_import=5, require_approval=False)
+
+    assert result["status"] == "ok"
+    assert result["imported"]["count"] == 1
+    assert result["pending_approval"] is None
+    assert _count(db, "founder_evidence") == 1
+    assert _teaching_import_requests(db) == []
 
 
 def test_filename_scan_cannot_mint_grade_a() -> None:

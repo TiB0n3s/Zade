@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `1dfe938` 2026-07-17 - Co-founder memory
 - `eb3eebd` 2026-07-17 - v2 - teaching & memory
 - `c3b1df8` 2026-07-17 - Short threads reach memory: boot sweep + loss-safe end_session
 - `6ab6318` 2026-07-17 - Fix self-knowledge CI under Python 3.11
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `1aadc7a` 2026-07-17 - Work ledger: steps are rows, not prose; work-status answers come from the kernel
 - `b3a06c6` 2026-07-17 - Delegated runs verify the GOAL state, not just this run''s delta
 - `280a45b` 2026-07-17 - TypeScript workspaces get tsc --noEmit as a second mandatory kernel check
-- `a222d24` 2026-07-17 - Meta narration about execution claims is never step instructions
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

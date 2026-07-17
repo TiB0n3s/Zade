@@ -173,6 +173,9 @@ class DeepThoughtTeachingBridge:
                 "candidate_ids": [item["id"] for item in imported],
             },
         )
+        # An explicit import IS the founder's approval — clear any pending gate
+        # request whose candidates are now imported.
+        self._resolve_import_approvals()
         return {"imported": imported, "count": len(imported)}
 
     def link_evidence(
@@ -258,12 +261,30 @@ class DeepThoughtTeachingBridge:
         max_import: int = 5,
         link_goals: bool = True,
         clear_resolved_warnings: bool = True,
+        require_approval: bool = True,
     ) -> dict[str, Any]:
         imported = {"imported": [], "count": 0}
+        pending_approval = None
         if import_candidates and max_import > 0:
-            imported = self.import_candidates(import_all_candidates=True, limit=max_import)
+            if require_approval:
+                # Founder-approval gate. The autonomous loop must NOT promote
+                # external Deep Thought material into the belief graph on its own:
+                # import creates evidence (a Bayesian input) and links it to goals/
+                # bets. Instead, surface the candidates as a pending approval the
+                # founder can see and deny; the import runs only on an explicit
+                # founder action (the /teach/deepthought/import endpoint, or
+                # evidence_loop with require_approval=False).
+                previewable = self._select_candidates(
+                    candidate_ids=[], import_all_candidates=True, limit=max_import
+                )
+                if previewable:
+                    pending_approval = self._request_import_approval(previewable)
+            else:
+                imported = self.import_candidates(import_all_candidates=True, limit=max_import)
         links = []
-        if link_goals:
+        # Linking and warning-resolution only happen on the authorized path — the
+        # gated path imports nothing, so there is nothing to link or resolve.
+        if link_goals and not require_approval:
             for item in imported["imported"]:
                 evidence_id = item.get("evidence_id")
                 if not evidence_id:
@@ -280,19 +301,28 @@ class DeepThoughtTeachingBridge:
                                 metadata={"candidate_id": item["id"], "auto_linked": True},
                             )
                         )
-        resolved = self._resolve_weak_evidence_warnings() if clear_resolved_warnings else []
+        resolved = self._resolve_weak_evidence_warnings() if (clear_resolved_warnings and not require_approval) else []
         gaps = self.evidence_gaps()
+        status = "awaiting_approval" if pending_approval else "ok"
         event_id = self._log_runtime_event(
-            status="ok",
+            status=status,
             response=gaps["next_evidence_needed"],
-            details={"imported": imported, "links": links, "resolved_warnings": resolved, "gaps": gaps},
+            details={
+                "imported": imported,
+                "links": links,
+                "resolved_warnings": resolved,
+                "gaps": gaps,
+                "pending_approval": pending_approval,
+            },
         )
         return {
             "event_id": event_id,
+            "status": status,
             "imported": imported,
             "links": links,
             "resolved_warnings": resolved,
             "gaps": gaps,
+            "pending_approval": pending_approval,
             "next_evidence_needed": gaps["next_evidence_needed"],
         }
 
@@ -603,6 +633,82 @@ class DeepThoughtTeachingBridge:
             [int(evidence_id) for evidence_id in evidence_ids],
         ).fetchall()
         return [int(row["id"]) for row in rows if _is_credible_evidence(row["reliability"], row["strength"])]
+
+    def _pending_import_approval(self) -> Any:
+        """The open (pending) founder-approval request gating Deep Thought imports,
+        if one exists. There is at most one; the gate refreshes it in place."""
+        for request in self.db.list_approval_requests(status="pending", limit=500):
+            if request.source_type == "teaching_import":
+                return request
+        return None
+
+    def _request_import_approval(self, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        """File (or refresh) the pending founder-approval request that gates
+        importing these Deep Thought candidates. Imports nothing."""
+        candidate_ids = [int(candidate["id"]) for candidate in candidates]
+        titles = [str(candidate.get("title") or candidate.get("source_uri") or candidate["id"]) for candidate in candidates]
+        detail = "Deep Thought sources awaiting founder review before import as evidence:\n" + "\n".join(
+            f"- {title}" for title in titles
+        )
+        metadata = {"candidate_ids": candidate_ids, "titles": titles, "source": "teach.deepthought"}
+        existing = self._pending_import_approval()
+        if existing is not None:
+            self.db.update_approval_request(int(existing.id), detail=detail, metadata=metadata)
+            request_id, created = int(existing.id), False
+        else:
+            request, created = self.db.ensure_approval_request(
+                source_type="teaching_import",
+                source_id=None,
+                title=f"Review {len(candidate_ids)} Deep Thought source(s) before import",
+                detail=detail,
+                action="teach.deepthought.import",
+                target="teaching_candidates",
+                permission_tier="L1_MEMORY_WRITE",
+                authority_decision="approval_required",
+                authority={"reason": "External Deep Thought material must be founder-approved before entering the belief graph."},
+                requested_by="teaching.deepthought",
+                metadata=metadata,
+            )
+            request_id = int(request.id)
+        self.db.audit(
+            actor="teaching.deepthought",
+            action="teach.deepthought.import_gated",
+            target="teaching_candidates",
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={"approval_request_id": request_id, "candidate_ids": candidate_ids, "created": created},
+        )
+        return {"approval_request_id": request_id, "candidate_ids": candidate_ids, "titles": titles, "created": created}
+
+    def _resolve_import_approvals(self) -> None:
+        """Close any pending import-gate request whose candidates are now all
+        imported — an explicit import is the founder's approval."""
+        pending = [
+            request
+            for request in self.db.list_approval_requests(status="pending", limit=500)
+            if request.source_type == "teaching_import"
+        ]
+        if not pending:
+            return
+        to_resolve: list[int] = []
+        with self.db.connect() as conn:
+            for request in pending:
+                ids = [int(cid) for cid in (request.metadata or {}).get("candidate_ids", [])]
+                if not ids:
+                    continue
+                placeholders = ",".join("?" for _ in ids)
+                rows = conn.execute(
+                    f"SELECT status FROM teaching_candidates WHERE id IN ({placeholders})", ids
+                ).fetchall()
+                if len(rows) == len(ids) and all(row["status"] == "imported" for row in rows):
+                    to_resolve.append(int(request.id))
+        for request_id in to_resolve:
+            self.db.resolve_approval_request(
+                request_id,
+                status="approved",
+                resolved_by="founder",
+                resolution_note="Approved by explicit founder import.",
+            )
 
     def _log_runtime_event(self, *, status: str, response: str, details: dict[str, Any]) -> int:
         with self.db.connect() as conn:

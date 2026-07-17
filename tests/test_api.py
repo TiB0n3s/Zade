@@ -4530,15 +4530,23 @@ def test_runtime_evidence_loop_imports_and_links_deepthought_candidates(tmp_path
     )
     client.post("/teach/deepthought/scan", json={"paths": [str(source)], "limit": 5})
 
+    # Explicit founder authorization (require_approval=False) imports and links.
     loop = client.post(
         "/runtime/evidence-loop",
-        json={"import_candidates": True, "max_import": 5, "link_goals": True, "clear_resolved_warnings": True},
+        json={
+            "import_candidates": True,
+            "max_import": 5,
+            "link_goals": True,
+            "clear_resolved_warnings": True,
+            "require_approval": False,
+        },
     )
     events = client.get("/runtime/events")
     gaps = client.get("/evidence/gaps")
 
     assert loop.status_code == 200
     assert loop.json()["event_id"] > 0
+    assert loop.json()["status"] == "ok"
     assert loop.json()["imported"]["count"] == 1
     assert len(loop.json()["links"]) == 1
     assert loop.json()["links"][0]["target"]["type"] == "goal"
