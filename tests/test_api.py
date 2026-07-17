@@ -2464,6 +2464,85 @@ def test_no_task_step_route_still_replaces_fabricated_body(
     assert "unrouted_execution_fabrication_repaired" in payload["governor"]["applied_rules"]
 
 
+def test_step_route_resolves_instructions_buried_beyond_prompt_window(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Live incident 2026-07-17 (events 333-334, both no_task): the route only
+    received the 12-turn prompt context, so instructions 13+ turns back could
+    never resolve no matter how wide the resolver's own slice was."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        assert "Implement the functionality for the UI components" in task
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 1,
+            "used_tools": True,
+            "steps": [{"tool": "write_file", "arguments": {"path": "src/screens/Scanner.js"}, "ok": True}],
+            "changed_files": ["src/screens/Scanner.js"],
+            "auto_verification": {
+                "mode": "none", "ok": None, "checks": [],
+                "unchecked_files": ["src/screens/Scanner.js"],
+                "argv": None, "returncode": None, "repair_rounds": 0,
+            },
+            "response": "Implemented the scanner screen.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation_id = client.post("/conversations", json={"title": "Library app"}).json()[
+        "conversation"
+    ]["id"]
+    conversations = client.app.state.conversations
+    conversations.record_assistant_turn(
+        conversation_id,
+        content=(
+            "Step 5: Implement the functionality for the UI components. "
+            "1. Install required dependencies. 2. Wire the screens together."
+        ),
+        task_type="coding",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+    for i in range(10):
+        conversations.record_user_turn(conversation_id, content=f"filler question {i}", task_type="general")
+        conversations.record_assistant_turn(
+            conversation_id,
+            content=f"filler answer {i} with no step mention",
+            task_type="general",
+            model="qwen3:14b",
+            authority_decision="allow",
+        )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Perform step 5",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"] is not None
+    assert payload["build"]["status"] == "executed"
+    assert "Ran the step run" in payload["response"]
+
+
 def test_step_resolution_window_reaches_past_repair_noise() -> None:
     """Live incident 2026-07-17 (route no_task): the real instructions sat 13+
     assistant turns back, behind a wall of synthetic and fabricated turns, and

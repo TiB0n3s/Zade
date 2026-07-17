@@ -607,13 +607,22 @@ class RuntimeService:
         research_route = self._maybe_route_research_work(message=message, authority=authority)
         # One routed action per turn: a message that already queued a chat action
         # or research run is not also a build command.
+        # Referent resolution needs deeper history than the prompt window:
+        # threads under repair bury the real step instructions behind synthetic
+        # and fabricated turns, and the 12-turn prompt context starved a live
+        # step route into no_task twice.
+        route_turns = (
+            self.db.recent_conversation_turns(conversation_id, window=48)
+            if self.conversations and conversation_id
+            else list(conversation.get("messages") or [])
+        )
         build_route = (
             None
             if (chat_action_route or research_route)
             else self._maybe_route_build_work(
                 message=message,
                 authority=authority,
-                conversation_messages=list(conversation.get("messages") or []),
+                conversation_messages=route_turns,
             )
         )
         regulated = self._regulate_response(
