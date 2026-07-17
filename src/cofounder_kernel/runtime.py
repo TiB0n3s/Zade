@@ -1861,6 +1861,11 @@ The founder's current message is supplied separately as the user-role message. D
                 if isinstance(dispatch.get("auto_verification"), dict)
                 else None
             )
+            workspace_changes = (
+                dispatch.get("workspace_changes")
+                if isinstance(dispatch.get("workspace_changes"), dict)
+                else None
+            )
             route["dispatch"] = {
                 "status": dispatch.get("status"),
                 "ok": dispatch.get("ok"),
@@ -1868,6 +1873,7 @@ The founder's current message is supplied separately as the user-role message. D
                 "model": dispatch.get("model"),
                 "rounds": dispatch.get("rounds"),
                 "changed_files": dispatch.get("changed_files", []),
+                "workspace_changes": workspace_changes,
                 "unverified_claims": dispatch.get("unverified_claims", []),
                 "auto_verification": verification,
                 "evidence_id": dispatch.get("evidence_id"),
@@ -1882,7 +1888,13 @@ The founder's current message is supplied separately as the user-role message. D
                 # result FAILED. The report must lead with that, not "executed".
                 route["status"] = "verify_failed"
                 route["verification"] = verification
-            elif dispatch.get("ok") and not dispatch.get("changed_files") and any(
+            elif dispatch.get("ok") and not dispatch.get("changed_files") and not (
+                workspace_changes
+                and any(
+                    workspace_changes.get(key)
+                    for key in ("added", "modified", "deleted")
+                )
+            ) and any(
                 isinstance(step, dict)
                 and step.get("tool") in {"write_file", "replace_in_file"}
                 and not step.get("ok")
@@ -3673,13 +3685,37 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
     if status in {"executed", "verify_failed"}:
         dispatch = route.get("dispatch") or {}
         changed = [str(f) for f in dispatch.get("changed_files") or []]
-        changed_line = (
-            f" Changed {len(changed)} file(s): {', '.join(changed[:5])}"
-            + ("…" if len(changed) > 5 else "")
-            + "."
-            if changed
-            else " No files needed changing."
+        workspace_changes = (
+            dispatch.get("workspace_changes")
+            if isinstance(dispatch.get("workspace_changes"), dict)
+            else None
         )
+        if workspace_changes is not None:
+            # The REAL change set from the kernel's before/after workspace
+            # diff — includes command-driven mutations (npm install, python
+            # deletions) that write-tool tracking cannot see.
+            parts = []
+            for label in ("added", "modified", "deleted"):
+                entries = [str(f) for f in workspace_changes.get(label) or []]
+                if entries:
+                    parts.append(
+                        f"{len(entries)} {label} ({', '.join(entries[:4])}"
+                        + ("…" if len(entries) > 4 else "")
+                        + ")"
+                    )
+            changed_line = (
+                " Changed on disk: " + "; ".join(parts) + "."
+                if parts
+                else " No files changed on disk."
+            )
+        else:
+            changed_line = (
+                f" Changed {len(changed)} file(s): {', '.join(changed[:5])}"
+                + ("…" if len(changed) > 5 else "")
+                + "."
+                if changed
+                else " No files needed changing."
+            )
         evidence_line = (
             f" Artifact filed as delegated-work evidence (item #{item_id})."
             if dispatch.get("evidence_id")

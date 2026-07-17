@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `620ebb2` 2026-07-17 - A run whose edits all failed is NOT done; fabricated bodies never ride an honest route block
 - `a866e4f` 2026-07-17 - Step routes read deep conversation history, not the 12-turn prompt window
 - `17c24fa` 2026-07-17 - Step commands route behind lead-in clauses; no_task routes give no license to claim execution
 - `1ee2563` 2026-07-17 - A routeless reply can never claim execution; model fabrications never become briefs
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `aee0158` 2026-07-16 - Cutover Gate B: fresh-task confirmation passes end-to-end
 - `4f35ef0` 2026-07-16 - Cutover Gate A: all six live checks pass; autostart defect caught and fixed
 - `c7ea616` 2026-07-16 - Cutover Gate C: bridge mutation path verified end-to-end
-- `cb8c040` 2026-07-16 - Materialize the DT->Zade cutover checklist; add delegated-work integrity gate
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

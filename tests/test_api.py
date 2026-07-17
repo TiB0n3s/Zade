@@ -2615,6 +2615,129 @@ def test_run_with_only_failed_edits_reports_not_done(
     assert "No files needed changing" not in payload["response"]
 
 
+def test_route_reports_real_disk_changes_from_workspace_diff(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The report line comes from the kernel's before/after workspace diff —
+    command-driven mutations (npm install, deletions) show up instead of the
+    write-tool undercount."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    project = tmp_path / "RealProject"
+    project.mkdir()
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 2,
+            "used_tools": True,
+            "steps": [{"tool": "replace_in_file", "arguments": {"path": "package.json"}, "ok": True}],
+            "changed_files": ["package.json"],
+            "workspace_changes": {
+                "added": [],
+                "modified": ["package.json", "package-lock.json"],
+                "deleted": ["src/navigation.js"],
+                "complete": True,
+            },
+            "auto_verification": {
+                "mode": "tests", "ok": True,
+                "checks": [{"argv": ["npm", "test"], "ok": True, "returncode": 0}],
+                "unchecked_files": [], "argv": ["npm", "test"], "returncode": 0,
+                "repair_rounds": 0,
+            },
+            "response": "Removed the dependencies and deleted the dead file.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": f"Fix the dependencies in {project}: remove the unused packages",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"]["status"] == "executed"
+    assert "Changed on disk: 2 modified (package.json, package-lock.json); 1 deleted (src/navigation.js)." in payload["response"]
+    assert "Changed 1 file(s)" not in payload["response"]
+
+
+def test_command_only_changes_block_no_effect_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A run whose only effects came through commands (deletion via python)
+    has empty changed_files and may include a failed write attempt — but real
+    disk changes mean the run DID have effect and reports as executed."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    project = tmp_path / "RealProject"
+    project.mkdir()
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 2,
+            "used_tools": True,
+            "steps": [
+                {"tool": "replace_in_file", "arguments": {"path": "package.json"}, "ok": False},
+                {"tool": "run_command", "arguments": {"argv": ["python", "-c", "..."]}, "ok": True},
+            ],
+            "changed_files": [],
+            "workspace_changes": {
+                "added": [], "modified": [], "deleted": ["src/screens"], "complete": True,
+            },
+            "auto_verification": None,
+            "response": "Deleted the stray file via command.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": f"Fix the dependencies in {project}: delete the stray file",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"]["status"] == "executed"
+    assert "Changed on disk: 1 deleted (src/screens)." in payload["response"]
+    assert "NOT done" not in payload["response"]
+
+
 def test_fabricated_body_dropped_on_executed_maintenance_route(
     tmp_path: Path, monkeypatch
 ) -> None:

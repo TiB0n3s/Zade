@@ -444,6 +444,66 @@ def test_uncheckable_changed_files_are_reported_unverified(tmp_path: Path) -> No
     assert "UNVERIFIED" in result["response"]
 
 
+def test_workspace_diff_catches_command_created_files(tmp_path: Path) -> None:
+    """Live gap: npm installs and python one-liners mutate the workspace
+    invisibly to write-tool tracking ("Changed 1 file(s)" undercounts). The
+    kernel's before/after snapshot reports the REAL change set."""
+    ws = tmp_path / "bare-ws"
+    ws.mkdir(parents=True)
+    script = [
+        {"tool_calls": [_call(
+            "run_command",
+            argv=["python", "-c", "open('made_by_command.txt', 'w').write('x')"],
+        )]},
+        {"content": "Created the file via command."},
+    ]
+    svc, _ = _service(tmp_path, ws, script)
+    result = svc.run(task="create the marker file")
+
+    assert result["changed_files"] == []  # write-tool tracking sees nothing
+    changes = result["workspace_changes"]
+    assert changes is not None
+    assert changes["added"] == ["made_by_command.txt"]
+    assert changes["deleted"] == []
+
+
+def test_workspace_diff_catches_command_deleted_files(tmp_path: Path) -> None:
+    ws = tmp_path / "bare-ws"
+    ws.mkdir(parents=True)
+    (ws / "stray.txt").write_text("junk", encoding="utf-8")
+    script = [
+        {"tool_calls": [_call(
+            "run_command",
+            argv=["python", "-c", "import os; os.remove('stray.txt')"],
+        )]},
+        {"content": "Deleted the stray file."},
+    ]
+    svc, _ = _service(tmp_path, ws, script)
+    result = svc.run(task="delete the stray file")
+
+    assert result["changed_files"] == []
+    changes = result["workspace_changes"]
+    assert changes is not None
+    assert changes["deleted"] == ["stray.txt"]
+    assert changes["added"] == []
+
+
+def test_workspace_diff_includes_write_tool_edits(tmp_path: Path) -> None:
+    ws = tmp_path / "bare-ws"
+    ws.mkdir(parents=True)
+    script = [
+        {"tool_calls": [_call("write_file", path="app.py", content="def ok():\n    return 1\n")]},
+        {"content": "Wrote app.py."},
+    ]
+    svc, _ = _service(tmp_path, ws, script)
+    result = svc.run(task="write the app module")
+
+    assert result["changed_files"] == ["app.py"]
+    changes = result["workspace_changes"]
+    assert changes is not None
+    assert "app.py" in changes["added"]
+
+
 def test_verification_argv_detects_workspace_kind(tmp_path: Path) -> None:
     # Node workspace with a declared test script → npm test.
     node_ws = tmp_path / "node-ws"

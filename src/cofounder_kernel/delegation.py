@@ -456,6 +456,11 @@ class DelegationService:
             if isinstance(result.get("auto_verification"), dict)
             else None
         )
+        workspace_changes = (
+            result.get("workspace_changes")
+            if isinstance(result.get("workspace_changes"), dict)
+            else None
+        )
         verify_note = ""
         if auto_verification is not None:
             if auto_verification.get("ok") is False:
@@ -488,6 +493,7 @@ class DelegationService:
                             "task": task,
                             "model": result.get("model"),
                             "changed_files": result.get("changed_files", []),
+                            "workspace_changes": workspace_changes,
                             "unverified_claims": unverified_claims,
                             "auto_verification": auto_verification,
                             "entity_boundary": "Local coding agent produced; recorded as delegated evidence.",
@@ -512,6 +518,7 @@ class DelegationService:
                 "provider": result.get("provider"),
                 "rounds": result.get("rounds"),
                 "changed_files": result.get("changed_files", []),
+                "workspace_changes": workspace_changes,
                 "artifact_chars": len(artifact),
                 "unverified_claims": unverified_claims,
                 "auto_verification": auto_verification,
@@ -530,6 +537,7 @@ class DelegationService:
             "rounds": result.get("rounds"),
             "steps": result.get("steps", []),
             "changed_files": result.get("changed_files", []),
+            "workspace_changes": workspace_changes,
             "unverified_claims": unverified_claims,
             "auto_verification": auto_verification,
             "artifact": artifact,

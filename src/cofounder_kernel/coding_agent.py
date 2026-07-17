@@ -17,6 +17,7 @@ escalates to a cloud provider.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -50,6 +51,14 @@ MAX_VERIFY_OUTPUT_CHARS = 4000
 # failing output is fed back to the model for at most this many repair rounds
 # before the run reports, honestly, that the work did not verify.
 MAX_REPAIR_ROUNDS = 2
+
+# Workspace snapshots bound: beyond this many files (outside skip dirs) the
+# before/after diff is skipped rather than made expensive, and the report
+# falls back to write-tool tracking.
+MAX_SNAPSHOT_FILES = 5000
+# Syntax-fallback verification never fans out over more than this many
+# changed files (command-driven churn can be large).
+MAX_VERIFY_TARGETS = 40
 
 # Allowlisted first-argv tokens for run_command. Deliberately small: enough to
 # run tests and inspect a Python or Node workspace. npx stays OFF the list —
@@ -185,6 +194,18 @@ class CodingAgentService:
         steps: list[dict[str, Any]] = []
         changed_files: set[str] = set()
         state = {"rounds": 0, "final_text": "", "status": "ok", "error": "", "used_tools": False}
+        before_snapshot = _workspace_snapshot(root)
+
+        def real_change_targets() -> list[str]:
+            """Everything actually changed so far — write-tool edits plus
+            command-driven mutations visible in the workspace diff."""
+            targets = set(changed_files)
+            if before_snapshot is not None:
+                now = _workspace_snapshot(root)
+                if now is not None:
+                    diff = _diff_snapshots(before_snapshot, now)
+                    targets |= set(diff["added"]) | set(diff["modified"])
+            return sorted(targets)[:MAX_VERIFY_TARGETS]
 
         def advance(cap: int) -> None:
             """Drive model rounds until the model stops calling tools, raises a
@@ -285,9 +306,10 @@ class CodingAgentService:
         # back to the model for bounded repair rounds; the result carries the
         # LAST check's outcome, not the model's claim.
         auto_verification: dict[str, Any] | None = None
-        if state["status"] == "ok" and changed_files:
+        verify_targets = real_change_targets() if state["status"] == "ok" else []
+        if state["status"] == "ok" and verify_targets:
             auto_verification = self._run_verification(
-                tools, root, sorted(changed_files), steps=steps, rounds=state["rounds"]
+                tools, root, verify_targets, steps=steps, rounds=state["rounds"]
             )
             repairs = 0
             while (
@@ -315,12 +337,20 @@ class CodingAgentService:
                     # would reproduce the same failure; keep the honest result.
                     break
                 auto_verification = self._run_verification(
-                    tools, root, sorted(changed_files), steps=steps, rounds=state["rounds"]
+                    tools, root, real_change_targets(), steps=steps, rounds=state["rounds"]
                 )
             auto_verification["repair_rounds"] = repairs
             rendered = str(auto_verification.pop("rendered", "") or "")
             if rendered:
                 state["final_text"] = (state["final_text"].strip() + "\n\n" + rendered).strip()
+
+        # The run's REAL change set: before/after workspace diff, catching
+        # command-driven mutations invisible to write-tool tracking.
+        workspace_changes: dict[str, Any] | None = None
+        if before_snapshot is not None:
+            final_snapshot = _workspace_snapshot(root)
+            if final_snapshot is not None:
+                workspace_changes = _diff_snapshots(before_snapshot, final_snapshot)
 
         status = state["status"]
         rounds = state["rounds"]
@@ -347,6 +377,7 @@ class CodingAgentService:
             "used_tools": used_tools,
             "steps": steps,
             "changed_files": sorted(changed_files),
+            "workspace_changes": workspace_changes,
             "auto_verification": auto_verification,
             "response": final_text.strip(),
         }
@@ -1004,6 +1035,41 @@ def _parse_tool_call(call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if not isinstance(arguments, dict):
         arguments = {}
     return name, arguments
+
+
+def _workspace_snapshot(root: Path) -> dict[str, tuple[int, int]] | None:
+    """Flat {relpath: (size, mtime_ns)} snapshot of the workspace, skipping
+    bulk directories. Returns None when the tree exceeds MAX_SNAPSHOT_FILES —
+    the diff is then skipped rather than made expensive."""
+    snapshot: dict[str, tuple[int, int]] = {}
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for name in filenames:
+            count += 1
+            if count > MAX_SNAPSHOT_FILES:
+                return None
+            path = Path(dirpath) / name
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            rel = str(path.relative_to(root)).replace("\\", "/")
+            snapshot[rel] = (stat.st_size, stat.st_mtime_ns)
+    return snapshot
+
+
+def _diff_snapshots(
+    before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]
+) -> dict[str, Any]:
+    """The run's REAL change set — catches command-driven mutations (npm
+    install, python deletions) that write-tool tracking cannot see."""
+    added = sorted(set(after) - set(before))
+    deleted = sorted(set(before) - set(after))
+    modified = sorted(
+        path for path in set(before) & set(after) if before[path] != after[path]
+    )
+    return {"added": added, "modified": modified, "deleted": deleted, "complete": True}
 
 
 def _render_verification(argv: list[str], result: dict[str, Any]) -> str:
