@@ -675,3 +675,64 @@ def test_directed_needs_decision_files_founder_question(tmp_path: Path, monkeypa
     # The original run item is closed (its outcome is the decision item).
     done = client.get("/work/queue", params={"status": "done"}).json()["items"]
     assert any(item["id"] == result["item_id"] for item in done)
+
+
+def test_founder_decision_item_resolves_without_typed_phrase(tmp_path: Path, monkeypatch) -> None:
+    """Answering Zade's question is the approval: the decision card advertises
+    requires_typed_phrase=False and approve+dispatch works with NO phrase."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None):
+        return {
+            "ok": False,
+            "status": "needs_decision",
+            "error": "",
+            "founder_question": {"question": "SQLite or Postgres?", "options": []},
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 1,
+            "used_tools": True,
+            "steps": [],
+            "changed_files": [],
+            "response": "Paused on the persistence choice.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    config = _config(tmp_path, enabled=True, auto_invoke=True, engine="native")
+    client = TestClient(create_app(config))
+
+    result = client.post(
+        "/delegation/run", json={"task": "add persistence", "directed": True}
+    ).json()
+    decision_id = result["dispatch"]["decision_item_id"]
+
+    # The console card says no phrase is needed for this one.
+    console = client.get("/approval-console", params={"status": "pending"}).json()["items"]
+    card = next(c for c in console if (c.get("work_item") or {}).get("id") == decision_id)
+    assert card["authority_tier"]["requires_typed_phrase"] is False
+    assert card["authority_tier"]["matched_rule"] == "founder_decision.answer_is_approval"
+
+    # Approve + dispatch with NO typed confirmation — the founder's click is her word.
+    approved = client.post(
+        f"/work/items/{decision_id}/approve",
+        json={"resolved_by": "founder", "dispatch": True},
+    ).json()
+    # The fake agent pauses again, which proves the resume actually dispatched
+    # (a phrase failure would have been a 400 before any dispatch).
+    assert approved["dispatch_result"]["status"] == "needs_decision"
+
+    # A non-decision delegation item still demands the phrase. Fresh app:
+    # queue_delegation's unique_key is second-resolution, so a same-second
+    # enqueue in the same app would dedup onto the item that already ran.
+    plain_client = TestClient(create_app(_config(tmp_path / "plain", enabled=True, auto_invoke=False, engine="native")))
+    plain = plain_client.post("/delegation/run", json={"task": "another build"}).json()
+    denied = plain_client.post(
+        f"/work/items/{plain['item_id']}/approve",
+        json={"resolved_by": "founder", "dispatch": True},
+    )
+    assert denied.status_code == 400
+    assert "typed confirmation" in denied.json()["detail"]

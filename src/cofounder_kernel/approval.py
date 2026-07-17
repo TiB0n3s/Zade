@@ -116,7 +116,11 @@ class ApprovalService:
             raise ValueError("Denied or irreversible boundaries cannot be approved through this endpoint.")
         if dispatch:
             self._validate_dispatch_request(request)
-            self._validate_typed_confirmation(typed_confirmation)
+            item = self.db.get_work_item(request.source_id) if request.source_id else None
+            if item is None or not (
+                _has_founder_implied_approval(item) or _is_founder_decision(item)
+            ):
+                self._validate_typed_confirmation(typed_confirmation)
         resolved = self.db.resolve_approval_request(
             request_id,
             status="approved",
@@ -425,7 +429,7 @@ class ApprovalService:
             raise ValueError(f"Work item is {item.status}, not approved.")
         if item.permission_tier in NON_APPROVABLE_TIERS or item.authority_decision == "deny":
             raise ValueError("Denied or irreversible boundaries cannot be dispatched.")
-        if not _has_founder_implied_approval(item):
+        if not (_has_founder_implied_approval(item) or _is_founder_decision(item)):
             self._validate_typed_confirmation(typed_confirmation)
         denial = self.handlers.dispatch_denial(item.action)
         if denial:
@@ -698,6 +702,13 @@ def _proposal_sentence(request: ApprovalRequest) -> str:
     if request.target:
         return f"Zade wants to {request.action} -> {request.target}"
     return f"Zade wants to {request.action}"
+
+
+def _is_founder_decision(item: Any) -> bool:
+    """Zade's own question to the founder: her answer/confirmation is the
+    approval, so dispatching the resume never demands the typed phrase."""
+    metadata = getattr(item, "metadata", {}) or {}
+    return getattr(item, "kind", "") == "founder_decision" or bool(metadata.get("founder_decision"))
 
 
 def _has_founder_implied_approval(item: Any) -> bool:

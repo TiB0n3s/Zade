@@ -559,7 +559,14 @@ class DelegationService:
                 permission_tier="L3_EXTERNAL_ACTION",
                 priority=70,
                 source="delegation",
-                metadata={"task": task, "brief": resume_brief, "workspace": workspace},
+                # founder_decision: Zade's own question to the founder. Her
+                # answer/confirmation IS the approval — no typed phrase.
+                metadata={
+                    "task": task,
+                    "brief": resume_brief,
+                    "workspace": workspace,
+                    "founder_decision": True,
+                },
                 unique_key=f"{DELEGATION_RUN_ACTION}:decision:{utc_now()}",
             )
             decision_item_id = queued.item_id

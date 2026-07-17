@@ -434,3 +434,28 @@ def test_ask_founder_tool_is_offered_with_guardrails(tmp_path: Path, fixture_rep
     system = first_call["messages"][0]["content"]
     assert "pre-authorized" in system
     assert "never stop to ask" in system
+
+
+def test_ask_founder_bounces_capability_boundary_questions(tmp_path: Path, fixture_repo: Path) -> None:
+    """A refused/blocked command is a fixed boundary of the run, not a founder
+    decision: the ask bounces with route-around instructions and the run
+    continues instead of interrupting the founder."""
+    script = [
+        {"tool_calls": [_call(
+            "ask_founder",
+            question="The 'npx react-native doctor' command is not allowed. How would you like to proceed?",
+        )]},
+        {"content": "Proceeded without the doctor check; noted the skip. Done."},
+    ]
+    svc, ollama = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="Verify the environment and finish the setup")
+
+    assert result["status"] == "ok"  # NOT needs_decision — the run kept going
+    assert result["founder_question"] is None
+    assert len(ollama.calls) == 2
+    # The bounce carried instructions back to the model as the tool result.
+    bounce = next(
+        m for m in ollama.calls[1]["messages"]
+        if m.get("role") == "tool" and "capability boundary" in str(m.get("content", ""))
+    )
+    assert "do not ask the founder" in str(bounce["content"]).lower()

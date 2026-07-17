@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `aee0158` 2026-07-16 - Cutover Gate B: fresh-task confirmation passes end-to-end
 - `4f35ef0` 2026-07-16 - Cutover Gate A: all six live checks pass; autostart defect caught and fixed
 - `c7ea616` 2026-07-16 - Cutover Gate C: bridge mutation path verified end-to-end
 - `cb8c040` 2026-07-16 - Materialize the DT->Zade cutover checklist; add delegated-work integrity gate
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `ba0255f` 2026-07-16 - Step-execution route: "perform the tasks in step 5" / "do it" now executes
 - `03be9f6` 2026-07-16 - Maintenance delegation route: "fix/resolve X" now executes instead of narrating
 - `f6799ff` 2026-07-16 - Local-first provider policy: default local-only, native Ollama coding agent
-- `9115fc8` 2026-07-16 - Use full claude.exe path for delegation agent
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

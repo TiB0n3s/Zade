@@ -174,16 +174,34 @@
       return [risk.summary, ...(risk.items || risk.risks || [])].map((r) => (typeof r === 'string' ? r : r && (r.summary || r.label || r.detail) || '')).filter(Boolean).join(' · ');
     }
 
+    function isPlainAnswer(item) {
+      // Zade's own question to the founder (founder_decision): answering IS
+      // the approval — the kernel marks it requires_typed_phrase=false and
+      // accepts approve+dispatch without the ritual.
+      const authority = item.authority_tier || {};
+      const workItem = item.work_item || {};
+      const decision = workItem.kind === 'founder_decision'
+        || !!((workItem.metadata || {}).founder_decision);
+      return decision && authority.requires_typed_phrase === false;
+    }
+
     function renderGatedCard(item, i) {
       const request = item.request || {};
       const tier = (item.authority_tier || {}).permission_tier || request.permission_tier || '';
       const actionBits = [request.action, request.target].filter(Boolean).join(' · ');
       const risk = riskLine(item);
+      const plainAnswer = isPlainAnswer(item);
       let footer;
       if (item._resolved === 'approved') {
         footer = '<div class="gated-done"><span class="dot"></span>Done. It’s handled — exactly as far as you allowed, no further.</div>';
       } else if (item._resolved === 'denied') {
         footer = '<div class="gated-denied">Understood. My hands stay tied.</div>';
+      } else if (plainAnswer) {
+        footer = `
+          <div class="gated-actions">
+            <button type="button" class="ok" data-act="confirm" data-idx="${i}">Proceed on my judgment</button>
+            <button type="button" class="secondary" data-act="deny" data-idx="${i}">Stand down</button>
+          </div>`;
       } else {
         footer = `
           <div class="gated-actions">
@@ -197,11 +215,14 @@
             <div class="gated-title">${esc(request.title || item.zade_wants || 'Approval request')}</div>
             <span style="flex:none;display:flex;gap:6px;">
               ${item.status === 'deferred' ? '<span class="pill deferred">Parked</span>' : ''}
+              ${plainAnswer ? '<span class="pill">Question — no phrase needed</span>' : ''}
               ${tier ? `<span class="pill warn">${esc(TIER_LABELS[tier] || prettyLabel(tier))}</span>` : ''}
             </span>
           </div>
           ${actionBits ? `<div class="gated-action">${esc(actionBits)}</div>` : ''}
-          ${item.zade_wants ? `<div class="gated-wants">${esc(item.zade_wants)}</div>` : ''}
+          ${plainAnswer && request.detail
+            ? `<div class="gated-wants">${esc(request.detail)}</div>`
+            : (item.zade_wants ? `<div class="gated-wants">${esc(item.zade_wants)}</div>` : '')}
           ${risk ? `<div class="gated-risk">${esc(risk)}</div>` : ''}
           ${footer}
           <div class="gated-error" data-error></div>
@@ -275,6 +296,24 @@
       if (!btn) return;
       const idx = Number(btn.dataset.idx);
       if (btn.dataset.act === 'ritual') { openRitual(idx); return; }
+      if (btn.dataset.act === 'confirm') {
+        // Zade's question — her confirmation is the approval; no phrase.
+        const item = gated[idx];
+        const card = btn.closest('.gated');
+        withBusy(btn, '…', async () => {
+          try {
+            await api('/approval-requests/' + encodeURIComponent(item.id) + '/approve', {
+              method: 'POST',
+              body: JSON.stringify({ resolved_by: 'founder', dispatch: true, note: '' })
+            });
+            item._resolved = 'approved';
+            renderGatedList();
+          } catch (err) {
+            const e = card.querySelector('[data-error]'); if (e) e.textContent = err.message;
+          }
+        });
+        return;
+      }
       if (btn.dataset.act === 'deny') {
         const item = gated[idx];
         const card = btn.closest('.gated');

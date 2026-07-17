@@ -106,6 +106,19 @@ class WorkQueueService:
                 "matched_rule": "founder_command.implied_approval",
                 "base_decision": authority.decision.value,
             }
+        elif metadata.get("founder_decision") and authority.decision == AuthorityDecision.APPROVAL_REQUIRED:
+            # Zade's own question to the founder: it still waits in the Inbox
+            # for her word, but answering/confirming IS the approval — the
+            # typed-phrase ritual is for authorizing Zade's proposals, not for
+            # answering his questions about work she already directed.
+            authority_dict = {
+                **authority_dict,
+                "reason": "Zade's question to the founder — answering it is the approval; no typed phrase needed.",
+                "requires_typed_phrase": False,
+                "typed_phrase": None,
+                "matched_rule": "founder_decision.answer_is_approval",
+                "base_decision": authority.decision.value,
+            }
         item_id, created = self.db.enqueue_work_item(
             kind=kind,
             title=title,

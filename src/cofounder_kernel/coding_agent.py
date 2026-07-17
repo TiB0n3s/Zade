@@ -57,6 +57,21 @@ _MAX_INSTRUCTION_CHARS = 4000
 
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache"}
 
+# ask_founder questions that are really about this run's own tool limits — a
+# refused command, a missing tool — are bounced back with instructions to
+# route around the boundary instead of interrupting the founder.
+_CAPABILITY_BOUNDARY_QUESTION_RE = re.compile(
+    r"""(?ix)
+    (?:\b(?:command|tool|program|npx|npm|binary|executable)\b
+        [^?]{0,80}?
+        \b(?:not\s+(?:allowed|allowlisted|permitted|available|supported)|blocked|refused|unavailable|disallowed|forbidden)\b)
+    |
+    (?:\b(?:not\s+(?:allowed|allowlisted|permitted)|blocked|refused|disallowed|forbidden)\b
+        [^?]{0,40}?
+        \b(?:command|tool|program|run(?:ning)?)\b)
+    """
+)
+
 
 class CodingAgentError(RuntimeError):
     pass
@@ -429,8 +444,9 @@ class CodingAgentService:
                         "genuinely cannot proceed safely without their input: a missing requirement, "
                         "an irreversible or destructive choice, or materially different implementations "
                         "with real trade-offs. Never use it to ask permission to do the task you were "
-                        "given — that is already granted. Calling this ends the run; it resumes after "
-                        "the founder answers."
+                        "given — that is already granted — and never for this run's own tool limits "
+                        "(a blocked or unavailable command): route around those and note them in your "
+                        "summary. Calling this ends the run; it resumes after the founder answers."
                     ),
                     parameters={
                         "type": "object",
@@ -606,6 +622,19 @@ class CodingAgentService:
         question = str(args.get("question") or "").strip()
         if not question:
             return {"ok": False, "error": "question is required"}
+        if _CAPABILITY_BOUNDARY_QUESTION_RE.search(question):
+            # A blocked/refused command is a fixed boundary of this run, not a
+            # founder decision — bouncing it keeps the run moving instead of
+            # interrupting the founder over tooling.
+            return {
+                "ok": False,
+                "error": (
+                    "That is a fixed capability boundary of this run, not a founder "
+                    "decision — do not ask the founder about blocked or unavailable "
+                    "commands. Choose an allowlisted alternative, or skip that step "
+                    "and note the skip in your final summary, then continue the task."
+                ),
+            }
         options = args.get("options")
         question_box["question"] = question[:600]
         question_box["options"] = [str(o)[:200] for o in options[:6]] if isinstance(options, list) else []
@@ -713,6 +742,11 @@ class CodingAgentService:
             return {
                 "ok": False,
                 "error": f"program {argv[0]!r} is not allowlisted. Allowed: {', '.join(COMMAND_ALLOWLIST)}",
+                "note": (
+                    "This boundary is fixed for this run — do NOT ask the founder about it. "
+                    "Use an allowlisted alternative, or skip this step, note the skip in "
+                    "your final summary, and continue the task."
+                ),
             }
         # Pin Python-family programs to the kernel's own interpreter so the run
         # sees the kernel venv (pytest included) instead of whatever bare
