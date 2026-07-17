@@ -274,6 +274,9 @@ class DeepThoughtTeachingBridge:
                 # founder can see and deny; the import runs only on an explicit
                 # founder action (the /teach/deepthought/import endpoint, or
                 # evidence_loop with require_approval=False).
+                # Honor prior denials first: a denied gate request marks its
+                # candidates 'declined' so they drop out of the selection below.
+                self._reconcile_declined_candidates()
                 previewable = self._select_candidates(
                     candidate_ids=[], import_all_candidates=True, limit=max_import
                 )
@@ -709,6 +712,30 @@ class DeepThoughtTeachingBridge:
                 resolved_by="founder",
                 resolution_note="Approved by explicit founder import.",
             )
+
+    def _reconcile_declined_candidates(self) -> list[int]:
+        """Make a founder denial stick. Candidates in a DENIED import-gate request
+        are marked 'declined' so the autonomous gate never re-surfaces them (the
+        auto path selects status='candidate' only). Idempotent — only flips rows
+        still in 'candidate', so it never un-imports or re-declines. An explicit
+        import by id still overrides, since that path has no status filter."""
+        denied_ids: set[int] = set()
+        for request in self.db.list_approval_requests(status="denied", limit=500):
+            if request.source_type != "teaching_import":
+                continue
+            for candidate_id in (request.metadata or {}).get("candidate_ids", []):
+                denied_ids.add(int(candidate_id))
+        if not denied_ids:
+            return []
+        ids = sorted(denied_ids)
+        placeholders = ",".join("?" for _ in ids)
+        with self.db.connect() as conn:
+            conn.execute(
+                f"UPDATE teaching_candidates SET updated_at = ?, status = 'declined' "
+                f"WHERE id IN ({placeholders}) AND status = 'candidate'",
+                [utc_now(), *ids],
+            )
+        return ids
 
     def _log_runtime_event(self, *, status: str, response: str, details: dict[str, Any]) -> int:
         with self.db.connect() as conn:

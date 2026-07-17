@@ -70,6 +70,12 @@ def _teaching_import_requests(db: KernelDatabase, status: str | None = None) -> 
     return [dict(row) for row in rows]
 
 
+def _candidate_status(db: KernelDatabase, candidate_id: int) -> str | None:
+    with db.connect() as conn:
+        row = conn.execute("SELECT status FROM teaching_candidates WHERE id = ?", (candidate_id,)).fetchone()
+    return row["status"] if row else None
+
+
 def _weak_evidence_status(db: KernelDatabase, goal_id: int) -> str | None:
     with db.connect() as conn:
         row = conn.execute(
@@ -274,6 +280,53 @@ def test_evidence_loop_require_approval_false_imports_directly(tmp_path: Path) -
     assert result["pending_approval"] is None
     assert _count(db, "founder_evidence") == 1
     assert _teaching_import_requests(db) == []
+
+
+def test_denied_gate_request_declines_candidates_and_stops_resurfacing(tmp_path: Path) -> None:
+    """A founder denial sticks: the denied candidates are marked 'declined' and the
+    autonomous gate never re-surfaces them on a later pass."""
+    bridge, _founder, db = _make(tmp_path)
+    source = _write_source(tmp_path)
+    candidate_id = bridge.scan(paths=[str(source)], limit=5)["candidates"][0]["id"]
+
+    bridge.evidence_loop(max_import=5)  # gate files a pending request
+    pending = _teaching_import_requests(db, status="pending")
+    assert len(pending) == 1
+
+    # Founder denies it through the generic approvals console path.
+    db.resolve_approval_request(pending[0]["id"], status="denied", resolved_by="founder")
+
+    # Next autonomous pass: deny sticks — candidate declined, nothing re-filed.
+    result = bridge.evidence_loop(max_import=5)
+    assert result["status"] == "ok"
+    assert result["pending_approval"] is None
+    assert _teaching_import_requests(db, status="pending") == []
+    assert _candidate_status(db, candidate_id) == "declined"
+    assert _count(db, "founder_evidence") == 0
+
+    # And it stays declined across further passes (idempotent, no re-nag).
+    bridge.evidence_loop(max_import=5)
+    assert _teaching_import_requests(db, status="pending") == []
+    assert _candidate_status(db, candidate_id) == "declined"
+
+
+def test_explicit_import_overrides_a_declined_candidate(tmp_path: Path) -> None:
+    """An explicit founder import by id still overrides a prior denial — the
+    candidate_ids path has no status filter."""
+    bridge, _founder, db = _make(tmp_path)
+    source = _write_source(tmp_path)
+    candidate_id = bridge.scan(paths=[str(source)], limit=5)["candidates"][0]["id"]
+    bridge.evidence_loop(max_import=5)
+    db.resolve_approval_request(
+        _teaching_import_requests(db, status="pending")[0]["id"], status="denied", resolved_by="founder"
+    )
+    bridge.evidence_loop(max_import=5)  # reconcile -> declined
+    assert _candidate_status(db, candidate_id) == "declined"
+
+    imported = bridge.import_candidates(candidate_ids=[candidate_id])  # explicit override
+    assert imported["imported"][0]["status"] == "imported"
+    assert _count(db, "founder_evidence") == 1
+    assert _candidate_status(db, candidate_id) == "imported"
 
 
 def test_filename_scan_cannot_mint_grade_a() -> None:
