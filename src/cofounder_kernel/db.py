@@ -194,6 +194,89 @@ class KernelDatabase:
             row = conn.execute("PRAGMA user_version").fetchone()
         return int(row[0]) if row else 0
 
+    # ---- work plans (the work ledger) ---------------------------------------
+    # Steps live as ROWS, not prose: chat threads accumulate synthetic,
+    # fabricated, and meta turns, and re-deriving "step 5" from them by text
+    # search proved endlessly poisonable. The ledger is materialized once and
+    # updated only from verified run outcomes.
+
+    def create_work_plan(
+        self,
+        *,
+        conversation_id: int | None,
+        title: str,
+        workspace: str = "",
+        steps: list[tuple[int, str]],
+    ) -> int:
+        now = utc_now()
+        with self.connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO work_plans (created_at, updated_at, conversation_id, title, workspace, status) "
+                "VALUES (?, ?, ?, ?, ?, 'active')",
+                (now, now, conversation_id, title[:200], workspace[:400]),
+            )
+            plan_id = int(cur.lastrowid or 0)
+            for step_number, instructions in steps:
+                conn.execute(
+                    "INSERT OR IGNORE INTO work_plan_steps "
+                    "(plan_id, step_number, instructions, status, updated_at) "
+                    "VALUES (?, ?, ?, 'pending', ?)",
+                    (plan_id, int(step_number), instructions[:4000], now),
+                )
+        return plan_id
+
+    def get_active_work_plan(self, conversation_id: int | None) -> dict[str, Any] | None:
+        if not conversation_id:
+            return None
+        with self.connect() as conn:
+            plan = conn.execute(
+                "SELECT * FROM work_plans WHERE conversation_id = ? AND status = 'active' "
+                "ORDER BY id DESC LIMIT 1",
+                (conversation_id,),
+            ).fetchone()
+            if plan is None:
+                return None
+            steps = conn.execute(
+                "SELECT step_number, instructions, status, last_item_id, last_outcome "
+                "FROM work_plan_steps WHERE plan_id = ? ORDER BY step_number",
+                (plan["id"],),
+            ).fetchall()
+        return {
+            "id": int(plan["id"]),
+            "conversation_id": plan["conversation_id"],
+            "title": str(plan["title"]),
+            "workspace": str(plan["workspace"] or ""),
+            "status": str(plan["status"]),
+            "steps": [dict(step) for step in steps],
+        }
+
+    def update_work_plan_step(
+        self,
+        plan_id: int,
+        step_number: int,
+        *,
+        status: str,
+        last_item_id: int | None = None,
+        last_outcome: str = "",
+    ) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE work_plan_steps SET status = ?, last_item_id = COALESCE(?, last_item_id), "
+                "last_outcome = ?, updated_at = ? WHERE plan_id = ? AND step_number = ?",
+                (status[:40], last_item_id, last_outcome[:400], now, plan_id, step_number),
+            )
+            conn.execute(
+                "UPDATE work_plans SET updated_at = ? WHERE id = ?", (now, plan_id)
+            )
+
+    def set_work_plan_workspace(self, plan_id: int, workspace: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE work_plans SET workspace = ?, updated_at = ? WHERE id = ?",
+                (workspace[:400], utc_now(), plan_id),
+            )
+
     def claim_next_work_item(self) -> WorkItem | None:
         """Atomically transition the highest-priority pending item to 'running'
         and return it, so two concurrent runners (scheduler + API) can never
@@ -3120,5 +3203,30 @@ CREATE TABLE IF NOT EXISTS action_handler_access (
   action TEXT NOT NULL UNIQUE,
   enabled INTEGER NOT NULL DEFAULT 1,
   metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS work_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  conversation_id INTEGER,
+  title TEXT NOT NULL,
+  workspace TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_plans_conversation
+  ON work_plans (conversation_id, status);
+
+CREATE TABLE IF NOT EXISTS work_plan_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL,
+  step_number INTEGER NOT NULL,
+  instructions TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  last_item_id INTEGER,
+  last_outcome TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  UNIQUE (plan_id, step_number)
 );
 """

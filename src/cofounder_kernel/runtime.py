@@ -623,8 +623,13 @@ class RuntimeService:
                 message=message,
                 authority=authority,
                 conversation_messages=route_turns,
+                conversation_id=conversation_id,
             )
         )
+        # Work ledger for this thread (fetched AFTER routing so a step run's
+        # outcome is already written back): the deterministic source for any
+        # work-status answer this turn.
+        work_plan = self.db.get_active_work_plan(conversation_id) if conversation_id else None
         regulated = self._regulate_response(
             response_for_governor,
             message=message,
@@ -634,6 +639,7 @@ class RuntimeService:
             chat_action_route=chat_action_route,
             research_route=research_route,
             build_route=build_route,
+            work_plan=work_plan,
         )
         if repair["status"] == "repaired":
             regulated["governor"]["applied_rules"].append("charter_recitation_repaired")
@@ -1432,6 +1438,7 @@ The founder's current message is supplied separately as the user-role message. D
         chat_action_route: dict[str, Any] | None = None,
         research_route: dict[str, Any] | None = None,
         build_route: dict[str, Any] | None = None,
+        work_plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         text = response.strip()
         notes = []
@@ -1457,7 +1464,28 @@ The founder's current message is supplied separately as the user-role message. D
             text = trimmed_text
             applied_rules.append("repetition_loop_trimmed")
             notes.append("Detected and trimmed a repetitive model-output loop.")
-        if _is_completion_or_status_question(message) and _matches_prior_assistant_reply(text, recent_turns or []):
+        ledger_answered = False
+        if (
+            work_plan
+            and _is_completion_or_status_question(message)
+            and not (chat_action_route or research_route or build_route)
+        ):
+            # THE overall resolution to the false-completion circles: in a
+            # thread with a work ledger, work-status answers are composed by
+            # the kernel from verified ledger rows. The model's draft is
+            # discarded — it never authors work-state claims here.
+            text = _render_work_plan_status(work_plan)
+            ledger_answered = True
+            applied_rules.append("work_ledger_status_answer")
+            notes.append(
+                "Answered a work-status question deterministically from the work "
+                "ledger; the model draft was discarded."
+            )
+        if (
+            not ledger_answered
+            and _is_completion_or_status_question(message)
+            and _matches_prior_assistant_reply(text, recent_turns or [])
+        ):
             text = _completion_status_replay_fallback()
             applied_rules.append("conversation_replay_repaired")
             notes.append(
@@ -1477,7 +1505,8 @@ The founder's current message is supplied separately as the user-role message. D
             (build_route or {}).get("status") or ""
         ) in {"executed", "verify_failed", "no_effect", "needs_decision", "run_failed", "queued"}
         if (
-            not (chat_action_route or research_route or build_route_executing)
+            not ledger_answered
+            and not (chat_action_route or research_route or build_route_executing)
             and _is_fabricated_execution_reply(message=message, response=text or "")
         ):
             # No route fired this turn, and the drafted reply still narrated a
@@ -1725,12 +1754,49 @@ The founder's current message is supplied separately as the user-role message. D
             "related": [item.get("question") for item in related][:3],
         }
 
+    def _materialize_work_plan(
+        self,
+        conversation_id: int | None,
+        turns: list[Any],
+        *,
+        message: str = "",
+    ) -> dict[str, Any] | None:
+        """One-time conversion of the thread's step instructions into ledger
+        rows. Walks assistant turns newest-first, skipping synthetic and
+        non-instruction text, and persists the first turn that parses into
+        "Step N:" sections. After this, step commands never read the thread."""
+        if not conversation_id:
+            return None
+        for turn in reversed(turns or []):
+            if str(_turn_field(turn, "role")).lower() != "assistant":
+                continue
+            content = _strip_synthetic_reply_text(str(_turn_field(turn, "content") or ""))
+            if not content.strip() or _looks_like_non_instruction_text(content[:1500]):
+                continue
+            steps = _parse_plan_steps(content)
+            if not steps:
+                continue
+            title = content.strip().splitlines()[0].strip()[:120] or "Work plan"
+            workspace = _extract_project_target(turns, current_message=message)
+            try:
+                self.db.create_work_plan(
+                    conversation_id=conversation_id,
+                    title=title,
+                    workspace=workspace,
+                    steps=steps,
+                )
+                return self.db.get_active_work_plan(conversation_id)
+            except Exception:  # noqa: BLE001 - materialization must not break routing
+                return None
+        return None
+
     def _maybe_route_build_work(
         self,
         *,
         message: str,
         authority: AuthorityResult,
         conversation_messages: list[dict[str, Any]] | None = None,
+        conversation_id: int | None = None,
     ) -> dict[str, Any] | None:
         """Turn a founder build or maintenance *command* into a directed delegated run.
 
@@ -1757,6 +1823,8 @@ The founder's current message is supplied separately as the user-role message. D
         kind = "build"
         workspace = ""
         instructions = ""
+        plan: dict[str, Any] | None = None
+        plan_step: dict[str, Any] | None = None
         extracted = _extract_build_task(message)
         if extracted is not None:
             task, anaphoric = extracted
@@ -1793,9 +1861,23 @@ The founder's current message is supplied separately as the user-role message. D
                 if step is None:
                     return None
                 step_number, bare_anaphora = step
-                instructions = _resolve_step_instructions(
-                    turns, step_number=step_number, latest_only=bare_anaphora
-                )
+                # Ledger first: steps are rows, not prose. The thread is only
+                # consulted once, to MATERIALIZE the plan; after that, no
+                # amount of thread pollution can change what "step 5" means.
+                if not bare_anaphora:
+                    plan = self.db.get_active_work_plan(conversation_id)
+                    if plan is None:
+                        plan = self._materialize_work_plan(
+                            conversation_id, turns, message=message
+                        )
+                    plan_step = _select_plan_step(plan, step_number)
+                if plan_step is not None:
+                    instructions = str(plan_step.get("instructions") or "")
+                    step_number = int(plan_step.get("step_number") or 0)
+                else:
+                    instructions = _resolve_step_instructions(
+                        turns, step_number=step_number, latest_only=bare_anaphora
+                    )
                 if not instructions:
                     if bare_anaphora:
                         # Nothing resolvable behind "do it": leave it to the
@@ -1804,7 +1886,15 @@ The founder's current message is supplied separately as the user-role message. D
                     return {"status": "no_task", "kind": "step", "task": "", "anaphoric": True}
                 kind = "step"
                 anaphoric = True
-                workspace = _extract_project_target(turns, current_message=message)
+                workspace = (
+                    str((plan or {}).get("workspace") or "")
+                    or _extract_project_target(turns, current_message=message)
+                )
+                if plan and not plan.get("workspace") and workspace:
+                    try:
+                        self.db.set_work_plan_workspace(plan["id"], workspace)
+                    except Exception:  # noqa: BLE001 - ledger upkeep must not break routing
+                        pass
                 first_line = instructions.strip().splitlines()[0].strip()[:120]
                 label = f"step {step_number}" if step_number is not None else "the step"
                 task = f"Carry out {label} from our conversation: {first_line}"
@@ -1852,6 +1942,9 @@ The founder's current message is supplied separately as the user-role message. D
             "agent_configured": engine_ready,
             "engine": engine,
         }
+        if kind == "step" and plan is not None and plan_step is not None:
+            route["plan_id"] = plan["id"]
+            route["plan_step_number"] = int(plan_step.get("step_number") or 0)
         if queued.get("auto_invoked"):
             # The directed run already executed this turn — report what really
             # happened instead of pointing at an Inbox item.
@@ -1922,6 +2015,60 @@ The founder's current message is supplied separately as the user-role message. D
                 route["error"] = str(dispatch.get("error") or dispatch.get("status") or "run failed")[:400]
         else:
             route["reason"] = str(queued.get("reason") or "")
+        if route.get("plan_id") and route.get("plan_step_number"):
+            # Ledger write-back: the step's status comes ONLY from the run's
+            # verified outcome — never from any model text.
+            ledger_status = {
+                "executed": "executed_unverified",
+                "verify_failed": "verify_failed",
+                "no_effect": "no_effect",
+                "needs_decision": "blocked",
+                "run_failed": "failed",
+                "queued": "queued",
+            }.get(str(route.get("status")))
+            if str(route.get("status")) == "executed" and route.get("auto_verified"):
+                ledger_status = "done"
+            if ledger_status:
+                verification = route.get("verification") or (route.get("dispatch") or {}).get(
+                    "auto_verification"
+                )
+                if ledger_status == "done":
+                    outcome = "kernel checks passed on real output"
+                elif isinstance(verification, dict) and verification.get("ok") is False:
+                    failing = "; ".join(
+                        " ".join(str(a) for a in (check.get("argv") or []))
+                        for check in verification.get("checks") or []
+                        if not check.get("ok")
+                    )
+                    outcome = f"kernel check failed ({failing})" if failing else "kernel check failed"
+                elif ledger_status == "executed_unverified":
+                    outcome = "executed; no check could verify it"
+                elif ledger_status == "no_effect":
+                    outcome = "edit attempts failed; nothing changed"
+                elif ledger_status == "blocked":
+                    outcome = "paused on a founder decision"
+                else:
+                    outcome = str(route.get("error") or "")[:200]
+                try:
+                    self.db.update_work_plan_step(
+                        int(route["plan_id"]),
+                        int(route["plan_step_number"]),
+                        status=ledger_status,
+                        last_item_id=route.get("item_id"),
+                        last_outcome=outcome,
+                    )
+                    fresh = self.db.get_active_work_plan(conversation_id)
+                    if fresh:
+                        steps = fresh.get("steps") or []
+                        route["plan_progress"] = {
+                            "step_number": route["plan_step_number"],
+                            "done": sum(
+                                1 for s in steps if str(s.get("status")) == "done"
+                            ),
+                            "total": len(steps),
+                        }
+                except Exception:  # noqa: BLE001 - ledger upkeep must not break the reply
+                    pass
         return route
 
     def _context_summary(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -3560,6 +3707,85 @@ def _extract_step_execution(message: str) -> tuple[int | None, bool] | None:
     return None
 
 
+# Work-ledger step parsing: "Step N:" headings at line starts become ledger
+# rows. Anchored headings only — a mid-sentence "step 5" mention never parses.
+_PLAN_STEP_HEADING_RE = re.compile(
+    r"(?im)^\s*(?:#{1,6}\s*)?(?:\*\*)?step\s*#?\s*(\d+)(?:\*\*)?\s*[:.]"
+)
+
+
+def _parse_plan_steps(text: str) -> list[tuple[int, str]]:
+    """Parse "Step N: ..." sections out of an instruction turn. Each step's
+    body runs to the next heading. Duplicate numbers keep the first
+    occurrence; trivial fragments are dropped."""
+    matches = list(_PLAN_STEP_HEADING_RE.finditer(text or ""))
+    steps: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for index, match in enumerate(matches):
+        number = int(match.group(1))
+        if number in seen:
+            continue
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[match.start() : end].strip()
+        if len(body) < 20:
+            continue
+        seen.add(number)
+        steps.append((number, body[:4000]))
+    return steps
+
+
+def _select_plan_step(
+    plan: dict[str, Any] | None, step_number: int | None
+) -> dict[str, Any] | None:
+    """The ledger row a step command points at: the numbered step, or (for
+    unnumbered commands) the first step not yet verified done."""
+    if not plan:
+        return None
+    steps = plan.get("steps") or []
+    if step_number is not None:
+        for step in steps:
+            if int(step.get("step_number") or -1) == step_number:
+                return step
+        return None
+    for step in steps:
+        if str(step.get("status")) != "done":
+            return step
+    return None
+
+
+def _render_work_plan_status(plan: dict[str, Any]) -> str:
+    """Deterministic work-status answer composed from ledger rows — the model
+    never authors work-state claims for a thread with an active plan."""
+    steps = plan.get("steps") or []
+    done = sum(1 for step in steps if str(step.get("status")) == "done")
+    lines = [
+        f"Work ledger for this thread — {plan.get('title', 'plan')}: "
+        f"{done}/{len(steps)} step(s) verified done."
+    ]
+    status_labels = {
+        "pending": "not started",
+        "done": "done (verified)",
+        "executed_unverified": "executed, UNVERIFIED",
+        "verify_failed": "NOT done — kernel check failed",
+        "no_effect": "NOT done — edit attempts failed",
+        "failed": "run failed",
+        "blocked": "paused on your decision",
+        "queued": "queued",
+    }
+    for step in steps:
+        label = status_labels.get(str(step.get("status")), str(step.get("status")))
+        outcome = str(step.get("last_outcome") or "").strip()
+        item_id = step.get("last_item_id")
+        detail = f" — {outcome}" if outcome else ""
+        item = f" (item #{item_id})" if item_id else ""
+        lines.append(f"- Step {step.get('step_number')}: {label}{detail}{item}")
+    lines.append(
+        "Each status above is the kernel's verified run outcome, not prose. "
+        "Say `perform step N` to run one."
+    )
+    return "\n".join(lines)
+
+
 # Meta narration ABOUT execution claims — Zade's own honesty vocabulary from
 # the false-completion arc. A turn discussing whether work was done is never
 # step instructions (live incident item #69: "Because I reported them done in
@@ -3749,6 +3975,14 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
             if dispatch.get("evidence_id")
             else f" Full detail is on item #{item_id}."
         )
+        progress = route.get("plan_progress") or {}
+        plan_line = (
+            f" Ledger: step {progress.get('step_number')} recorded; "
+            f"{progress.get('done')}/{progress.get('total')} steps verified done."
+            if progress
+            else ""
+        )
+        evidence_line += plan_line
         if status == "verify_failed":
             verification = route.get("verification") or {}
             failing = [

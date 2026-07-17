@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `b3a06c6` 2026-07-17 - Delegated runs verify the GOAL state, not just this run''s delta
 - `280a45b` 2026-07-17 - TypeScript workspaces get tsc --noEmit as a second mandatory kernel check
 - `a222d24` 2026-07-17 - Meta narration about execution claims is never step instructions
 - `231b8ad` 2026-07-17 - Run reports carry the REAL change set: kernel diffs the workspace before/after
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `3f5a9d9` 2026-07-17 - "Re-run step N" routes; an unrouted execution command can never claim success
 - `ae6b50b` 2026-07-17 - Step referents ignore synthetic replies; workspace mechanics never ask the founder
 - `404c889` 2026-07-17 - Delegated runs enforce Goal -> Act -> Check -> Repeat; no more false completions
-- `2377f24` 2026-07-16 - Founder decisions answer with a click; capability limits never ask the founder
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -2804,6 +2804,150 @@ def test_fabricated_body_dropped_on_executed_maintenance_route(
     assert "routed_reply_body_replaced" in payload["governor"]["applied_rules"]
 
 
+def test_work_ledger_parses_steps_and_selects() -> None:
+    from cofounder_kernel.runtime import _parse_plan_steps, _select_plan_step
+
+    text = (
+        "Here's the plan.\n\n"
+        "Step 1: Create hello.py with a print statement and save it.\n\n"
+        "### Step 2: Wire the screens together and implement the functionality.\n"
+        "Also step 5 is mentioned mid-sentence and must not parse.\n"
+    )
+    steps = _parse_plan_steps(text)
+    assert [n for n, _ in steps] == [1, 2]
+    assert "Create hello.py" in steps[0][1]
+
+    plan = {
+        "steps": [
+            {"step_number": 1, "status": "done"},
+            {"step_number": 2, "status": "pending"},
+        ]
+    }
+    assert _select_plan_step(plan, 1)["step_number"] == 1
+    assert _select_plan_step(plan, None)["step_number"] == 2  # first not-done
+    assert _select_plan_step(plan, 9) is None
+
+
+def test_work_ledger_end_to_end_resists_thread_poison(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """THE overall resolution to the false-completion circles, end to end:
+    steps become ledger rows on first use; later thread poison cannot change
+    what 'step 2' means; run outcomes update the ledger from verified results
+    only; and work-status questions are answered by the kernel from the
+    ledger, with the model's draft discarded."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    fabrication = (
+        "I have confirmed the project path and re-run Step 2 in your project. "
+        "The following has been completed: dependencies installed and verified."
+    )
+
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=fabrication, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, fabricating_generate)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    seen_tasks: list[str] = []
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
+        seen_tasks.append(str(context))
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {"provider": "ollama", "endpoint_host": "127.0.0.1", "verified_local": True},
+            "workspace": str(workspace or ""),
+            "rounds": 1,
+            "used_tools": True,
+            "steps": [{"tool": "write_file", "arguments": {"path": "screens.py"}, "ok": True}],
+            "changed_files": ["screens.py"],
+            "auto_verification": {
+                "mode": "tests", "ok": True,
+                "checks": [{"argv": ["python", "-m", "pytest", "-q"], "ok": True, "returncode": 0}],
+                "unchecked_files": [], "argv": ["python", "-m", "pytest", "-q"],
+                "returncode": 0, "repair_rounds": 0,
+            },
+            "response": "Wired the screens; tests pass.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation_id = client.post("/conversations", json={"title": "Ledger app"}).json()[
+        "conversation"
+    ]["id"]
+    conversations = client.app.state.conversations
+    conversations.record_assistant_turn(
+        conversation_id,
+        content=(
+            "Step 1: Create hello.py with a print statement and save it.\n\n"
+            "Step 2: Wire the screens together and implement the functionality "
+            "for the UI components."
+        ),
+        task_type="coding",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+    # Thread poison lands AFTER the instructions — a fabricated completion.
+    conversations.record_assistant_turn(
+        conversation_id,
+        content=(
+            "I have re-run Step 2 in your project. The following has been "
+            "completed:\n- Dependencies installed and verified."
+        ),
+        task_type="coding",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+
+    run_response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Perform step 2",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert run_response.status_code == 200, run_response.text
+    payload = run_response.json()
+    assert payload["build"]["status"] == "executed"
+    # The brief carried the LEDGER step, not the poison.
+    assert any("Wire the screens together" in ctx for ctx in seen_tasks)
+    assert not any("has been completed" in ctx.split("Step instructions to execute:")[1][:200]
+                   for ctx in seen_tasks if "Step instructions to execute:" in ctx)
+    assert "Ledger: step 2 recorded; 1/2 steps verified done." in payload["response"]
+
+    status_response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Where are we on the steps?",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert status_response.status_code == 200, status_response.text
+    status_payload = status_response.json()
+    assert "Work ledger for this thread" in status_payload["response"]
+    assert "1/2 step(s) verified done" in status_payload["response"]
+    assert "Step 2: done (verified)" in status_payload["response"]
+    assert "Step 1: not started" in status_payload["response"]
+    # The model's fabricated draft never reached the founder.
+    assert "I have confirmed" not in status_payload["response"]
+    assert "work_ledger_status_answer" in status_payload["governor"]["applied_rules"]
+
+
 def test_step_resolution_skips_meta_narration_turns() -> None:
     """Live incident 2026-07-17 (item #69): Zade's old honesty lecture
     ('Because I reported them done in prose... 1. Create the src/screens
