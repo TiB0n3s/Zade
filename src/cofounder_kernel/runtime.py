@@ -1345,7 +1345,7 @@ You are {self.config.identity.name}. You speak as yourself to Ellie — the foun
 - Lead with the move, in your voice. Keep it tight. No memo headings or labels ("Rationale:", "Confidence:", "Next action:") and no status-report ladders ("I checked… I found… I will…") unless Ellie asks for a formal memo or audit.
 - Style may be decisive; evidence stays honest. Never fake certainty about facts. If evidence is missing, name what is missing and the next check — do not pad with hedging.
 - When you recommend something, deliver it as prose that carries the reason, your confidence, the main risk, a reversal or kill condition, and the next action — never as a labeled form.
-- A chat reply is words, not execution — but when Ellie DIRECTS build/fix/step work, the kernel routes her command into a delegated run that executes this turn at full auto, and appends the real outcome to your reply. So never deny the ability to execute a directed command, and never fabricate execution beyond what that route block reports. For anything not routed, give the real path: what to queue, and what needs Ellie's word in the Inbox.
+- A chat reply is words, not execution — but when Ellie DIRECTS build/fix/step/review work, the kernel routes her command into a delegated run that executes this turn at full auto, and appends the real outcome to your reply. A review command runs READ-ONLY: the run inspects the real project and the report lands in the reply — never narrate an inspection plan yourself. So never deny the ability to execute a directed command, and never fabricate execution beyond what that route block reports. For anything not routed, give the real path: what to queue, and what needs Ellie's word in the Inbox.
 - Ellie's direct commands are already authorized — do not ask her to approve the same thing twice. The authority decision below governs what you may execute, not what she may decide. If an action is blocked or has no handler, say so plainly and never imply it was done.
 - Delegated work is yours to drive: never hand it back to Ellie — never tell her to create files or directories, run commands, or perform steps manually, and never demand she recite an exact phrase. A pending decision item is answered with a click on its Inbox card or a plain answer here; once answered, the run resumes. If work has not verified, say exactly that and name the run you'll make next.
 - Output Ellie pasted into chat (terminal logs, audit reports, error dumps) is HER evidence: refer to it as what she pasted, never as the result of a check or fetch you ran. You cannot run shell or npm commands from a chat reply — fixes happen through a routed delegated run, which executes immediately when Ellie directs it. Never narrate step-by-step command execution as if it happened.
@@ -1488,6 +1488,14 @@ The founder's current message is supplied separately as the user-role message. D
             text = trimmed_text
             applied_rules.append("repetition_loop_trimmed")
             notes.append("Detected and trimmed a repetitive model-output loop.")
+        stripped_calls, tool_call_leaked = _strip_leaked_tool_calls(text)
+        if tool_call_leaked:
+            text = stripped_calls
+            applied_rules.append("leaked_tool_call_stripped")
+            notes.append(
+                "Stripped raw tool-call JSON the model emitted as prose; no such "
+                "call was executed."
+            )
         ledger_answered = False
         if (
             work_plan
@@ -1505,6 +1513,36 @@ The founder's current message is supplied separately as the user-role message. D
                 "Answered a work-status question deterministically from the work "
                 "ledger; the model draft was discarded."
             )
+        if (
+            not ledger_answered
+            and (
+                _is_completion_or_status_question(message)
+                or _REMAINING_WORK_RE.search(message or "")
+            )
+            and not (chat_action_route or research_route or build_route)
+        ):
+            # No thread ledger, but the question may target a project WORKSPACE
+            # the kernel has run delegated work in. The verified run record for
+            # that workspace beats any model draft (live incident: five turns of
+            # "what's done / what remains?" about a project with 12 completed
+            # runs on file, answered with fallback boilerplate and a fabricated
+            # inspection plan).
+            history_workspace = _extract_project_target(
+                list(recent_turns or []), current_message=message
+            )
+            history = (
+                self.db.list_work_items_for_workspace(history_workspace)
+                if history_workspace
+                else []
+            )
+            if history:
+                text = _render_workspace_work_history(history_workspace, history)
+                ledger_answered = True
+                applied_rules.append("workspace_work_history_answer")
+                notes.append(
+                    "Answered a work-status question from the workspace's verified "
+                    "delegated-run record; the model draft was discarded."
+                )
         if (
             not ledger_answered
             and _is_completion_or_status_question(message)
@@ -1542,6 +1580,22 @@ The founder's current message is supplied separately as the user-role message. D
             notes.append(
                 "Replaced a fabricated this-turn completion claim in a routeless reply; "
                 "nothing was executed this turn."
+            )
+        if (
+            not ledger_answered
+            and not (chat_action_route or research_route or build_route)
+            and "unrouted_execution_fabrication_repaired" not in applied_rules
+            and _is_inspection_promise_stall(message=message, response=text or "")
+        ):
+            # The other stall shape: no completion claim, just a PLAN to inspect
+            # ("I will perform the following steps... Let's begin by...") that
+            # this turn cannot carry out. Same invariant — chat is words; the
+            # honest reply names the route that actually runs the inspection.
+            text = _uninspected_promise_fallback(message)
+            applied_rules.append("inspection_promise_repaired")
+            notes.append(
+                "Replaced a plan-to-inspect stall with the honest state and the "
+                "routable review command; nothing was read this turn."
             )
         if _is_ambiguous_action_followup(message) and not (
             chat_action_route or research_route or build_route
@@ -1595,8 +1649,22 @@ The founder's current message is supplied separately as the user-role message. D
             # this turn. State exactly what was queued (or why it couldn't be) so
             # the reply points at a real item instead of narrating construction.
             text = _remove_build_deferral_question(text)
+            if (
+                build_route.get("kind") == "review"
+                and build_route.get("status") == "no_task"
+                and _is_inspection_promise_stall(message=message, response=text or "")
+            ):
+                # A review command with no resolvable project path: the route
+                # block asks for the path; a drafted inspection plan on top of
+                # it would promise work this turn cannot do.
+                text = ""
+                applied_rules.append("routed_reply_body_replaced")
+                notes.append(
+                    "Dropped an inspection-promise draft on a pathless review "
+                    "command; the route block asks for the project path."
+                )
             if build_route.get("status") in {"queued", "executed", "verify_failed", "no_effect", "needs_decision", "run_failed"} and (
-                build_route.get("kind") == "step"
+                build_route.get("kind") in {"step", "review"}
                 or _EXECUTION_INABILITY_RE.search(text)
                 or _is_fabricated_execution_reply(message=message, response=text)
             ):
@@ -1887,51 +1955,82 @@ The founder's current message is supplied separately as the user-role message. D
                 # thread ("perform all tasks related to step 5", "do it").
                 step = _extract_step_execution(message)
                 if step is None:
-                    return None
-                step_number, bare_anaphora = step
-                # Ledger first: steps are rows, not prose. The thread is only
-                # consulted once, to MATERIALIZE the plan; after that, no
-                # amount of thread pollution can change what "step 5" means.
-                if not bare_anaphora:
-                    plan = self.db.get_active_work_plan(conversation_id)
-                    if plan is None:
-                        plan = self._materialize_work_plan(
-                            conversation_id, turns, message=message
-                        )
-                    plan_step = _select_plan_step(plan, step_number)
-                if plan_step is not None:
-                    instructions = str(plan_step.get("instructions") or "")
-                    step_number = int(plan_step.get("step_number") or 0)
-                else:
-                    instructions = _resolve_step_instructions(
-                        turns, step_number=step_number, latest_only=bare_anaphora
-                    )
-                if not instructions:
-                    if bare_anaphora:
-                        # Nothing resolvable behind "do it": leave it to the
-                        # ambiguous-action guard instead of queuing a mystery.
+                    # Fourth shape: a review command ("review the project folder
+                    # and outline all remaining work: C:\App\Project") — an
+                    # inspection order on an existing project. Routes as a
+                    # directed READ-ONLY run; chat narrating an inspection it
+                    # cannot perform was the live failure this closes.
+                    review_task = _extract_review_task(message)
+                    if review_task is None:
                         return None
-                    return {"status": "no_task", "kind": "step", "task": "", "anaphoric": True}
-                kind = "step"
-                anaphoric = True
-                workspace = (
-                    str((plan or {}).get("workspace") or "")
-                    or _extract_project_target(turns, current_message=message)
-                )
-                if plan and not plan.get("workspace") and workspace:
-                    try:
-                        self.db.set_work_plan_workspace(plan["id"], workspace)
-                    except Exception:  # noqa: BLE001 - ledger upkeep must not break routing
-                        pass
-                first_line = instructions.strip().splitlines()[0].strip()[:120]
-                label = f"step {step_number}" if step_number is not None else "the step"
-                task = f"Carry out {label} from our conversation: {first_line}"
-                acceptance = (
-                    "Every task in the step is actually performed in the target project — files "
-                    "created or edited, packages installed, commands run — not explained. Verify "
-                    "the result (build, test, or the step's own check) and report exactly what was "
-                    "done, with real output. If a task cannot be completed, name it and why."
-                )
+                    kind = "review"
+                    anaphoric = False
+                    workspace = _extract_project_target(turns, current_message=message)
+                    if not workspace:
+                        return {
+                            "status": "no_task",
+                            "kind": "review",
+                            "task": review_task,
+                            "anaphoric": False,
+                        }
+                    task = f"Read-only review of {workspace}: what is complete, what remains"
+                    acceptance = (
+                        "This is a READ-ONLY review run: create, modify, install, or delete "
+                        "NOTHING — zero file changes. Inspect the real project: list the "
+                        "directories, read the key files, read package.json or the equivalent "
+                        "manifest, and run the project's own checks (test/build/lint entry "
+                        "points) capturing their real output. Then report, grounded only in "
+                        "what you actually read and ran this run: (1) what exists and works, "
+                        "(2) what is broken or failing, with the real error output, (3) the "
+                        "remaining work as numbered 'Step N: ...' items concrete enough to "
+                        "execute later. Anything you could not check goes under 'UNVERIFIED' — "
+                        "never present it as fact."
+                    )
+                else:
+                    step_number, bare_anaphora = step
+                    # Ledger first: steps are rows, not prose. The thread is only
+                    # consulted once, to MATERIALIZE the plan; after that, no
+                    # amount of thread pollution can change what "step 5" means.
+                    if not bare_anaphora:
+                        plan = self.db.get_active_work_plan(conversation_id)
+                        if plan is None:
+                            plan = self._materialize_work_plan(
+                                conversation_id, turns, message=message
+                            )
+                        plan_step = _select_plan_step(plan, step_number)
+                    if plan_step is not None:
+                        instructions = str(plan_step.get("instructions") or "")
+                        step_number = int(plan_step.get("step_number") or 0)
+                    else:
+                        instructions = _resolve_step_instructions(
+                            turns, step_number=step_number, latest_only=bare_anaphora
+                        )
+                    if not instructions:
+                        if bare_anaphora:
+                            # Nothing resolvable behind "do it": leave it to the
+                            # ambiguous-action guard instead of queuing a mystery.
+                            return None
+                        return {"status": "no_task", "kind": "step", "task": "", "anaphoric": True}
+                    kind = "step"
+                    anaphoric = True
+                    workspace = (
+                        str((plan or {}).get("workspace") or "")
+                        or _extract_project_target(turns, current_message=message)
+                    )
+                    if plan and not plan.get("workspace") and workspace:
+                        try:
+                            self.db.set_work_plan_workspace(plan["id"], workspace)
+                        except Exception:  # noqa: BLE001 - ledger upkeep must not break routing
+                            pass
+                    first_line = instructions.strip().splitlines()[0].strip()[:120]
+                    label = f"step {step_number}" if step_number is not None else "the step"
+                    task = f"Carry out {label} from our conversation: {first_line}"
+                    acceptance = (
+                        "Every task in the step is actually performed in the target project — files "
+                        "created or edited, packages installed, commands run — not explained. Verify "
+                        "the result (build, test, or the step's own check) and report exactly what was "
+                        "done, with real output. If a task cannot be completed, name it and why."
+                    )
         context_text = _conversation_build_context(turns, current_message=message)
         if kind == "step":
             # The resolved instructions are the actual work order; put them in
@@ -1993,6 +2092,9 @@ The founder's current message is supplied separately as the user-role message. D
                 "engine": dispatch.get("engine"),
                 "model": dispatch.get("model"),
                 "rounds": dispatch.get("rounds"),
+                # The review report IS the deliverable — surfaced in the reply,
+                # not parked behind an Inbox item number.
+                "artifact": str(dispatch.get("artifact") or "")[:4000] if kind == "review" else "",
                 "changed_files": dispatch.get("changed_files", []),
                 "workspace_changes": workspace_changes,
                 "unverified_claims": dispatch.get("unverified_claims", []),
@@ -2718,6 +2820,79 @@ def _unrouted_execution_fabrication_fallback(message: str, response: str = "") -
         f"Say `{routable}` and the kernel runs it immediately, with the actual outcome "
         "appended to the reply."
     )
+# A raw tool call emitted as prose (live incident: the chat model wrote a
+# fenced {"name": "memory_search", "arguments": {...}} block into its reply
+# instead of a native tool_calls field). No such call ever executed — the JSON
+# is garbage to the founder and reads as Zade "doing something" it is not.
+_LEAKED_TOOL_CALL_FENCED_RE = re.compile(
+    r"""(?sx)(?:`{3,}|'{3,})\s*(?:json)?\s*
+    \{(?:(?!`{3}|'{3}).){0,2400}?
+    ["']name["']\s*:\s*["'][\w.\-]+["']
+    (?:(?!`{3}|'{3}).){0,2400}?
+    ["']arguments["']
+    (?:(?!`{3}|'{3}).){0,2400}?\}\s*
+    (?:`{3,}|'{3,})"""
+)
+_LEAKED_TOOL_CALL_BARE_RE = re.compile(
+    r"""(?smx)^\s*\{\s*
+    ["']name["']\s*:\s*["'][\w.\-]+["']\s*,\s*
+    ["']arguments["']\s*:\s*\{.{0,1200}?\}\s*\}\s*$"""
+)
+
+
+def _strip_leaked_tool_calls(text: str) -> tuple[str, bool]:
+    stripped = _LEAKED_TOOL_CALL_FENCED_RE.sub("", text or "")
+    stripped = _LEAKED_TOOL_CALL_BARE_RE.sub("", stripped)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped).strip()
+    return stripped, stripped != (text or "").strip()
+
+
+# A reply that PLANS an inspection instead of answering ("I will perform the
+# following steps... Let's begin by inspecting...") on an ask that needs a real
+# read. Chat cannot walk a folder; the promise is a stall, and the honest reply
+# names the routable command that actually runs the inspection.
+_INSPECTION_PROMISE_RE = re.compile(
+    r"""(?ix)
+    \bi\s+(?:will|need\s+to|am\s+going\s+to|plan\s+to)\s+
+        (?:inspect | examine | perform\s+the\s+following\s+steps |
+           check\s+the\s+contents | look\s+(?:at|into|through) |
+           review\s+the\s+(?:implementation|current|contents|files|project))\b
+    | \blet'?s\s+begin\s+by\b
+    | \bi\s+will\s+(?:then\s+)?(?:provide|give\s+you)\s+a\s+(?:detailed\s+)?outline\b
+    | \bonce\s+i\s+have\s+the\b.{0,80}\b(?:results?|contents?|information|inspection)\b
+    """
+)
+
+
+def _is_inspection_promise_stall(*, message: str, response: str) -> bool:
+    """True when a routeless reply promises a future inspection on an ask that
+    called for a real read: a review command, a work-status question, or a
+    message pointing at a concrete path or step."""
+    plain = _normalize_reply_for_patterns(response)
+    if not _INSPECTION_PROMISE_RE.search(plain):
+        return False
+    msg = message or ""
+    return bool(
+        _extract_review_task(msg) is not None
+        or _is_completion_or_status_question(msg)
+        or _REMAINING_WORK_RE.search(msg)
+        or _is_unrouted_execution_command(msg)
+        or _WINDOWS_PATH_RE.search(msg)
+    )
+
+
+def _uninspected_promise_fallback(message: str) -> str:
+    path = _WINDOWS_PATH_RE.search(message or "")
+    target = path.group(0).rstrip(">.,;:!?\"'`") if path else "<project path>"
+    return (
+        "I drafted a plan to inspect instead of an answer — discarded. Nothing was "
+        "read or executed this turn: chat cannot walk a project folder by narrating "
+        f"it. Say `review {target}` and the kernel runs a read-only review "
+        "immediately — real files, the project's own check output, and the "
+        "remaining-work outline land in the reply."
+    )
+
+
 _FILE_REFERENCE_RE = re.compile(
     r"`?([A-Za-z0-9][A-Za-z0-9_.\\/-]*\.[A-Za-z0-9][A-Za-z0-9_.-]{0,12})`?"
 )
@@ -3708,6 +3883,58 @@ def _extract_project_target(turns: list[Any], *, current_message: str = "") -> s
     return ""
 
 
+# Review commands ("review the project folder and outline all remaining work:
+# C:\App\Project") are the fourth shape of the narrated-work family: the founder
+# orders an INSPECTION of an existing project. Chat cannot walk a folder — the
+# live incident was a drafted inspection plan plus a leaked JSON tool call and
+# nothing read. A review command routes as a directed, READ-ONLY delegated run
+# that inspects the real files, runs the project's own checks, and reports what
+# is done and what remains — with the report surfaced in the reply.
+_REVIEW_CMD_RE = re.compile(
+    r"""(?ix)^\s*
+    (?:review | audit | inspect | assess | evaluate |
+       go\s+over | look\s+over | look\s+through)\b
+    """
+)
+_REVIEW_OBJECT_RE = re.compile(
+    r"""(?ix)\b(?:
+        project | folder | directory | repo | repository | codebase | workspace |
+        app | apps | application | applications | code | build | source
+    )\b"""
+)
+_REMAINING_WORK_RE = re.compile(
+    r"""(?ix)\b(?:
+        remaining\s+(?:work|tasks?|steps?|items?) |
+        what(?:'s|\s+is)\s+left | left\s+to\s+(?:do|complete|build|finish) |
+        outstanding\s+(?:work|tasks?|items?) |
+        still\s+(?:needs?|needed|missing|to\s+(?:do|be\s+done|complete)) |
+        unfinished | incomplete | gaps?\b | to-?do
+    )"""
+)
+
+
+def _extract_review_task(message: str) -> str | None:
+    """Return the task line for a founder review *command* ("review/audit/
+    inspect the project ..."), or None when the message is not one (a question,
+    or no project-shaped object). The workspace itself resolves separately."""
+    text = (message or "").strip()
+    if not text:
+        return None
+    if text.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
+        return None
+    stripped = _POLITENESS_PREFIX_RE.sub("", text, count=1).strip()
+    if not stripped or stripped.lower().startswith(_RESEARCH_QUESTION_PREFIXES):
+        return None
+    if not _REVIEW_CMD_RE.match(stripped):
+        return None
+    if not (_REVIEW_OBJECT_RE.search(stripped) or _WINDOWS_PATH_RE.search(stripped)):
+        return None
+    task = re.sub(r"\s+", " ", stripped).strip(" \t\r\n.,;:!?\"'-")
+    if len(task) < 10:
+        return None
+    return task[:300]
+
+
 # Step-execution commands ("perform all tasks related to step 5", "write step
 # 5 for me", "do it" right after a step was laid out) are the third shape of
 # the narrated-work family: the plan already exists in the thread — usually as
@@ -3840,6 +4067,34 @@ def _render_work_plan_status(plan: dict[str, Any]) -> str:
     lines.append(
         "Each status above is the kernel's verified run outcome, not prose. "
         "Say `perform step N` to run one."
+    )
+    return "\n".join(lines)
+
+
+def _render_workspace_work_history(workspace: str, items: list[dict[str, Any]]) -> str:
+    """Deterministic work-status answer for a project WORKSPACE, composed from
+    the delegated-run record (work items whose runs targeted that directory).
+    Used when the asking thread has no materialized ledger of its own — the
+    verified rows still exist, keyed to the workspace, and they are the only
+    honest source for "did the work actually happen and what was done"."""
+    done = sum(1 for item in items if str(item.get("status")) == "done")
+    lines = [
+        f"Delegated-run record for {workspace} — {len(items)} run(s) on file, "
+        f"{done} completed:"
+    ]
+    for item in items[:8]:
+        title = str(item.get("task") or item.get("title") or "").strip()
+        title = re.sub(r"(?i)^delegate:\s*", "", title)[:110]
+        date = str(item.get("created_at") or "")[:10]
+        lines.append(f"- #{item.get('id')} {date} [{item.get('status')}]: {title}")
+    if len(items) > 8:
+        lines.append(f"- …and {len(items) - 8} earlier run(s).")
+    lines.append(
+        "That is the verified execution record — runs with real outcomes, not prose. "
+        "What REMAINS is not on file for this workspace (no materialized step ledger "
+        f"covers it). Say `review {workspace}` and I'll run a read-only review that "
+        "inspects the project as it is now and returns a numbered outline of the "
+        "remaining work."
     )
     return "\n".join(lines)
 
@@ -3980,11 +4235,11 @@ def _turn_field(turn: Any, field: str) -> Any:
 def _render_build_route_block(route: dict[str, Any]) -> str:
     status = route.get("status")
     kind = str(route.get("kind") or "build")
-    noun = {"maintenance": "fix", "step": "step run"}.get(kind, "build")
+    noun = {"maintenance": "fix", "step": "step run", "review": "review"}.get(kind, "build")
     task = str(route.get("task") or f"the requested {noun}").strip(" \t\r\n.,;:!?\"'-")
     item_id = route.get("item_id")
     target_line = ""
-    if kind in {"maintenance", "step"}:
+    if kind in {"maintenance", "step", "review"}:
         workspace = str(route.get("workspace") or "").strip()
         target_line = (
             f" Target project: {workspace}."
@@ -4027,6 +4282,36 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
                 + "."
                 if changed
                 else " No files needed changing."
+            )
+        if kind == "review":
+            # The review's deliverable is the report itself — inline it. A
+            # review that changed files violated its read-only contract; say so.
+            any_disk_changes = bool(changed) or bool(
+                workspace_changes
+                and any(
+                    workspace_changes.get(label)
+                    for label in ("added", "modified", "deleted")
+                )
+            )
+            integrity_line = (
+                f" WARNING — a read-only review must change nothing, but this run reports:{changed_line}"
+                if any_disk_changes
+                else " Read-only check held: no files changed on disk."
+            )
+            verify_warn = (
+                " The kernel's own check on the run FAILED — treat the report as incomplete."
+                if status == "verify_failed"
+                else ""
+            )
+            report = str(dispatch.get("artifact") or "").strip()
+            report_block = (
+                f"\n\n{report[:2400]}" + ("\n[report truncated — full text on the item]" if len(report) > 2400 else "")
+                if report
+                else "\n\nThe run returned no report text — the real steps and output are on the item."
+            )
+            return (
+                f"Ran the {noun} - {task}.{target_line}{integrity_line}{verify_warn}"
+                f"{report_block}\n\nFull run detail is on item #{item_id}."
             )
         evidence_line = (
             f" Artifact filed as delegated-work evidence (item #{item_id})."
@@ -4148,6 +4433,13 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
                 "You told me to run the step, but I can't find the step instructions in this "
                 "thread. Point me at the step (or paste it) and I'll queue the delegated run."
             )
+        if kind == "review":
+            return (
+                "You told me to review a project, but no existing project directory is named "
+                "in this thread (or the path doesn't exist on disk). Give me the full path "
+                "and I'll run a read-only review immediately — real files, real check output, "
+                "and the remaining-work outline in the reply."
+            )
         return (
             "You told me to build, but this thread hasn't scoped a target yet. "
             "Give me one line on what it is and I'll queue the delegated build."
@@ -4189,7 +4481,7 @@ def _remove_build_deferral_question(text: str) -> str:
 def _build_route_note(route: dict[str, Any]) -> str:
     status = route.get("status")
     kind = str(route.get("kind") or "build")
-    if kind not in {"maintenance", "step"}:
+    if kind not in {"maintenance", "step", "review"}:
         kind = "build"
     if status == "executed":
         return (

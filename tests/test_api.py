@@ -5992,3 +5992,271 @@ def test_runtime_directed_build_surfaces_founder_decision(
     queued = client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
     assert any(item["id"] == route["decision_item_id"] and item["kind"] == "founder_decision"
                for item in queued)
+
+
+
+def test_runtime_review_command_routes_directed_readonly_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"Review the project folder and outline all remaining work: <path>" is an
+    inspection ORDER on an existing project (live incident: it drew a narrated
+    inspection plan plus a leaked JSON tool call, and nothing was read). It must
+    route as a directed, read-only delegated run. Hermetic: no model reachable,
+    so the run fails honestly - but the route, brief, and read-only acceptance
+    are all real."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    project = tmp_path / "TheDarkIndex"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                "Review the virtual library mobile app project folder and outline "
+                f"all remaining work to be completed: {project}"
+            ),
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["kind"] == "review"
+    assert route["status"] == "run_failed"  # no reachable model in this test
+    assert route["workspace"] == str(project)
+    assert "Read-only review" in route["task"]
+    assert "build_work_routed" in payload["governor"]["applied_rules"]
+
+    failed = client.get("/work/queue", params={"status": "error"}).json()["items"]
+    match = next((item for item in failed if item["id"] == route["item_id"]), None)
+    assert match is not None
+    assert match["kind"] == "delegation_run"
+    assert match["metadata"]["workspace"] == str(project)
+    # The read-only contract is in the brief the agent receives.
+    assert "READ-ONLY" in match["metadata"]["brief"]
+    assert "NOTHING" in match["metadata"]["brief"]
+
+
+def test_runtime_review_command_without_path_asks_for_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A review command with no resolvable project directory must ask for the
+    path - and a drafted inspection plan is dropped, never shown as if the
+    inspection were about to happen."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def stall_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
+        return GenerateResult(
+            response=(
+                "To review the project folder and outline all remaining work, I need "
+                "to inspect the current state of the files. I will perform the "
+                "following steps:\n\n1. Inspect the Project Folder\n\nLet's begin by "
+                "inspecting the project folder."
+            ),
+            model=model or "qwen3:14b",
+            raw={"prompt": prompt},
+        )
+
+    patch_ollama_model(monkeypatch, stall_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Review the mobile app project folder and outline all remaining work",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    route = payload["build"]
+    assert route is not None
+    assert route["kind"] == "review"
+    assert route["status"] == "no_task"
+    assert "no existing project directory" in payload["response"]
+    # The inspection-promise draft was dropped, not stacked on the route block.
+    assert "I will perform the following steps" not in payload["response"]
+    assert "routed_reply_body_replaced" in payload["governor"]["applied_rules"]
+
+
+def test_runtime_review_questions_do_not_route(tmp_path: Path, monkeypatch) -> None:
+    """Review used as a noun or in a question is not an inspection order."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    for message in (
+        "How did the review of the project go?",
+        "What should a good code review of the app cover?",
+        "Did you finish the review of the codebase?",
+    ):
+        response = client.post(
+            "/runtime/respond",
+            json={
+                "message": message,
+                "use_memory": False,
+                "use_semantic_memory": False,
+                "use_skills": False,
+                "contrarian": False,
+            },
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["build"] is None, message
+
+
+def test_workspace_status_question_answered_from_run_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """"What has been completed and what remains?" about a project the kernel has
+    run delegated work in must be answered from the workspace's verified run
+    record - not fallback boilerplate, not a model draft (live incident: five
+    turns of status questions about a project with 12 completed runs on file)."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+
+    project = tmp_path / "TheDarkIndex"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation_id = client.post("/conversations", json={}).json()["conversation"]["id"]
+
+    # A directed review run leaves a work item recorded against the workspace
+    # (it fails here - no model - which is itself an honest recorded outcome).
+    first = client.post(
+        "/runtime/respond",
+        json={
+            "message": f"Review the project folder and outline the remaining work: {project}",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["build"]["item_id"]
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "What has been completed of the mobile application build process and what remains?",
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "workspace_work_history_answer" in payload["governor"]["applied_rules"]
+    assert "Delegated-run record for" in payload["response"]
+    assert str(project) in payload["response"]
+    # The honest next move is offered: a read-only review of the current state.
+    assert "review" in payload["response"].lower()
+
+
+def test_leaked_tool_call_json_is_stripped_from_replies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Raw tool-call JSON emitted as prose (live incident: a fenced
+    {"name": "memory_search", ...} block in the reply) is stripped - no such
+    call executed, and the founder must never see it as if one did."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def leaky_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
+        return GenerateResult(
+            response=(
+                "Here is where things stand on the numbers you asked about.\n\n"
+                '```json\n{\n  "name": "memory_search",\n  "arguments": {\n'
+                '    "query": "project status"\n  }\n}\n```\n\n'
+                "Those figures are from the last saved summary."
+            ),
+            model=model or "qwen3:14b",
+            raw={"prompt": prompt},
+        )
+
+    patch_ollama_model(monkeypatch, leaky_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Give me a quick recap of where the numbers landed",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "memory_search" not in payload["response"]
+    assert '"arguments"' not in payload["response"]
+    assert "leaked_tool_call_stripped" in payload["governor"]["applied_rules"]
+    assert "Here is where things stand" in payload["response"]
+
+
+def test_inspection_promise_stall_repaired_on_status_question(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A routeless reply that PLANS an inspection ("I will perform the following
+    steps... Let's begin by...") on a work-status ask is a stall - chat cannot
+    walk a folder. It is replaced with the honest state and the routable review
+    command."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def stall_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
+        return GenerateResult(
+            response=(
+                "To answer that, I need to inspect the current state of the files. "
+                "I will perform the following steps:\n1. Inspect the project folder\n"
+                "2. Identify completed tasks\n\nOnce I have the inspection results, "
+                "I will provide a detailed outline of the remaining work."
+            ),
+            model=model or "qwen3:14b",
+            raw={"prompt": prompt},
+        )
+
+    patch_ollama_model(monkeypatch, stall_generate)
+
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Where do we stand on the mobile app build progress?",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "inspection_promise_repaired" in payload["governor"]["applied_rules"]
+    assert "I will perform the following steps" not in payload["response"]
+    assert "read-only review" in payload["response"]

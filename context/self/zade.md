@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `f80d547` 2026-07-17 - Structured output: JSON contracts enforced server-side via Ollama format
 - `0120f68` 2026-07-17 - Grounded answers: tagged recall citations audited by the kernel
 - `9171acf` 2026-07-17 - Fresh-context verifier subagent + send_progress tool for delegated runs
 - `1aadc7a` 2026-07-17 - Work ledger: steps are rows, not prose; work-status answers come from the kernel
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `a866e4f` 2026-07-17 - Step routes read deep conversation history, not the 12-turn prompt window
 - `17c24fa` 2026-07-17 - Step commands route behind lead-in clauses; no_task routes give no license to claim execution
 - `1ee2563` 2026-07-17 - A routeless reply can never claim execution; model fabrications never become briefs
-- `59fd7b7` 2026-07-17 - Scored keyword router: profile, skill hints, and workflow flags before prompt assembly
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -32,6 +33,16 @@ COLUMN_PATCHES: tuple[tuple[str, str, str], ...] = (
 # var, not a secret. Defense in depth: nothing should route a secret here, but if
 # it does, it is scrubbed.
 _AUDIT_SECRET_FRAGMENTS = ("password", "passwd", "pwd", "secret", "token", "credential", "apikey", "api_key", "private_key", "access_key")
+
+
+def _normalize_workspace_path(raw: str) -> str:
+    """Case-folded, separator-normalized form of a workspace path for matching
+    (Windows paths are case-insensitive and arrive with mixed separators). No
+    filesystem resolution — the directory may no longer exist."""
+    cleaned = (raw or "").strip().strip("\"'")
+    if not cleaned:
+        return ""
+    return os.path.normpath(cleaned).casefold()
 
 
 def _redact_secrets(value: Any) -> Any:
@@ -276,6 +287,43 @@ class KernelDatabase:
                 "UPDATE work_plans SET workspace = ?, updated_at = ? WHERE id = ?",
                 (workspace[:400], utc_now(), plan_id),
             )
+
+    def list_work_items_for_workspace(
+        self, workspace: str, *, limit: int = 12
+    ) -> list[dict[str, Any]]:
+        """The delegated-run record for a project workspace: recent work items
+        whose metadata targets that directory, newest first. This is what lets
+        "what has been done on <project>?" be answered from verified rows even
+        when the asking thread has no materialized work plan of its own."""
+        target = _normalize_workspace_path(workspace)
+        if not target:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, created_at, kind, title, status, metadata_json "
+                "FROM work_items ORDER BY id DESC LIMIT 400"
+            ).fetchall()
+        matched: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            if _normalize_workspace_path(str(metadata.get("workspace") or "")) != target:
+                continue
+            matched.append(
+                {
+                    "id": int(row["id"]),
+                    "created_at": str(row["created_at"]),
+                    "kind": str(row["kind"]),
+                    "title": str(row["title"]),
+                    "status": str(row["status"]),
+                    "task": str(metadata.get("task") or ""),
+                }
+            )
+            if len(matched) >= max(1, limit):
+                break
+        return matched
 
     def claim_next_work_item(self) -> WorkItem | None:
         """Atomically transition the highest-priority pending item to 'running'
