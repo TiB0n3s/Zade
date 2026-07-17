@@ -541,3 +541,31 @@ def test_ask_founder_bounces_capability_boundary_questions(tmp_path: Path, fixtu
         if m.get("role") == "tool" and "capability boundary" in str(m.get("content", ""))
     )
     assert "do not ask the founder" in str(bounce["content"]).lower()
+
+
+def test_ask_founder_bounces_workspace_mechanics_questions(tmp_path: Path, fixture_repo: Path) -> None:
+    """A path conflict the run created itself (live incident: a stray file named
+    'src/screens' where a directory should be) is workspace mechanics, not a
+    founder decision — the founder must never be told to create directories
+    manually. The ask bounces and the run continues."""
+    script = [
+        {"tool_calls": [_call(
+            "ask_founder",
+            question=(
+                "The 'src/screens' directory isn't properly created (current 'screens' "
+                "is a file, not a folder). What should I do?"
+            ),
+            options=["Create 'src/screens' as a directory manually", "Adjust file path"],
+        )]},
+        {"content": "Resolved the path conflict myself and continued. Done."},
+    ]
+    svc, ollama = _service(tmp_path, fixture_repo, script)
+    result = svc.run(task="Implement the barcode scanner screen")
+
+    assert result["status"] == "ok"  # NOT needs_decision — the run kept going
+    assert result["founder_question"] is None
+    bounce = next(
+        m for m in ollama.calls[1]["messages"]
+        if m.get("role") == "tool" and "workspace mechanics" in str(m.get("content", ""))
+    )
+    assert "resolve it yourself" in str(bounce["content"]).lower()

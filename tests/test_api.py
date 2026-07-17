@@ -2024,6 +2024,93 @@ def test_runtime_repairs_challenged_execution_claim_without_rerun_theater(
     assert "execution_claim_challenge_repaired" in payload["governor"]["applied_rules"]
 
 
+def test_runtime_challenge_catches_why_did_you_report_them_done(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Live incident 2026-07-17 (runtime event 325): 'why did you report them
+    done?' slipped past the challenge regex ('report' was not a recognized
+    claim verb) and the raw model reply told the founder to create directories
+    manually. The deterministic evidence-boundary reply must fire instead."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    burden_flip = (
+        "### What You Need to Do Now\n\nYou must confirm the work. Create the "
+        "`src/screens` directory manually in your project and then say: "
+        "\"Create 'src/screens' as a directory manually.\""
+    )
+
+    def flipping_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=burden_flip, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, flipping_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+    conversation = client.post("/conversations", json={"title": "Step 5"})
+    conversation_id = conversation.json()["conversation"]["id"]
+    client.app.state.conversations.record_assistant_turn(
+        conversation_id,
+        content="Steps 1-5 are executed and complete in your project.",
+        task_type="coding",
+        model="qwen3:14b",
+        authority_decision="allow",
+    )
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                "If you've not completed the tasks for steps 1 - 5 then why did "
+                "you report them done?"
+            ),
+            "conversation_id": conversation_id,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "chat claim is not execution evidence" in payload["response"]
+    assert "manually" not in payload["response"].lower()
+    assert "execution_claim_challenge_repaired" in payload["governor"]["applied_rules"]
+
+
+def test_step_resolution_skips_runtime_generated_replies() -> None:
+    """Live incident 2026-07-17 (item #62): after a challenge fallback reply
+    mentioned 'Step 5', 'perform step 5' resolved its instructions FROM that
+    fallback — the delegated brief became self-referential garbage. Synthetic
+    runtime text (route blocks, evidence-boundary fallbacks) must never be
+    mistaken for step instructions."""
+    from cofounder_kernel.runtime import _resolve_step_instructions
+
+    real_instructions = (
+        "Step 5: Implement the functionality for the UI components. Wire the "
+        "BarcodeScannerScreen into navigation and persist scans with op-sqlite."
+    )
+    fallback_reply = (
+        "You're right to challenge that. A chat claim is not execution evidence. "
+        "I won't call Step 5 complete from prose. To correct the work, give the "
+        "project path and say `perform Step 5` (or paste the step again), and the "
+        "runtime will route it through the coding agent with real output."
+    )
+    route_block_reply = (
+        "Ran the step run - Carry out step 5 from our conversation. Changed 3 "
+        "file(s): src/navigation.js. Artifact filed as delegated-work evidence."
+    )
+    turns = [
+        {"role": "assistant", "content": real_instructions},
+        {"role": "user", "content": "None of those files exist."},
+        {"role": "assistant", "content": fallback_reply},
+        {"role": "assistant", "content": route_block_reply},
+    ]
+
+    resolved = _resolve_step_instructions(turns, step_number=5)
+    assert "Implement the functionality for the UI components" in resolved
+    assert "chat claim" not in resolved
+    assert "Ran the step run" not in resolved
+
+
 def test_runtime_claim_challenge_without_step_context_does_not_invent_step_5(
     tmp_path: Path, monkeypatch
 ) -> None:

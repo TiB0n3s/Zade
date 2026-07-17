@@ -1338,6 +1338,7 @@ You are {self.config.identity.name}. You speak as yourself to Ellie — the foun
 - When you recommend something, deliver it as prose that carries the reason, your confidence, the main risk, a reversal or kill condition, and the next action — never as a labeled form.
 - A chat reply is words, not execution — but when Ellie DIRECTS build/fix/step work, the kernel routes her command into a delegated run that executes this turn at full auto, and appends the real outcome to your reply. So never deny the ability to execute a directed command, and never fabricate execution beyond what that route block reports. For anything not routed, give the real path: what to queue, and what needs Ellie's word in the Inbox.
 - Ellie's direct commands are already authorized — do not ask her to approve the same thing twice. The authority decision below governs what you may execute, not what she may decide. If an action is blocked or has no handler, say so plainly and never imply it was done.
+- Delegated work is yours to drive: never hand it back to Ellie — never tell her to create files or directories, run commands, or perform steps manually, and never demand she recite an exact phrase. A pending decision item is answered with a click on its Inbox card or a plain answer here; once answered, the run resumes. If work has not verified, say exactly that and name the run you'll make next.
 - Output Ellie pasted into chat (terminal logs, audit reports, error dumps) is HER evidence: refer to it as what she pasted, never as the result of a check or fetch you ran. You cannot run shell or npm commands from a chat reply — fixes happen through a routed delegated run, which executes immediately when Ellie directs it. Never narrate step-by-step command execution as if it happened.
 - When she refers back ("that", "it", "those"), resolve it from the conversation below and answer the NEW question. Never repeat a prior reply.
 - You remember across sessions: when Ellie teaches you a durable fact, corrects you, or makes a decision, keep it — and she can say "remember …" or "forget …" directly. Never store transient task state, the conversation itself, anything already in code or config, and never secrets, credentials, or her employer's client/network specifics.
@@ -2369,8 +2370,11 @@ _EXECUTION_CLAIM_CHALLENGE_RE = re.compile(
     (?:
         \b(?:hallucinat\w*|fabricat\w*|made\s+up|false\s+claim|untrue|lied|lying)\b
         |
-        \b(?:claim(?:ed|ing)?|said|told\s+me)\b.{0,120}
+        \b(?:claim(?:ed|ing)?|report(?:ed|ing)?|said|told\s+me)\b.{0,120}
         \b(?:complete(?:d)?|done|execut(?:ed|ion)|implement(?:ed|ation)?|created|changed|fixed|built)\b
+        |
+        \bwhy\s+(?:did|do|would)\s+you\b.{0,120}
+        \b(?:done|complete(?:d)?|finished|execut(?:ed|ion)|implement(?:ed|ation)?)\b
         |
         \b(?:there\s+is\s+no|does\s+not\s+exist|doesn'?t\s+exist|missing|can'?t\s+find|cannot\s+find)\b
         .{0,120}
@@ -3415,6 +3419,23 @@ def _extract_step_execution(message: str) -> tuple[int | None, bool] | None:
     return (int(match.group(1)) if match else None), False
 
 
+_SYNTHETIC_REPLY_MARKERS_RE = re.compile(
+    r"(?m)^(?:Ran|Started|Queued|Took) the (?:build|fix|step run) -"
+    r"|^The (?:build|fix|step run) is NOT done -"
+    r"|A chat claim is not execution evidence"
+)
+
+
+def _strip_synthetic_reply_text(content: str) -> str:
+    """Cut runtime-generated segments (route blocks, evidence-boundary
+    fallbacks) out of an assistant turn. These blocks mention steps and tasks
+    by name, so leaving them in poisons referent resolution: 'perform step 5'
+    must resolve to the real step-5 instructions, never to a route block that
+    happened to say 'Step 5' last."""
+    match = _SYNTHETIC_REPLY_MARKERS_RE.search(content or "")
+    return content[: match.start()] if match else content
+
+
 def _resolve_step_instructions(
     turns: list[Any], *, step_number: int | None = None, latest_only: bool = False
 ) -> str:
@@ -3422,9 +3443,10 @@ def _resolve_step_instructions(
     assistant turn mentioning the numbered step, or (unnumbered) the most
     recent assistant turn shaped like step instructions. latest_only restricts
     the search to the last assistant turn — bare "do it" refers to what was
-    just said, not anything earlier."""
+    just said, not anything earlier. Runtime-generated reply text is stripped
+    first so route blocks and fallbacks are never mistaken for instructions."""
     assistant_turns = [
-        str(_turn_field(turn, "content") or "")
+        _strip_synthetic_reply_text(str(_turn_field(turn, "content") or ""))
         for turn in (turns or [])
         if str(_turn_field(turn, "role")).lower() == "assistant"
     ]

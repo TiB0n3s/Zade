@@ -77,6 +77,24 @@ _CAPABILITY_BOUNDARY_QUESTION_RE = re.compile(
     """
 )
 
+# Workspace mechanics — a path conflict, a stray file where a directory should
+# be, "already exists" — are the run's own state, not founder decisions. Kept
+# deliberately narrow: overwrite/delete questions about the founder's real
+# content still go through.
+_WORKSPACE_MECHANICS_QUESTION_RE = re.compile(
+    r"""(?ix)
+    \b(?:director(?:y|ies)|folder|file|path)\b
+    [^?]{0,100}?
+    (?:
+        \bis\s+a\s+file\b
+        | \bnot\s+a\s+(?:folder|directory)\b
+        | \bisn'?t\s+(?:properly\s+)?(?:created|a\s+(?:folder|directory))\b
+        | \balready\s+exists\b
+        | \bconflict\w*\b
+    )
+    """
+)
+
 
 class CodingAgentError(RuntimeError):
     pass
@@ -771,6 +789,20 @@ class CodingAgentService:
                     "decision — do not ask the founder about blocked or unavailable "
                     "commands. Choose an allowlisted alternative, or skip that step "
                     "and note the skip in your final summary, then continue the task."
+                ),
+            }
+        if _WORKSPACE_MECHANICS_QUESTION_RE.search(question):
+            # Path conflicts and stray artifacts are the run's own state to
+            # resolve — never the founder's. The founder must not be asked to
+            # create directories or fix paths by hand.
+            return {
+                "ok": False,
+                "error": (
+                    "That is workspace mechanics, not a founder decision — resolve it "
+                    "yourself: inspect with list_files, and either choose a workable "
+                    "path or clear a stray artifact this run created (an allowlisted "
+                    "python command can remove a file). Note what you did in your "
+                    "final summary, then continue the task."
                 ),
             }
         options = args.get("options")
