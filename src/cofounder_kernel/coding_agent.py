@@ -427,26 +427,61 @@ class CodingAgentService:
             return ["python", "-m", "pytest", "-q"]
         return None
 
+    def _typescript_check_argv(self, root: Path) -> list[str] | None:
+        """``tsc --noEmit`` for TypeScript workspaces (tsconfig.json plus a
+        typescript dependency). A jest suite that never imports a new file
+        passes while the file is type-broken — live incident item #70 shipped
+        nine tsc errors under 'verification passed'."""
+        if not (root / "tsconfig.json").is_file():
+            return None
+        package = root / "package.json"
+        try:
+            manifest = json.loads(package.read_text(encoding="utf-8", errors="replace"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        deps: dict[str, Any] = {}
+        if isinstance(manifest, dict):
+            for key in ("devDependencies", "dependencies"):
+                block = manifest.get(key)
+                if isinstance(block, dict):
+                    deps |= block
+        if "typescript" not in deps:
+            return None
+        # --no: never install on the fly; the local tsc binary or nothing.
+        return ["npm", "exec", "--no", "--", "tsc", "--noEmit"]
+
     def _verification_plan(
         self, root: Path, changed: list[str]
     ) -> tuple[str, list[list[str]], list[str]]:
         """The kernel's check plan for this run: (mode, check argvs, unchecked
-        files). Prefer the workspace's real test entry point; without one, fall
-        back to syntax checks on the changed files where a trustworthy local
-        checker exists (.py via py_compile, .json via json.tool). Files with no
+        files). Prefer the workspace's real test entry point (plus tsc for
+        TypeScript workspaces); without one, fall back to syntax checks on the
+        changed files where a trustworthy local checker exists (.py via
+        py_compile, .json via json.tool, .ts/.tsx via tsc). Files with no
         reliable checker come back as unchecked — they are reported as
         unverified, never silently passed."""
         argv = self._verification_argv(root)
+        tsc_argv = self._typescript_check_argv(root)
         if argv is not None:
-            return "tests", [list(argv)], []
+            checks = [list(argv)]
+            if tsc_argv is not None:
+                checks.append(tsc_argv)
+            return "tests", checks, []
         py_files = [f for f in changed if f.lower().endswith(".py")]
         json_files = [f for f in changed if f.lower().endswith(".json")]
+        ts_files = (
+            [f for f in changed if f.lower().endswith((".ts", ".tsx"))]
+            if tsc_argv is not None
+            else []
+        )
         checks: list[list[str]] = []
         if py_files:
             checks.append(["python", "-m", "py_compile", *py_files])
         for f in json_files:
             checks.append(["python", "-m", "json.tool", f])
-        covered = set(py_files) | set(json_files)
+        if ts_files:
+            checks.append(list(tsc_argv or []))
+        covered = set(py_files) | set(json_files) | set(ts_files)
         unchecked = [f for f in changed if f not in covered]
         return ("syntax" if checks else "none"), checks, unchecked
 

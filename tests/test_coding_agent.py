@@ -444,6 +444,47 @@ def test_uncheckable_changed_files_are_reported_unverified(tmp_path: Path) -> No
     assert "UNVERIFIED" in result["response"]
 
 
+def test_verification_plan_adds_tsc_for_typescript_workspaces(tmp_path: Path) -> None:
+    """Live incident item #70: a type-broken .tsx shipped under 'verification
+    passed' because jest never imported it. TypeScript workspaces get tsc as a
+    second mandatory check; non-TS workspaces are unchanged."""
+    ts_ws = tmp_path / "ts-ws"
+    ts_ws.mkdir(parents=True)
+    (ts_ws / "package.json").write_text(
+        json.dumps({"name": "x", "scripts": {"test": "jest"}, "devDependencies": {"typescript": "5.9.3"}}),
+        encoding="utf-8",
+    )
+    (ts_ws / "tsconfig.json").write_text("{}", encoding="utf-8")
+    svc, _ = _service(tmp_path, ts_ws, [])
+    mode, checks, unchecked = svc._verification_plan(ts_ws, ["src/App.tsx"])
+    assert mode == "tests"
+    assert checks == [["npm", "test"], ["npm", "exec", "--no", "--", "tsc", "--noEmit"]]
+    assert unchecked == []
+
+    # No tsconfig → single check, exactly as before.
+    plain_ws = tmp_path / "plain-ws"
+    plain_ws.mkdir(parents=True)
+    (plain_ws / "package.json").write_text(
+        json.dumps({"name": "y", "scripts": {"test": "jest"}}), encoding="utf-8"
+    )
+    mode, checks, unchecked = svc._verification_plan(plain_ws, ["src/App.js"])
+    assert mode == "tests"
+    assert checks == [["npm", "test"]]
+
+    # TS workspace WITHOUT a test script: tsc covers changed .tsx files in
+    # the syntax fallback instead of leaving them unchecked.
+    no_test_ws = tmp_path / "no-test-ws"
+    no_test_ws.mkdir(parents=True)
+    (no_test_ws / "package.json").write_text(
+        json.dumps({"name": "z", "devDependencies": {"typescript": "5.9.3"}}), encoding="utf-8"
+    )
+    (no_test_ws / "tsconfig.json").write_text("{}", encoding="utf-8")
+    mode, checks, unchecked = svc._verification_plan(no_test_ws, ["src/Screen.tsx", "notes.txt"])
+    assert mode == "syntax"
+    assert ["npm", "exec", "--no", "--", "tsc", "--noEmit"] in checks
+    assert unchecked == ["notes.txt"]
+
+
 def test_workspace_diff_catches_command_created_files(tmp_path: Path) -> None:
     """Live gap: npm installs and python one-liners mutate the workspace
     invisibly to write-tool tracking ("Changed 1 file(s)" undercounts). The
