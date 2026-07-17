@@ -6260,3 +6260,34 @@ def test_inspection_promise_stall_repaired_on_status_question(
     assert "inspection_promise_repaired" in payload["governor"]["applied_rules"]
     assert "I will perform the following steps" not in payload["response"]
     assert "read-only review" in payload["response"]
+
+
+def test_review_verify_failed_reads_as_finding_not_broken_run() -> None:
+    """verify_failed on a REVIEW means the project's own checks fail as it
+    stands - that is a finding of the review, not a fault in it. The block must
+    not tell the founder to distrust the report."""
+    from cofounder_kernel.runtime import _render_build_route_block, _build_route_note
+
+    route = {
+        "status": "verify_failed",
+        "kind": "review",
+        "task": r"Read-only review of C:\App\Project: what is complete, what remains",
+        "workspace": r"C:\App\Project",
+        "item_id": 73,
+        "dispatch": {
+            "artifact": "1. Broken: tsc fails.\n2. Remaining Work: Step 1: fix types.",
+            "changed_files": [],
+            "workspace_changes": {"added": [], "modified": [], "deleted": []},
+        },
+        "verification": {"ok": False, "checks": [{"argv": ["tsc", "--noEmit"], "ok": False}]},
+    }
+    block = _render_build_route_block(route)
+    assert "finding" in block
+    assert "project's own checks FAIL" in block
+    assert "treat the report as incomplete" not in block
+    assert "Read-only check held" in block
+    assert "Step 1: fix types." in block
+
+    note = _build_route_note(route)
+    assert "finding" in note
+    assert "NOT done" not in note

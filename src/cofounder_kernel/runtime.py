@@ -4298,8 +4298,13 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
                 if any_disk_changes
                 else " Read-only check held: no files changed on disk."
             )
+            # verify_failed on a REVIEW means the project's own checks fail as
+            # the project stands — that is a finding of the review, not a fault
+            # in it (the run changed nothing, so the failure cannot be ours).
             verify_warn = (
-                " The kernel's own check on the run FAILED — treat the report as incomplete."
+                " The project's own checks FAIL as it stands — kernel-run, real "
+                "output below. That failure is a finding of this review, part of "
+                "the remaining work."
                 if status == "verify_failed"
                 else ""
             )
@@ -4489,6 +4494,12 @@ def _build_route_note(route: dict[str, Any]) -> str:
             "(founder command is the authorization) and the real outcome is in the reply."
         )
     if status == "verify_failed":
+        if kind == "review":
+            return (
+                "Detected a directed review command; the read-only run executed and the "
+                "project's own checks fail as the project stands — reported as a finding "
+                "of the review, with the real output."
+            )
         return (
             f"Detected a directed {kind} command; the run executed but the kernel's own check on "
             "the result failed, so the reply reports the work as NOT done, with the real output."
