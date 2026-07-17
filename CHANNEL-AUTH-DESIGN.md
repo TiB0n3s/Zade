@@ -1,6 +1,6 @@
 # Cross-Channel Founder Authentication
 
-**Status:** identity primitive built + tested (`channel_auth.py`, `/channels/*` endpoints). No channel adapter wired — this is the layer OpenClaw (or any adapter) consumes.
+**Status:** identity primitive + kernel-side adapter ingress + runtime cap enforcement all built and tested (`channel_auth.py`, `/channels/*`, `POST /channels/message`, `runtime.respond(authority_ceiling=…)`). Only the external channel transport (the platform webhook side) is out of scope.
 **Date:** 2026-07-17
 **Prereq for:** any messaging-channel ingress into the runtime (OpenClaw: WhatsApp/Telegram/Slack/Discord → `/runtime/respond`).
 
@@ -54,10 +54,14 @@ The default `L0_READ` means: out of the box, a bound channel can ask and read, n
 - Tables `channel_enrollments`, `channel_bindings` (in `SCHEMA_SQL`).
 - Founder endpoints: `POST /channels/enroll`, `POST /channels/confirm`, `GET /channels/bindings`, `POST /channels/bindings/{id}/revoke`, `POST /channels/bindings/{id}/tier`.
 
-**Not built (the adapter's job, later):**
-- The channel adapter itself (OpenClaw or a native Telegram/Slack bridge) that receives messages, calls `authenticate`, and routes authenticated ones into `/runtime/respond` with the `max_tier` cap enforced.
-- **Runtime enforcement of the cap** — `runtime.respond` must accept a `channel_identity` + ceiling and refuse to treat a channel message as a fully-approved founder command above its tier. `channel_auth.caps()` is the check; wiring it into `respond` is the integration step.
+**Adapter ingress + runtime cap — BUILT:**
+- `POST /channels/message {channel, external_id, text}` — the kernel-side adapter ingress. **Mutation-token gated**, so only a trusted *local* adapter (OpenClaw / a native bridge) can inject messages; a random external caller cannot. It: (a) completes a binding on a `/bind <code>` message (`parse_bind_command`), (b) `authenticate`s the identity, (c) **refuses unbound identities** (they never reach the runtime), (d) routes bound identities into `runtime.respond` with `authority_ceiling = max_tier`.
+- **Runtime cap enforced** — `runtime.respond(authority_ceiling=…)`: below L3, the three action routes (chat action / research / build) are skipped entirely, so a channel message converses but never autonomously triggers an action. Response carries `channel_capped: true`. `None` ceiling = the local founder, uncapped (unchanged). Test-pinned: default L0 identity caps a research command; raising the binding to L3 un-caps it.
+
+**Still the external adapter's job (out of kernel scope):**
+- The actual channel transport (OpenClaw / a Telegram/Slack bridge) that receives platform webhooks and calls `POST /channels/message`. The kernel side is complete; this is a deployment/integration concern.
 - Optional per-binding HMAC (for adapters/bots that can sign each message) — the enrollment binding is the human-typed path; signing is a future hardening.
+- Per-(channel, external_id) conversation continuity (channel messages are currently standalone turns).
 
 ## 6. Honest limitations (stated plainly)
 

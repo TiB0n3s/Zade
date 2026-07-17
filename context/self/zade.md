@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `fd1a81a` 2026-07-17 - Channel auth
 - `1b7618e` 2026-07-17 - Research traversal
 - `0939b96` 2026-07-17 - Anthropic API integration
 - `1325e70` 2026-07-17 - Egress Design
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `1dfe938` 2026-07-17 - Co-founder memory
 - `eb3eebd` 2026-07-17 - v2 - teaching & memory
 - `c3b1df8` 2026-07-17 - Short threads reach memory: boot sweep + loss-safe end_session
-- `6ab6318` 2026-07-17 - Fix self-knowledge CI under Python 3.11
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

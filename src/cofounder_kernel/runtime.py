@@ -483,7 +483,12 @@ class RuntimeService:
         conversation_id: int | None = None,
         contrarian: bool | None = None,
         use_tools: bool | None = None,
+        authority_ceiling: str | None = None,
     ) -> dict[str, Any]:
+        # authority_ceiling caps a NON-local caller (a channel-authenticated
+        # founder message): below L3 it may converse but never autonomously trigger
+        # the L3 action routes (chat action / research / build). None = local
+        # founder, uncapped. "Channels propose, only the local surface approves."
         task_type, profile, route_decision = _infer_runtime_defaults(
             message=self._runtime_mode_inference_text(message=message, conversation_id=conversation_id),
             task_type=task_type,
@@ -609,8 +614,18 @@ class RuntimeService:
             model=selected_model,
         )
         response_for_governor = repair.get("response", generated.response)
-        chat_action_route = self._maybe_route_chat_action(message=message, authority=authority)
-        research_route = self._maybe_route_research_work(message=message, authority=authority)
+        # Channel cap: the L3 action routes (chat action / research / build) are
+        # only reachable if the caller's ceiling permits L3. A below-L3 channel
+        # message gets a conversational answer, never an autonomous action.
+        ceiling_permits_actions = _ceiling_permits(authority_ceiling, "L3_EXTERNAL_ACTION")
+        chat_action_route = (
+            self._maybe_route_chat_action(message=message, authority=authority)
+            if ceiling_permits_actions else None
+        )
+        research_route = (
+            self._maybe_route_research_work(message=message, authority=authority)
+            if ceiling_permits_actions else None
+        )
         # One routed action per turn: a message that already queued a chat action
         # or research run is not also a build command.
         # Referent resolution needs deeper history than the prompt window:
@@ -624,7 +639,7 @@ class RuntimeService:
         )
         build_route = (
             None
-            if (chat_action_route or research_route)
+            if (chat_action_route or research_route) or not ceiling_permits_actions
             else self._maybe_route_build_work(
                 message=message,
                 authority=authority,
@@ -817,6 +832,8 @@ class RuntimeService:
             "research": _research_route_summary(research_route),
             "build": _build_route_summary(build_route),
             "investigation": investigation_summary,
+            "channel_capped": authority_ceiling is not None and not ceiling_permits_actions,
+            "authority_ceiling": authority_ceiling,
         }
 
     def operating_loop(
@@ -4566,6 +4583,20 @@ def _build_route_summary(route: dict[str, Any] | None) -> dict[str, Any] | None:
     elif route.get("status") == "error":
         summary["error"] = route.get("error", "")
     return summary
+
+
+_CEILING_TIER_ORDER = {"L0_READ": 0, "L1_MEMORY_WRITE": 1, "L2_FILE_WRITE": 2, "L3_EXTERNAL_ACTION": 3}
+
+
+def _ceiling_permits(ceiling: str | None, required: str) -> bool:
+    """Would a caller whose authority ceiling is `ceiling` be permitted to trigger
+    an action needing `required`? ``None`` means the local founder (no ceiling) —
+    always permitted. A channel identity carries a ceiling (default L0_READ), so a
+    below-L3 channel message may converse but cannot trigger the L3 action routes;
+    those fall through to nothing (i.e. propose/converse, never autonomous act)."""
+    if ceiling is None:
+        return True
+    return _CEILING_TIER_ORDER.get(str(ceiling).upper(), -1) >= _CEILING_TIER_ORDER.get(required, 99)
 
 
 def _founder_direct_authority_payload(authority: AuthorityResult) -> dict[str, Any]:

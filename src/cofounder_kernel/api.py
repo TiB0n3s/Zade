@@ -26,7 +26,7 @@ from .devtools import DevToolsHandlers, allowed_commands
 from .evals import EvalService
 from .experiments import ExperimentService
 from .anthropic_client import AnthropicError, AnthropicNotConfigured
-from .channel_auth import ChannelAuth, ChannelAuthError
+from .channel_auth import ChannelAuth, ChannelAuthError, parse_bind_command
 from .founder import FounderService
 from .strategy_review import StrategyReviewService
 from .handlers import ActionHandlerRegistry
@@ -53,6 +53,7 @@ from .models import (
     ApprovalResolveRequest,
     ChannelConfirmRequest,
     ChannelEnrollRequest,
+    ChannelMessageRequest,
     ChannelTierRequest,
     StrategyReviewRequest,
     AuthorityEvaluateRequest,
@@ -1569,6 +1570,46 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             return channel_auth.set_max_tier(binding_id, payload.max_tier)
         except ChannelAuthError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/channels/message")
+    def channel_message(payload: ChannelMessageRequest) -> dict[str, Any]:
+        """Channel-adapter ingress. A local adapter (OpenClaw / a native bridge)
+        POSTs inbound messages here — the endpoint is mutation-token gated, so
+        only the trusted local adapter can inject them. A '/bind <code>' message
+        completes an enrollment; otherwise the identity is authenticated and, ONLY
+        if bound, routed into the runtime with its authority ceiling. Unbound
+        identities are refused — they never reach the authority-bearing runtime."""
+        channel, external_id, text = payload.channel, payload.external_id, payload.text
+        code = parse_bind_command(text)
+        if code is not None:
+            try:
+                identity = channel_auth.confirm_enrollment(channel, external_id, code)
+            except ChannelAuthError as exc:
+                return {"status": "bind_failed", "authenticated": False, "reply": str(exc)}
+            return {
+                "status": "bound", "authenticated": True, "binding_id": identity.binding_id,
+                "max_tier": identity.max_tier, "reply": "This channel is now bound to the founder.",
+            }
+
+        identity = channel_auth.authenticate(channel, external_id)
+        if not identity.authenticated:
+            return {
+                "status": "unauthenticated", "authenticated": False,
+                "reply": ("This channel is not authorized. The founder can enroll it from Zade, "
+                          "then send '/bind <code>' here to confirm."),
+            }
+
+        # Bound founder identity — route into the runtime, capped at its ceiling.
+        result = runtime.respond(
+            message=text,
+            authority_ceiling=identity.max_tier,
+            use_tools=False,  # like voice: answer from context, no per-message tool loop
+        )
+        return {
+            "status": "ok", "authenticated": True, "max_tier": identity.max_tier,
+            "channel_capped": result.get("channel_capped"),
+            "reply": result["response"], "event_id": result["event_id"],
+        }
 
     @app.get("/experiments")
     def list_experiments(status: str | None = None, limit: int = 50) -> dict[str, Any]:

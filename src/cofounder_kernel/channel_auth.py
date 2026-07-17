@@ -31,12 +31,23 @@ is no adapter wired yet. Only the code's hash is stored, never the raw code.
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .db import KernelDatabase, utc_now
+
+_BIND_RE = re.compile(r"^\s*/?bind\s+(\S+)\s*$", re.IGNORECASE)
+
+
+def parse_bind_command(text: str) -> str | None:
+    """Extract the enrollment code from a ``/bind <code>`` (or ``bind <code>``)
+    message, else None. Enrollment is explicit so an ordinary message can never
+    accidentally attempt a binding."""
+    match = _BIND_RE.match(str(text or ""))
+    return match.group(1) if match else None
 
 # Authority ceiling vocabulary — mirrors tools.PermissionTier, kept as strings so
 # this module stays dependency-light. A channel identity never autonomously

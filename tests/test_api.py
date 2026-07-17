@@ -435,6 +435,51 @@ def test_channel_auth_endpoints(tmp_path: Path, monkeypatch) -> None:
     assert client.get("/channels/bindings").json()["bindings"] == []
 
 
+def test_channel_message_ingress_authenticates_and_caps(tmp_path: Path, monkeypatch) -> None:
+    """The adapter ingress: token-gated, unbound identities refused, and a bound
+    identity's L3 action routes are CAPPED at its ceiling (default L0_READ) — it
+    converses but cannot autonomously trigger research/build. Raising the ceiling
+    to L3 un-caps it."""
+    from cofounder_kernel.config import EgressConfig
+
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy="local_preferred"),
+        security=SecurityConfig(local_token="secret"),
+        egress=EgressConfig(standing_grants=("public_derived:public_web",)),
+    )
+    client = TestClient(create_app(config))
+    token = {"X-Zade-Token": "secret"}
+    ch, eid = "telegram", "chat-1"
+    research_msg = "Research pricing using https://93.184.216.34/p"
+
+    # unbound identity is refused — never reaches the authority-bearing runtime
+    m0 = client.post("/channels/message", headers=token, json={"channel": ch, "external_id": eid, "text": research_msg})
+    assert m0.json()["status"] == "unauthenticated" and m0.json()["authenticated"] is False
+    # ingress is mutation-guarded (only a local adapter with the token can inject)
+    assert client.post("/channels/message", json={"channel": ch, "external_id": eid, "text": "hi"}).status_code == 401
+
+    # enroll + bind via a '/bind <code>' message
+    code = client.post("/channels/enroll", headers=token, json={"channel": ch}).json()["code"]
+    bound = client.post("/channels/message", headers=token, json={"channel": ch, "external_id": eid, "text": f"/bind {code}"})
+    assert bound.json()["status"] == "bound" and bound.json()["max_tier"] == "L0_READ"
+
+    # a bound L0 identity converses, but the research action route is CAPPED
+    capped = client.post("/channels/message", headers=token, json={"channel": ch, "external_id": eid, "text": research_msg})
+    assert capped.json()["status"] == "ok" and capped.json()["reply"]
+    assert capped.json()["channel_capped"] is True
+
+    # raise the ceiling to L3 → the same message is no longer capped
+    binding_id = client.get("/channels/bindings").json()["bindings"][0]["binding_id"]
+    client.post(f"/channels/bindings/{binding_id}/tier", headers=token, json={"max_tier": "L3_EXTERNAL_ACTION"})
+    uncapped = client.post("/channels/message", headers=token, json={"channel": ch, "external_id": eid, "text": research_msg})
+    assert uncapped.json()["channel_capped"] is False
+
+
 def test_authority_and_self_inventory_routes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     config = KernelConfig(
