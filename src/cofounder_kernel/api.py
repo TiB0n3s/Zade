@@ -26,6 +26,7 @@ from .devtools import DevToolsHandlers, allowed_commands
 from .evals import EvalService
 from .experiments import ExperimentService
 from .anthropic_client import AnthropicError, AnthropicNotConfigured
+from .channel_auth import ChannelAuth, ChannelAuthError
 from .founder import FounderService
 from .strategy_review import StrategyReviewService
 from .handlers import ActionHandlerRegistry
@@ -50,6 +51,9 @@ from .models import (
     ApprovalDeferRequest,
     ApprovalEditRequest,
     ApprovalResolveRequest,
+    ChannelConfirmRequest,
+    ChannelEnrollRequest,
+    ChannelTierRequest,
     StrategyReviewRequest,
     AuthorityEvaluateRequest,
     BackupCreateRequest,
@@ -256,6 +260,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         config=cfg, db=db, founder=founder, ingestion=ingestion,
         typed_confirmation_phrase=authority.summary()["typed_confirmation_phrase"],
     )
+    channel_auth = ChannelAuth(db)
     bus = NotificationBus(db=db, voice=voice)
     commitments = CommitmentLedger(db=db, bus=bus)
     actions = ActionPipelineService(db=db, authority=authority, founder=founder, work_queue=work_queue, bus=bus)
@@ -1531,6 +1536,39 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             return strategy_review.deny(request_id, resolved_by=request.resolved_by, note=request.note)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # -- cross-channel founder authentication (prereq for any channel ingress) -
+    @app.post("/channels/enroll")
+    def channel_enroll(payload: ChannelEnrollRequest) -> dict[str, Any]:
+        # Returns a ONE-TIME code the founder echoes through the target channel.
+        return channel_auth.begin_enrollment(payload.channel, label=payload.label)
+
+    @app.post("/channels/confirm")
+    def channel_confirm(payload: ChannelConfirmRequest) -> dict[str, Any]:
+        # The channel adapter calls this when an inbound message carries the code.
+        try:
+            identity = channel_auth.confirm_enrollment(payload.channel, payload.external_id, payload.code)
+        except ChannelAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"authenticated": identity.authenticated, "binding_id": identity.binding_id, "max_tier": identity.max_tier}
+
+    @app.get("/channels/bindings")
+    def channel_bindings(include_revoked: bool = False) -> dict[str, Any]:
+        return {"bindings": channel_auth.list_bindings(include_revoked=include_revoked)}
+
+    @app.post("/channels/bindings/{binding_id}/revoke")
+    def channel_revoke(binding_id: int) -> dict[str, Any]:
+        try:
+            return channel_auth.revoke(binding_id)
+        except ChannelAuthError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/channels/bindings/{binding_id}/tier")
+    def channel_set_tier(binding_id: int, payload: ChannelTierRequest) -> dict[str, Any]:
+        try:
+            return channel_auth.set_max_tier(binding_id, payload.max_tier)
+        except ChannelAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/experiments")
     def list_experiments(status: str | None = None, limit: int = 50) -> dict[str, Any]:

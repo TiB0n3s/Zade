@@ -396,6 +396,45 @@ def test_strategy_review_endpoints(tmp_path: Path, monkeypatch) -> None:
     assert client.get("/strategy/reviews").json()["pending"] == []
 
 
+def test_channel_auth_endpoints(tmp_path: Path, monkeypatch) -> None:
+    """Founder-facing channel binding: enroll (get a code), confirm (bind an
+    identity), raise the ceiling, revoke. Confirm is mutation-guarded; the sender
+    handle is never trusted — only the bound external_id."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        security=SecurityConfig(local_token="secret"),
+    )
+    client = TestClient(create_app(config))
+    token = {"X-Zade-Token": "secret"}
+
+    enr = client.post("/channels/enroll", headers=token, json={"channel": "telegram", "label": "phone"})
+    assert enr.status_code == 200
+    code = enr.json()["code"]
+    assert code and client.get("/channels/bindings").json()["bindings"] == []
+
+    # confirm is mutation-guarded, and a wrong code binds nothing
+    assert client.post("/channels/confirm", json={"channel": "telegram", "external_id": "c1", "code": code}).status_code == 401
+    assert client.post("/channels/confirm", headers=token, json={"channel": "telegram", "external_id": "c1", "code": "bad"}).status_code == 400
+
+    conf = client.post("/channels/confirm", headers=token, json={"channel": "telegram", "external_id": "c1", "code": code})
+    assert conf.status_code == 200 and conf.json()["authenticated"] is True
+    binding_id = conf.json()["binding_id"]
+    assert conf.json()["max_tier"] == "L0_READ"
+    bindings = client.get("/channels/bindings").json()["bindings"]
+    assert len(bindings) == 1 and bindings[0]["external_id"] == "c1"
+
+    # ceiling can be raised deliberately; an invalid tier is refused
+    assert client.post(f"/channels/bindings/{binding_id}/tier", headers=token, json={"max_tier": "L1_MEMORY_WRITE"}).status_code == 200
+    assert client.post(f"/channels/bindings/{binding_id}/tier", headers=token, json={"max_tier": "BOGUS"}).status_code == 400
+
+    # revoke removes it from the active view
+    assert client.post(f"/channels/bindings/{binding_id}/revoke", headers=token).status_code == 200
+    assert client.get("/channels/bindings").json()["bindings"] == []
+
+
 def test_authority_and_self_inventory_routes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     config = KernelConfig(

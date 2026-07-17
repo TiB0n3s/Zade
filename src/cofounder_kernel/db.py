@@ -2541,6 +2541,27 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   resolution_note TEXT NOT NULL DEFAULT '',
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS channel_enrollments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  code_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS channel_bindings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  max_tier TEXT NOT NULL DEFAULT 'L0_READ',
+  revoked_at TEXT,
+  UNIQUE(channel, external_id)
+);
 
 CREATE TABLE IF NOT EXISTS approval_training_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

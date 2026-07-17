@@ -63,6 +63,21 @@ class StrategyReviewRequest(BaseModel):
     question: str = Field(default="", max_length=2000)
 
 
+class ChannelEnrollRequest(BaseModel):
+    channel: str = Field(min_length=1, max_length=60)
+    label: str = Field(default="", max_length=200)
+
+
+class ChannelConfirmRequest(BaseModel):
+    channel: str = Field(min_length=1, max_length=60)
+    external_id: str = Field(min_length=1, max_length=200)
+    code: str = Field(min_length=1, max_length=200)
+
+
+class ChannelTierRequest(BaseModel):
+    max_tier: str = Field(min_length=1, max_length=40)
+
+
 class ApprovalDeferRequest(BaseModel):
     resolved_by: str = Field(default="founder", min_length=1, max_length=120)
     note: str = Field(default="", max_length=1000)
