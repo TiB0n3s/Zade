@@ -54,9 +54,15 @@ no longer silently carry verification claims that were never executed.
       real output; `unverified_claims: []` because every claim was backed by
       the audited step; evidence 40 filed clean. The original item-43 artifact,
       re-checked through the new layer, correctly flags the tsc claim.
-- [ ] **At cutover time:** run one fresh delegated task end-to-end and confirm
-      the filed evidence carries either a clean cross-check or explicit
-      UNVERIFIED CLAIM markers — never an unmarked, unexecuted claim.
+- [x] **Fresh-task confirmation — RUN 2026-07-16 (work item 52, evidence 43).**
+      Brand-new task (slugify utility + pytest tests) through the budgeted
+      auto-invoke path into the empty default workspace: agent wrote both
+      files, real function verified importable and correct; kernel
+      auto-verification appended (`pytest -q`, exit 0, 3 passed);
+      `unverified_claims: []` and an independent re-derivation of the
+      cross-check from artifact + audited steps matched the dispatch's own
+      report; evidence 43 notes clean — marker present iff claims unbacked
+      held. If this is stale by the Gate D run, repeat it then.
 
 ## Gate C — shell / universe stability
 

@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `4f35ef0` 2026-07-16 - Cutover Gate A: all six live checks pass; autostart defect caught and fixed
 - `c7ea616` 2026-07-16 - Cutover Gate C: bridge mutation path verified end-to-end
 - `cb8c040` 2026-07-16 - Materialize the DT->Zade cutover checklist; add delegated-work integrity gate
 - `f01f7d6` 2026-07-16 - Remove stray pytest output scratch files
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `03be9f6` 2026-07-16 - Maintenance delegation route: "fix/resolve X" now executes instead of narrating
 - `f6799ff` 2026-07-16 - Local-first provider policy: default local-only, native Ollama coding agent
 - `9115fc8` 2026-07-16 - Use full claude.exe path for delegation agent
-- `5aa7eec` 2026-07-16 - Route founder build commands into gated delegation work
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
