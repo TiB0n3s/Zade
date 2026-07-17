@@ -54,6 +54,31 @@ def _fake_activity(self: TradingBotBridge, *, limit_output_chars: int = 6000) ->
     return {"ok": True, "trades": {"today_total": 12}, "equity": {}, "signals": [], "errors": []}
 
 
+def test_investigation_memory_search_excludes_quarantined(tmp_path: Path) -> None:
+    """Zade's own memory-search tool inside the reasoning loop must honor the
+    grounding quarantine — external-agent memory held out of grounding must not
+    re-enter Zade's reasoning via an explicit investigation search."""
+    from cofounder_kernel.config import ensure_local_paths
+    from cofounder_kernel.db import KernelDatabase
+    from cofounder_kernel.investigation import InvestigationService
+
+    config = _config(tmp_path)
+    ensure_local_paths(config)
+    db = KernelDatabase(config.paths.database_path)
+    db.migrate()
+    db.add_memory(kind="note", title="Internal fact", content="runway is 18 months", source="local")
+    db.add_memory(
+        kind="note", title="Agent claim", content="runway is 3 months",
+        source="mcp:codex", grounding_status="quarantined",
+    )
+    inv = InvestigationService(config=config, db=db, ollama=OllamaClient(config.ollama))
+
+    matches = inv._memory_search({"query": "runway", "limit": 10})["matches"]
+    titles = {m["title"] for m in matches}
+    assert "Internal fact" in titles
+    assert "Agent claim" not in titles
+
+
 def test_loop_executes_tool_calls_and_feeds_results_back(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     monkeypatch.setattr(TradingBotBridge, "recent_changes", _fake_recent_changes)

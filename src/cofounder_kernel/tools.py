@@ -222,8 +222,20 @@ class ToolRegistry:
         return ToolResult(ok=True, data={"forgotten": deleted})
 
     def _memory_search(self, args: dict[str, Any]) -> ToolResult:
-        records = self.db.search_memories(str(args["query"]), int(args.get("limit", 8)))
+        # 'shareable_only' is a caller-set control: the agent surface pins it True so
+        # an external client only reads founder-marked-shareable memory, never the
+        # private store. Absent/False -> full recall (internal callers, Zade itself).
+        records = self.db.search_memories(
+            str(args["query"]), int(args.get("limit", 8)), shareable_only=bool(args.get("shareable_only"))
+        )
         return ToolResult(ok=True, data={"matches": [record.__dict__ for record in records]})
 
     def _audit_recent(self, args: dict[str, Any]) -> ToolResult:
-        return ToolResult(ok=True, data={"events": self.db.recent_audit_events(int(args.get("limit", 25)))})
+        # 'audit_scope_actor' is a caller-set control: the agent surface pins it to
+        # the calling agent so an external client sees ONLY its own audit rows, not
+        # the whole kernel's ledger. Absent -> unscoped (internal callers).
+        scope_actor = args.get("audit_scope_actor")
+        events = self.db.recent_audit_events(
+            int(args.get("limit", 25)), actor=str(scope_actor) if scope_actor else None
+        )
+        return ToolResult(ok=True, data={"events": events})

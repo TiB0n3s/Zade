@@ -1434,6 +1434,41 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         )
         return {"held": held}
 
+    # What an external MCP client's memory.search may read. Private by default.
+    @app.get("/memory/shareable")
+    def memory_shareable_list(limit: int = 200) -> dict[str, Any]:
+        return {"shareable": db.list_shareable_memories(limit=limit)}
+
+    @app.post("/memory/{memory_id}/share")
+    def memory_share(memory_id: int) -> dict[str, Any]:
+        shared = db.set_memory_shareable(memory_id, True)
+        if shared is None:
+            raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
+        db.audit(
+            actor="founder",
+            action="memory.share",
+            target=f"memory:{memory_id}",
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={"memory_id": memory_id, "source": shared.get("source")},
+        )
+        return {"shared": shared}
+
+    @app.post("/memory/{memory_id}/unshare")
+    def memory_unshare(memory_id: int) -> dict[str, Any]:
+        unshared = db.set_memory_shareable(memory_id, False)
+        if unshared is None:
+            raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
+        db.audit(
+            actor="founder",
+            action="memory.unshare",
+            target=f"memory:{memory_id}",
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={"memory_id": memory_id, "source": unshared.get("source")},
+        )
+        return {"unshared": unshared}
+
     # -- per-request egress grants (the egress gate's PER_REQUEST half) --------
     @app.get("/egress/grants")
     def egress_grants() -> dict[str, Any]:
@@ -2257,7 +2292,9 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         memory_hits = []
         semantic_hits = []
         if payload.use_memory:
-            memory_hits = [record.__dict__ for record in db.search_memories(payload.message, limit=5)]
+            # include_quarantined=False so the hits shown to the founder match what
+            # actually grounded the answer (runtime.respond filters the same way).
+            memory_hits = [record.__dict__ for record in db.search_memories(payload.message, limit=5, include_quarantined=False)]
         if payload.use_memory and payload.use_semantic_memory and payload.semantic_limit > 0:
             try:
                 semantic_hits = ingestion.semantic_search(query=payload.message, limit=payload.semantic_limit)

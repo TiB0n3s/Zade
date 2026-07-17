@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `1325e70` 2026-07-17 - Egress Design
 - `634ea24` 2026-07-17 - Kernel MCP and runtime
 - `02b0b81` 2026-07-17 - MCP and Agent Surface
 - `e8762dd` 2026-07-17 - MCP Surface
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `6ab6318` 2026-07-17 - Fix self-knowledge CI under Python 3.11
 - `036596e` 2026-07-17 - Review verify_failed reads as a finding, not a broken run
 - `059f780` 2026-07-17 - Review route: 'review <project>' runs a read-only inspection; workspace run-record answers status questions
-- `f80d547` 2026-07-17 - Structured output: JSON contracts enforced server-side via Ollama format
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -182,10 +182,23 @@ class AgentSurface:
             )
             return ToolResult(ok=False, data={"error": "not_exposed", "audit_id": audit_id})
 
-        # Default a memory.write's source to the calling agent for provenance,
-        # unless the caller set one — so founder can see external-written memory.
-        if name == "memory.write" and not args.get("source"):
+        # FORCE a memory.write's source to the calling agent — truthful provenance.
+        # This overrides any agent-supplied source, so a client cannot label its
+        # write as an internal/founder origin (e.g. source="founder:core").
+        if name == "memory.write":
             args = {**args, "source": actor}
+
+        # Scope audit.recent to the calling agent's OWN rows (least privilege). The
+        # surface pins the actor so a client cannot read the whole kernel's ledger
+        # (memory content, founder decisions, egress) — only what it itself did.
+        if name == "audit.recent":
+            args = {**args, "audit_scope_actor": actor}
+
+        # Scope memory.search to founder-marked-shareable records. The surface pins
+        # this (the client cannot unset it), so a connected agent can never read the
+        # founder's PRIVATE memory — only what the founder has explicitly shared.
+        if name == "memory.search":
+            args = {**args, "shareable_only": True}
 
         # Approval gate: an external agent's memory write is HELD for founder
         # review rather than applied autonomously. Memory feeds recall/grounding,
@@ -205,9 +218,51 @@ class AgentSurface:
         # The registry records the call under our attributed actor.
         return self.tools.call(name, args, actor=actor)
 
+    #: Max pending held writes a single agent may have queued at once, and a GLOBAL
+    #: ceiling across all external agents. Both are needed: the per-actor cap bounds
+    #: one client, and the global cap closes the bypass where a client rotates its
+    #: clientInfo.name (or re-initializes as a new/unknown actor) to mint fresh
+    #: per-actor budgets. Without these a client could loop memory.write and flood
+    #: the DB + drown the founder's approval queue.
+    MAX_PENDING_WRITES_PER_ACTOR = 25
+    MAX_PENDING_WRITES_TOTAL = 200
+
     def _hold_write_for_approval(self, args: dict[str, Any], actor: str) -> ToolResult:
         """File a pending founder-approval request carrying the proposed write and
         return 'awaiting_approval' without touching memory."""
+        pending_total = 0
+        pending_for_actor = 0
+        for request in self.tools.db.list_approval_requests(status="pending", limit=5000):
+            if request.source_type != "mcp_memory_write":
+                continue
+            pending_total += 1
+            if (request.metadata or {}).get("actor") == actor:
+                pending_for_actor += 1
+        over_actor = pending_for_actor >= self.MAX_PENDING_WRITES_PER_ACTOR
+        over_total = pending_total >= self.MAX_PENDING_WRITES_TOTAL
+        if over_actor or over_total:
+            audit_id = self.tools.db.audit(
+                actor=actor,
+                action="mcp.write.rejected",
+                target="memories",
+                permission_tier="L1_MEMORY_WRITE",
+                status="denied",
+                details={
+                    "reason": "too_many_pending_total" if over_total else "too_many_pending",
+                    "pending_actor": pending_for_actor,
+                    "pending_total": pending_total,
+                },
+            )
+            return ToolResult(
+                ok=False,
+                data={
+                    "error": "too_many_pending_writes",
+                    "pending_actor": pending_for_actor,
+                    "pending_total": pending_total,
+                    "message": "Too many external writes await founder review; wait for them to be resolved.",
+                    "audit_id": audit_id,
+                },
+            )
         payload = {
             key: args.get(key)
             for key in ("kind", "title", "content", "source", "metadata")

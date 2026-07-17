@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -30,6 +30,10 @@ COLUMN_PATCHES: tuple[tuple[str, str, str], ...] = (
     # releases it. 'active' = eligible for recall; 'quarantined' = stored and
     # explicitly searchable, but never auto-injected into Zade's reasoning.
     ("memories", "grounding_status", "grounding_status TEXT NOT NULL DEFAULT 'active'"),
+    # v27: external shareability. What an external MCP client's memory.search may
+    # read. Private-by-default (0): the founder's memory is NOT visible to a
+    # connected agent until the founder marks a specific record shareable (1).
+    ("memories", "shareable", "shareable INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -443,6 +447,28 @@ class KernelDatabase:
                 return None
             conn.execute("UPDATE memories SET grounding_status = ? WHERE id = ?", (status, memory_id))
         return {"id": memory_id, "title": row["title"], "source": row["source"], "grounding_status": status}
+
+    def set_memory_shareable(self, memory_id: int, shareable: bool) -> dict[str, Any] | None:
+        """Mark a memory shareable to external MCP clients (or revoke it). Returns
+        the updated summary, or None if the memory does not exist."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT id, title, source FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if row is None:
+                return None
+            conn.execute("UPDATE memories SET shareable = ? WHERE id = ?", (1 if shareable else 0, memory_id))
+        return {"id": memory_id, "title": row["title"], "source": row["source"], "shareable": bool(shareable)}
+
+    def list_shareable_memories(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Memories the founder has marked shareable to external agents."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, kind, title, content, source, metadata_json, grounding_status
+                FROM memories WHERE shareable = 1 ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [_memory_row_to_dict(row) for row in rows]
 
     def memory_stats(self) -> dict[str, int]:
         with self.connect() as conn:
@@ -1171,35 +1197,41 @@ class KernelDatabase:
             for row in rows
         ]
 
-    def search_memories(self, query: str, limit: int = 8, *, include_quarantined: bool = True) -> list[MemoryRecord]:
+    def search_memories(
+        self, query: str, limit: int = 8, *, include_quarantined: bool = True, shareable_only: bool = False
+    ) -> list[MemoryRecord]:
         """Keyword/FTS recall over memory. ``include_quarantined`` defaults True so
         an explicit search (e.g. the agent's memory.search tool) still finds every
         record; the grounding recall path passes False so external-agent memory
-        held in quarantine never auto-enters Zade's reasoning context."""
+        held in quarantine never auto-enters Zade's reasoning context.
+        ``shareable_only`` restricts to founder-marked-shareable records — the
+        external MCP surface passes True so a connected agent can only read memory
+        the founder has explicitly shared, never the founder's private store."""
         query = query.strip()
         if not query:
             return []
         with self.connect() as conn:
-            rows = self._search_fts(conn, query, limit, include_quarantined=include_quarantined)
+            rows = self._search_fts(conn, query, limit, include_quarantined=include_quarantined, shareable_only=shareable_only)
             if not rows:
                 token_query = _token_fts_query(query)
                 if token_query and token_query != query:
-                    rows = self._search_fts(conn, token_query, limit, include_quarantined=include_quarantined)
+                    rows = self._search_fts(conn, token_query, limit, include_quarantined=include_quarantined, shareable_only=shareable_only)
             if not rows:
-                rows = self._search_like(conn, query, limit, include_quarantined=include_quarantined)
+                rows = self._search_like(conn, query, limit, include_quarantined=include_quarantined, shareable_only=shareable_only)
             return [_memory_from_row(row) for row in rows]
 
     def _search_fts(
-        self, conn: sqlite3.Connection, query: str, limit: int, *, include_quarantined: bool = True
+        self, conn: sqlite3.Connection, query: str, limit: int, *, include_quarantined: bool = True, shareable_only: bool = False
     ) -> list[sqlite3.Row]:
         quarantine_clause = "" if include_quarantined else " AND m.grounding_status != 'quarantined'"
+        shareable_clause = " AND m.shareable = 1" if shareable_only else ""
         try:
             return conn.execute(
                 f"""
                 SELECT m.*
                 FROM memory_fts f
                 JOIN memories m ON m.id = f.rowid
-                WHERE memory_fts MATCH ?{quarantine_clause}
+                WHERE memory_fts MATCH ?{quarantine_clause}{shareable_clause}
                 ORDER BY bm25(memory_fts)
                 LIMIT ?
                 """,
@@ -1209,7 +1241,7 @@ class KernelDatabase:
             return []
 
     def _search_like(
-        self, conn: sqlite3.Connection, query: str, limit: int, *, include_quarantined: bool = True
+        self, conn: sqlite3.Connection, query: str, limit: int, *, include_quarantined: bool = True, shareable_only: bool = False
     ) -> list[sqlite3.Row]:
         tokens = _query_tokens(query)
         if not tokens:
@@ -1221,11 +1253,12 @@ class KernelDatabase:
             params.extend([f"%{token}%", f"%{token}%", f"%{token}%", f"%{token}%"])
         params.append(limit)
         quarantine_clause = "" if include_quarantined else " AND grounding_status != 'quarantined'"
+        shareable_clause = " AND shareable = 1" if shareable_only else ""
         return conn.execute(
             f"""
             SELECT *
             FROM memories
-            WHERE ({' OR '.join(clauses)}){quarantine_clause}
+            WHERE ({' OR '.join(clauses)}){quarantine_clause}{shareable_clause}
             ORDER BY id DESC
             LIMIT ?
             """,
@@ -1317,12 +1350,21 @@ class KernelDatabase:
             ).fetchall()
         return [_memory_row_to_dict(row) for row in rows]
 
-    def recent_audit_events(self, limit: int = 25) -> list[dict[str, Any]]:
+    def recent_audit_events(self, limit: int = 25, *, actor: str | None = None) -> list[dict[str, Any]]:
+        """Recent audit rows. ``actor`` scopes the result to a single actor — used
+        to give an external agent least-privilege visibility (its OWN activity
+        only), never the whole kernel's ledger."""
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM audit_events ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+            if actor is not None:
+                rows = conn.execute(
+                    "SELECT * FROM audit_events WHERE actor = ? ORDER BY id DESC LIMIT ?",
+                    (actor, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM audit_events ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
             return [dict(row) | {"details": json.loads(row["details_json"] or "{}")} for row in rows]
 
     def record_model_call(
@@ -2256,7 +2298,8 @@ CREATE TABLE IF NOT EXISTS memories (
   content TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'local',
   metadata_json TEXT NOT NULL DEFAULT '{}',
-  grounding_status TEXT NOT NULL DEFAULT 'active'
+  grounding_status TEXT NOT NULL DEFAULT 'active',
+  shareable INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(

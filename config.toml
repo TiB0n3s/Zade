@@ -57,3 +57,11 @@ tts_voice = "ZthjuvLPty3kTMaNKVKb"
 # turn cloud voice off. Raw founder_state can never be granted here — it is
 # FORBIDDEN in the matrix regardless.
 standing_grants = ["founder_audio:deepgram", "reply_text:elevenlabs"]
+
+[anthropic]
+# Cloud strategic review via Anthropic — the on-switch for the first cloud egress
+# of a curated founder_brief. Enabled 2026-07-17. A send STILL requires all of:
+# provider_policy != local_only (above), ANTHROPIC_API_KEY in the env, AND a
+# per-request founder grant (typed-phrase approval of a specific review). Raw
+# founder_state remains FORBIDDEN by the egress matrix regardless of this flag.
+enabled = true

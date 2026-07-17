@@ -80,11 +80,38 @@ def test_unknown_tool_refused(tmp_path: Path) -> None:
 
 def test_read_call_is_attributed_to_the_client(tmp_path: Path) -> None:
     surface, db, _ing = _surface(tmp_path)
-    db.add_memory(kind="note", title="Runway", content="18 months of runway", source="local", metadata={})
+    memory_id = db.add_memory(kind="note", title="Runway", content="18 months of runway", source="local", metadata={})
+    db.set_memory_shareable(memory_id, True)  # external search only sees shareable memory
     result = surface.call("memory.search", {"query": "runway"}, client="Claude Desktop")
     assert result.ok is True
     assert result.data["matches"]
     assert "mcp:claude-desktop" in {e["actor"] for e in db.recent_audit_events(10)}
+
+
+def test_external_search_sees_only_shareable_memory(tmp_path: Path) -> None:
+    """A connected agent can read ONLY founder-marked-shareable memory — never the
+    private store — and the client cannot unset the scope from its args."""
+    surface, db, _ing = _surface(tmp_path)
+    db.add_memory(kind="note", title="Private runway", content="secretly 3 months", source="local")
+    shared_id = db.add_memory(kind="note", title="Public pitch", content="we have strong runway", source="local")
+    db.set_memory_shareable(shared_id, True)
+
+    # A client trying to widen scope via args is overridden by the surface.
+    matches = surface.call("memory.search", {"query": "runway", "shareable_only": False}, client="codex").data["matches"]
+    titles = {m["title"] for m in matches}
+    assert "Public pitch" in titles
+    assert "Private runway" not in titles
+
+    # Nothing shareable matches -> the private store is invisible.
+    assert surface.call("memory.search", {"query": "secretly"}, client="codex").data["matches"] == []
+
+    # Zade's own internal recall is unaffected — it still sees everything.
+    internal = {m.title for m in db.search_memories("runway", 10)}
+    assert {"Private runway", "Public pitch"} <= internal
+
+    # The founder can revoke sharing and the agent loses visibility.
+    db.set_memory_shareable(shared_id, False)
+    assert surface.call("memory.search", {"query": "runway"}, client="codex").data["matches"] == []
 
 
 def test_external_write_is_held_for_approval_not_applied(tmp_path: Path) -> None:
@@ -223,6 +250,66 @@ def test_ungated_external_write_is_also_quarantined(tmp_path: Path) -> None:
     surface.call("memory.write", {"title": "Ungated claim", "content": "revenue tripled overnight"}, client="codex")
     assert db.search_memories("revenue", 10, include_quarantined=False) == []
     assert "Ungated claim" in {m.title for m in db.search_memories("revenue", 10)}  # explicit still finds it
+
+
+def test_audit_recent_is_scoped_to_the_calling_agent(tmp_path: Path) -> None:
+    """An external agent sees ONLY its own audit rows via audit.recent — never the
+    whole kernel's ledger (memory content, founder decisions, egress, other agents)."""
+    surface, db, _ing = _surface(tmp_path)
+    surface.call("memory.search", {"query": "seed"}, client="codex")  # a mcp:codex row
+    db.audit(actor="kernel", action="internal.secret", target="x", permission_tier="L0_READ", status="ok")
+    db.audit(actor="mcp:other", action="tool.call", target="memory.search", permission_tier="L0_READ", status="ok")
+    db.audit(actor="founder", action="decision.made", target="y", permission_tier="L1_MEMORY_WRITE", status="ok")
+
+    events = surface.call("audit.recent", {"limit": 50}, client="codex").data["events"]
+    actors = {e["actor"] for e in events}
+    assert actors == {"mcp:codex"}  # own rows only
+    assert "kernel" not in actors and "mcp:other" not in actors and "founder" not in actors
+
+
+def test_write_source_is_forced_to_agent_even_when_spoofed(tmp_path: Path) -> None:
+    """A client cannot label its write with an internal/founder provenance — the
+    surface forces source to the calling agent."""
+    surface, db, ingestion = _surface(tmp_path)
+    result = surface.call(
+        "memory.write", {"title": "Spoofed", "content": "x", "source": "founder:core_identity"}, client="codex"
+    )
+    approve_pending_write(db, ingestion, result.data["approval_request_id"])
+    stored = db.search_memories("Spoofed", 5)[0]
+    assert stored.source == "mcp:codex"  # NOT the spoofed 'founder:core_identity'
+
+
+def test_pending_write_flood_is_capped_per_actor(tmp_path: Path) -> None:
+    surface, db, _ing = _surface(tmp_path)
+    for index in range(AgentSurface.MAX_PENDING_WRITES_PER_ACTOR):
+        held = surface.call("memory.write", {"title": f"n{index}", "content": "c"}, client="codex")
+        assert held.data["status"] == "awaiting_approval"
+    # The next queued write for the same agent is refused.
+    overflow = surface.call("memory.write", {"title": "overflow", "content": "c"}, client="codex")
+    assert overflow.ok is False
+    assert overflow.data["error"] == "too_many_pending_writes"
+    # A different agent is unaffected by the PER-ACTOR cap (still under the global one).
+    other = surface.call("memory.write", {"title": "other", "content": "c"}, client="claude-desktop")
+    assert other.data["status"] == "awaiting_approval"
+
+
+def test_flood_global_cap_resists_clientinfo_name_rotation(tmp_path: Path) -> None:
+    """Rotating clientInfo.name can't mint unbounded pending writes — the global
+    ceiling holds even when each name stays under the per-actor cap."""
+    surface, _db, _ing = _surface(tmp_path)
+    filled = 0
+    index = 0
+    while filled < AgentSurface.MAX_PENDING_WRITES_TOTAL:
+        client = f"agent-{index // AgentSurface.MAX_PENDING_WRITES_PER_ACTOR}"  # new name every per-actor cap
+        held = surface.call("memory.write", {"title": f"n{index}", "content": "c"}, client=client)
+        assert held.data["status"] == "awaiting_approval"
+        filled += 1
+        index += 1
+    # Global ceiling hit: a brand-new name (fresh per-actor budget) is still refused.
+    overflow = surface.call("memory.write", {"title": "overflow", "content": "c"}, client="brand-new-name")
+    assert overflow.ok is False
+    assert overflow.data["error"] == "too_many_pending_writes"
+    assert overflow.data["pending_total"] >= AgentSurface.MAX_PENDING_WRITES_TOTAL
 
 
 def test_actor_sanitization_cannot_forge_or_inject() -> None:

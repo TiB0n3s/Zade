@@ -218,7 +218,12 @@ class InvestigationService:
         query = str(args.get("query") or "").strip()
         if not query:
             return {"ok": False, "error": "query is required"}
-        records = self.db.search_memories(query, max(1, min(25, int(args.get("limit") or 8))))
+        # include_quarantined=False: this tool's results flow back into Zade's own
+        # reasoning loop, so it must honor the grounding quarantine — external-agent
+        # memory held out of grounding must not re-enter via Zade's explicit recall.
+        records = self.db.search_memories(
+            query, max(1, min(25, int(args.get("limit") or 8))), include_quarantined=False
+        )
         return {
             "ok": True,
             "matches": [

@@ -74,7 +74,8 @@ def test_tools_list_exposes_schema_and_annotations(tmp_path: Path) -> None:
 
 def test_tools_call_read_succeeds_and_is_attributed(tmp_path: Path) -> None:
     server, db = _server(tmp_path)
-    db.add_memory(kind="note", title="Runway", content="18 months", source="local", metadata={})
+    memory_id = db.add_memory(kind="note", title="Runway", content="18 months", source="local", metadata={})
+    db.set_memory_shareable(memory_id, True)  # external search only sees shareable memory
     _init(server, client="codex")
     resp = server.handle(
         {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -137,7 +138,8 @@ def test_ping_and_bad_request(tmp_path: Path) -> None:
 
 def test_serve_loop_over_fake_stdio(tmp_path: Path) -> None:
     server, db = _server(tmp_path)
-    db.add_memory(kind="note", title="Focus", content="ship the gate", source="local", metadata={})
+    focus_id = db.add_memory(kind="note", title="Focus", content="ship the gate", source="local", metadata={})
+    db.set_memory_shareable(focus_id, True)  # external search only sees shareable memory
     lines = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
          "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "codex"}}},
