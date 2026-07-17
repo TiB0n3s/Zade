@@ -2246,6 +2246,128 @@ def test_runtime_replaces_fabricated_completion_on_unrouted_execution_command(
     assert "unrouted_execution_fabrication_repaired" in payload["governor"]["applied_rules"]
 
 
+def test_runtime_replaces_fabrication_even_when_message_is_not_a_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Live incident 2026-07-17 (runtime event 329): 'I already gave you the
+    project path' — not an execution command — drew a full fabricated
+    completion report (files created, dependencies installed, verified). A
+    routeless reply claiming this-turn execution is fabrication regardless of
+    the founder's message shape."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    fabrication = (
+        "I have confirmed the project path as `C:\\BookCatalogingApp\\TheDarkIndex` "
+        "and re-run Step 5 in your actual project. The following has been completed:\n\n"
+        "- `src/screens/BarcodeScannerScreen.js` — Created and implemented.\n"
+        "- Dependencies installed — react-native-camera has been installed and verified.\n"
+        "- The `src/screens` directory now exists and contains the required files."
+    )
+
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=fabrication, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, fabricating_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "I already gave you the project path",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["build"] is None
+    assert "Nothing executed this turn" in payload["response"]
+    assert "perform step 5" in payload["response"]
+    assert "has been completed" not in payload["response"]
+    assert "installed and verified" not in payload["response"]
+    assert "unrouted_execution_fabrication_repaired" in payload["governor"]["applied_rules"]
+
+
+def test_legitimate_chat_deliverable_is_not_replaced(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Precision guard: 'I have completed the analysis' with no execution
+    context is chat work, not fabrication — it must pass through untouched."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    honest_reply = (
+        "I have completed the analysis you asked for: revenue concentration is "
+        "the main risk, and the churn number is the one to watch."
+    )
+
+    def analyzing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+        return GenerateResult(response=honest_reply, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, analyzing_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "What did the numbers say?",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "revenue concentration" in payload["response"]
+    assert "unrouted_execution_fabrication_repaired" not in payload["governor"]["applied_rules"]
+
+
+def test_step_resolution_skips_completion_narratives() -> None:
+    """Live incident 2026-07-17 (item #64): a fabricated model reply ('Step 5
+    ... The following has been completed') was resolved as the step-5
+    instructions and became the delegated brief. Completion narratives are
+    never instructions."""
+    from cofounder_kernel.runtime import _resolve_step_instructions
+
+    real_instructions = (
+        "Step 5: Implement the functionality for the UI components. Wire the "
+        "BarcodeScannerScreen into navigation and persist scans with op-sqlite."
+    )
+    fabricated_completion = (
+        "I have confirmed the project path and re-run Step 5 in your actual project. "
+        "The following has been completed:\n- src/screens/BarcodeScannerScreen.js — "
+        "Created and implemented.\n- Dependencies installed and verified."
+    )
+    turns = [
+        {"role": "assistant", "content": real_instructions},
+        {"role": "user", "content": "Re-run Step 5 in the actual project"},
+        {"role": "assistant", "content": fabricated_completion},
+    ]
+
+    resolved = _resolve_step_instructions(turns, step_number=5)
+    assert "Implement the functionality for the UI components" in resolved
+    assert "has been completed" not in resolved
+
+
+def test_project_target_survives_backticked_paths(tmp_path: Path) -> None:
+    """Live incident 2026-07-17 (item #64, workspace=''): the founder named the
+    project as `C:\\...\\TheDarkIndex` in backticks; the path regex swallowed
+    the trailing backtick, the directory check failed, and the run fell back
+    to the default workspace. Backticked paths must resolve."""
+    from cofounder_kernel.runtime import _extract_project_target
+
+    project = tmp_path / "RealProject"
+    project.mkdir()
+    resolved = _extract_project_target(
+        [], current_message=f"Re-run Step 5 in the actual project at `{project}`"
+    )
+    assert resolved == str(project.resolve())
+
+
 def test_runtime_claim_challenge_without_step_context_does_not_invent_step_5(
     tmp_path: Path, monkeypatch
 ) -> None:

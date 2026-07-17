@@ -1466,18 +1466,17 @@ The founder's current message is supplied separately as the user-role message. D
             )
         if (
             not (chat_action_route or research_route or build_route)
-            and _is_unrouted_execution_command(message)
-            and _FABRICATED_COMPLETION_CLAIM_RE.search(text or "")
+            and _is_fabricated_execution_reply(message=message, response=text or "")
         ):
-            # The founder commanded execution, nothing routed, and the model
-            # still narrated a finished job. A chat reply cannot execute — a
-            # real run always arrives with a route block. Replace the
+            # No route fired this turn, and the drafted reply still narrated a
+            # finished job (files/installs/steps). A chat reply cannot execute
+            # — a real run always arrives with a route block. Replace the
             # fabrication with the honest state and the exact routable phrase.
-            text = _unrouted_execution_fabrication_fallback(message)
+            text = _unrouted_execution_fabrication_fallback(message, text or "")
             applied_rules.append("unrouted_execution_fabrication_repaired")
             notes.append(
-                "Replaced a fabricated completion claim on an execution command that "
-                "did not route; nothing was executed this turn."
+                "Replaced a fabricated this-turn completion claim in a routeless reply; "
+                "nothing was executed this turn."
             )
         if _is_ambiguous_action_followup(message) and not (
             chat_action_route or research_route or build_route
@@ -2404,9 +2403,21 @@ _UNROUTED_EXEC_COMMAND_RE = re.compile(
 )
 _FABRICATED_COMPLETION_CLAIM_RE = re.compile(
     r"""(?ix)
-    \bi\s+have\s+(?:confirmed|re-?run|created|implemented|installed|updated|completed|executed|verified)\b
+    \bi\s+have\s+(?:confirmed|re-?run|created|implemented|installed|updated|executed
+        |(?:completed|verified)(?!\s+(?:the\s+|my\s+|this\s+)?(?:analysis|review|summary|assessment|reading)))\b
     | \b(?:has|have)\s+been\s+(?:completed|created|implemented|installed|updated|executed|verified)\b
     | \bfollowing\s+has\s+been\s+completed\b
+    """
+)
+# Execution-context nouns that turn a completion claim into an execution claim
+# (files, installs, directories, steps) — a reply "I have completed the summary"
+# is chat work; "I have completed step 5, files created, dependencies installed"
+# with no route this turn is fabrication.
+_EXECUTION_CONTEXT_RE = re.compile(
+    r"""(?ix)
+    \bstep\s*#?\s*\d+\b | \bdependenc\w+\b | \binstall\w*\b | \bdirector(?:y|ies)\b |
+    \bnpm\b | \brepo(?:sitory)?\b |
+    [\w/-]+\.(?:js|jsx|ts|tsx|py|json|md|css|html|toml|yml|yaml)\b
     """
 )
 
@@ -2418,14 +2429,30 @@ def _is_unrouted_execution_command(message: str) -> bool:
     return bool(_STEP_REF_WORD_RE.search(stripped) or _STEP_REF_NUM_RE.search(stripped))
 
 
-def _unrouted_execution_fabrication_fallback(message: str) -> str:
-    step = _STEP_REF_NUM_RE.search(message or "")
+def _is_fabricated_execution_reply(*, message: str, response: str) -> bool:
+    """True when a drafted reply claims this-turn execution and no route fired.
+
+    The invariant: a real run ALWAYS arrives with a route block appended by
+    the kernel, so first-person completion claims about files/installs/steps
+    in a routeless reply are fabrication — regardless of whether the founder's
+    message was itself a command (live incident: 'I already gave you the
+    project path' drew a full fabricated completion report)."""
+    if not _FABRICATED_COMPLETION_CLAIM_RE.search(response or ""):
+        return False
+    if _EXECUTION_CONTEXT_RE.search(response or ""):
+        return True
+    return _is_unrouted_execution_command(message)
+
+
+def _unrouted_execution_fabrication_fallback(message: str, response: str = "") -> str:
+    step = _STEP_REF_NUM_RE.search(message or "") or _STEP_REF_NUM_RE.search(response or "")
     routable = f"perform step {step.group(1)}" if step else "perform step N (or name the build/fix directly)"
     return (
-        "Nothing executed this turn. That command didn't route into a delegated run — "
-        "no files changed, nothing installed, and no check ran, so disregard any completion "
-        f"language in prose. Say `{routable}` and the kernel routes it through the coding "
-        "agent immediately, with the real outcome appended to the reply."
+        "I drafted a completion story with no run behind it — discarded. Nothing executed "
+        "this turn: no delegated run fired, no files changed, nothing installed, no check ran. "
+        "The only execution proof is a run item with real output attached. "
+        f"Say `{routable}` and the kernel runs it immediately, with the actual outcome "
+        "appended to the reply."
     )
 _FILE_REFERENCE_RE = re.compile(
     r"`?([A-Za-z0-9][A-Za-z0-9_.\\/-]*\.[A-Za-z0-9][A-Za-z0-9_.-]{0,12})`?"
@@ -3330,7 +3357,7 @@ _MAINTENANCE_ANAPHORA_RE = re.compile(
 _TERMINAL_PASTE_RE = re.compile(
     r"(?im)^\s*(?:PS\s+[A-Za-z]:\\|[A-Za-z]:\\[^\n]*>)|npm\s+(?:warn|ERR!)|#\s*npm\s+audit\s+report"
 )
-_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s\"'<>|?*\n]+")
+_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s\"'<>|?*`\n]+")
 _KERNEL_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -3400,7 +3427,7 @@ def _extract_project_target(turns: list[Any], *, current_message: str = "") -> s
     ]
     for text in texts:
         for raw in _WINDOWS_PATH_RE.findall(text):
-            cleaned = raw.rstrip(">.,;:!?\"'")
+            cleaned = raw.rstrip(">.,;:!?\"'`")
             try:
                 path = Path(cleaned)
                 if path.is_file():
@@ -3466,6 +3493,7 @@ _SYNTHETIC_REPLY_MARKERS_RE = re.compile(
     r"(?m)^(?:Ran|Started|Queued|Took) the (?:build|fix|step run) -"
     r"|^The (?:build|fix|step run) is NOT done -"
     r"|A chat claim is not execution evidence"
+    r"|Nothing executed this turn"
 )
 
 
@@ -3502,9 +3530,18 @@ def _resolve_step_instructions(
             anchor = re.search(rf"(?i)\bstep\s*#?\s*{step_number}\b", content)
             if not anchor:
                 continue
-            return content[anchor.start() : anchor.start() + 1500]
+            candidate = content[anchor.start() : anchor.start() + 1500]
+            if _FABRICATED_COMPLETION_CLAIM_RE.search(candidate):
+                # A completion NARRATIVE mentioning the step ("Step 5 ... has
+                # been completed") is not instructions — resolving it into a
+                # brief poisoned two live runs. Keep looking further back.
+                continue
+            return candidate
         if _STEP_STRUCTURE_RE.search(content) or "```" in content:
-            return content[:1500]
+            candidate = content[:1500]
+            if _FABRICATED_COMPLETION_CLAIM_RE.search(candidate):
+                continue
+            return candidate
     return ""
 
 
