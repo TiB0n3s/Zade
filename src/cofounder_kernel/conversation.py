@@ -381,6 +381,23 @@ class ConversationService:
             f"Transcript:\n{transcript}\n\n"
             "JSON array:"
         )
+        # Server-enforced shape (Ollama `format`): a capped array of durable
+        # items with kind constrained to the distill vocabulary. Mirrors the
+        # JSON contract in the prompt; _parse_distilled_items stays as the
+        # backstop for structured_output = false and transport errors.
+        schema = {
+            "type": "array",
+            "maxItems": self.DISTILL_MAX_ITEMS,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": list(self.DISTILL_KINDS)},
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["kind", "title", "content"],
+            },
+        }
         try:
             generated = self.ollama.generate(
                 prompt=prompt,
@@ -388,6 +405,7 @@ class ConversationService:
                 think=False,
                 temperature=self.config.ollama.temperature,
                 num_predict=800,
+                format=schema,
             )
         except Exception:
             return None

@@ -28,7 +28,7 @@ def fake_health(self: OllamaClient) -> dict:
     return {"version": "test"}
 
 
-def good_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+def good_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
     if "attack it first" in prompt:
         return GenerateResult(response=CRITIC_JSON, model=model or "deepseek-r1:14b", raw={})
     if "Reply with exactly the word ACK" in prompt:
@@ -57,7 +57,7 @@ def good_generate(self, *, prompt, model=None, think=None, temperature=None, num
     return GenerateResult(response="OK.", model=model or "qwen3:14b", raw={})
 
 
-def bad_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+def bad_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
     return GenerateResult(response="UNHELPFUL.", model=model or "qwen3:14b", raw={})
 
 
@@ -205,7 +205,7 @@ def test_custom_case_upsert_validation_and_filtered_run(tmp_path: Path, monkeypa
 def test_single_case_error_does_not_break_the_run(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def flaky_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def flaky_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         if model == "qwen2.5-coder:14b":
             raise OllamaError("coding model offline")
         return good_generate(self, prompt=prompt, model=model, think=think, temperature=temperature, num_predict=num_predict)

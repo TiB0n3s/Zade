@@ -41,6 +41,21 @@ MAX_MESSAGE_CHARS = 2000
 MAX_DRAFT_CHARS = 4000
 MAX_FIELD_CHARS = 500
 
+# Server-enforced shape of the critique (Ollama `format`). Mirrors the JSON
+# contract in the attack prompt; _parse_critique stays as the backstop for
+# structured_output = false and transport errors.
+CRITIQUE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": sorted(VERDICTS)},
+        "weakest_assumption": {"type": "string"},
+        "missing_evidence": {"type": "string"},
+        "downside_risk": {"type": "string"},
+        "confidence_adjustment": {"type": "integer", "minimum": -50, "maximum": 0},
+    },
+    "required": ["verdict", "weakest_assumption", "missing_evidence", "downside_risk", "confidence_adjustment"],
+}
+
 
 class ContrarianCritic:
     """Automatic red-team pass for recommendation-shaped governed responses.
@@ -81,6 +96,7 @@ class ContrarianCritic:
                 model=model,
                 think=think,
                 temperature=self.config.ollama.temperature,
+                format=CRITIQUE_SCHEMA,
             )
         except Exception as exc:
             latency_ms = int((time.perf_counter() - started) * 1000)

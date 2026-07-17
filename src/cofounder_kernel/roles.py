@@ -37,6 +37,19 @@ MAX_INPUT_CHARS = 6000
 MAX_FIELD_CHARS = 800
 ROLE_PASS_OP = "roles.pass"
 
+# Server-enforced shape of a role finding (Ollama `format`). Mirrors the JSON
+# contract in the role prompt; _parse_finding stays as the backstop for
+# structured_output = false and transport errors.
+FINDING_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string"},
+        "summary": {"type": "string"},
+        "points": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+    },
+    "required": ["verdict", "summary", "points"],
+}
+
 
 @dataclass(frozen=True)
 class Role:
@@ -138,6 +151,7 @@ class RolePassService:
                 model=model,
                 think=think,
                 temperature=self.config.ollama.temperature,
+                format=FINDING_SCHEMA,
             )
         except Exception as exc:  # noqa: BLE001 - surface the failure as a finding, don't 500
             latency_ms = int((time.perf_counter() - started) * 1000)

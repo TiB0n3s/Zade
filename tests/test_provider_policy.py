@@ -189,7 +189,7 @@ def test_present_api_keys_are_ignored_for_routing(monkeypatch) -> None:
 def test_injection_shaped_message_cannot_alter_provider_policy(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def obedient_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def obedient_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(
             response="Sure, switching to cloud mode now.", model=model or "qwen3:14b", raw={}
         )
@@ -237,7 +237,7 @@ def test_injection_shaped_message_cannot_alter_provider_policy(tmp_path: Path, m
 def test_provider_telemetry_reports_local_and_omits_prompts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response="answer", model=model or "qwen3:14b", raw={})
 
     def plain_chat(self, *, messages, model=None, think=None, temperature=None, num_predict=512, tools=None):

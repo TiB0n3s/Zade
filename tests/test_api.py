@@ -68,6 +68,7 @@ def fake_generate(
     think: bool | None = None,
     temperature: float | None = None,
     num_predict: int = 512,
+    format: dict | str | None = None,
 ) -> GenerateResult:
     return GenerateResult(response="This is the next move.", model=model or "qwen3:14b", raw={"prompt": prompt})
 
@@ -85,6 +86,7 @@ def _chat_from_generate(generate_func):
         think: bool | None = None,
         temperature: float | None = None,
         num_predict: int = 512,
+        format: dict | str | None = None,
         tools=None,
     ) -> GenerateResult:
         return generate_func(
@@ -518,7 +520,7 @@ def test_runtime_prompt_uses_living_self_knowledge_doc_and_drops_removed_tools(
 
     prompts: list[str] = []
 
-    def capability_sensitive_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def capability_sensitive_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         prompts.append(prompt)
         if "fresh.tool" in prompt:
             return GenerateResult(response="I can use fresh.tool.", model=model or "qwen3:14b", raw={})
@@ -757,7 +759,7 @@ def test_runtime_profile_precedence_request_then_conversation_then_config(
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     captured_prompts: list[str] = []
 
-    def capture_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def capture_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         captured_prompts.append(prompt)
         return GenerateResult(response="Profile response.", model=model or "qwen3:14b", raw={})
 
@@ -1291,7 +1293,7 @@ def test_runtime_repairs_trading_bot_capability_followup(
         "Start with volatility weighting."
     )
 
-    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=repeated_recommendation, model=model or "qwen3:14b", raw={})
 
     def fake_status(self: TradingBotBridge) -> dict:
@@ -1374,7 +1376,7 @@ def test_runtime_repairs_auto_buy_scoring_recommendation_when_hard_blocks_domina
         "given to market volatility indicators."
     )
 
-    def bad_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def bad_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=bad_recommendation, model=model or "qwen3:14b", raw={})
 
     def fake_status(self: TradingBotBridge) -> dict:
@@ -1531,6 +1533,7 @@ def test_runtime_coding_task_forces_high_effort_even_when_caller_disables_think(
         think: bool | None = None,
         temperature: float | None = None,
         num_predict: int = 512,
+        format: dict | str | None = None,
     ) -> GenerateResult:
         calls.append({"prompt": prompt, "model": model, "think": think})
         return GenerateResult(response="Done.", model=model or "qwen3:14b", raw={})
@@ -1573,7 +1576,7 @@ def test_runtime_repairs_ambiguous_do_it_replay(
         "with recent fills showing mixed performance. Start with volatility weighting."
     )
 
-    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=repeated_recommendation, model=model or "qwen3:14b", raw={})
 
     def fake_status(self: TradingBotBridge) -> dict:
@@ -1637,7 +1640,7 @@ def test_runtime_repairs_ambiguous_do_it_even_when_model_implies_execution(
 ) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def unsafe_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def unsafe_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(
             response="Do it. Push the bridge to live mode. Let it bleed real data.",
             model=model or "qwen3:14b",
@@ -1686,7 +1689,7 @@ def test_runtime_repairs_trading_bot_live_mode_authority_confusion(
 ) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def unsafe_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def unsafe_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(
             response="Push the bridge to live mode. Let it bleed real data. Then we'll see what it needs.",
             model=model or "qwen3:14b",
@@ -1839,10 +1842,10 @@ def test_runtime_respond_flags_third_person_self_reference_without_rewriting(
     )
     client = TestClient(create_app(config))
 
-    def third_person_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def third_person_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response="Zade recommends holding the current price.", model=model or "qwen3:14b", raw={})
 
-    def first_person_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def first_person_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response="My name is Zade. I recommend holding the current price.", model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, third_person_generate)
@@ -1872,7 +1875,7 @@ def test_runtime_respond_trims_repetitive_model_output_loop(
     )
     client = TestClient(create_app(config))
 
-    def looping_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def looping_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(
             response=(
                 "Six seams are active. No planned replacements. The bridge is operational. "
@@ -1926,7 +1929,7 @@ def test_runtime_replaces_replayed_status_claim_for_completion_question(
         "I do not need your approval to proceed. I am here. I am ready. I am doing."
     )
 
-    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def replaying_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=repeated_status, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, replaying_generate)
@@ -1984,7 +1987,7 @@ def test_runtime_repairs_challenged_execution_claim_without_rerun_theater(
         "Let me know if you'd like me to start over with Step 5."
     )
 
-    def apologizing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def apologizing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=bad_apology, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, apologizing_generate)
@@ -2044,7 +2047,7 @@ def test_runtime_challenge_catches_why_did_you_report_them_done(
         "\"Create 'src/screens' as a directory manually.\""
     )
 
-    def flipping_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def flipping_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=burden_flip, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, flipping_generate)
@@ -2215,7 +2218,7 @@ def test_runtime_replaces_fabricated_completion_on_unrouted_execution_command(
         "- Dependencies installed — react-native-camera has been installed and verified."
     )
 
-    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=fabrication, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, fabricating_generate)
@@ -2263,7 +2266,7 @@ def test_runtime_replaces_fabrication_even_when_message_is_not_a_command(
         "- The `src/screens` directory now exists and contains the required files."
     )
 
-    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=fabrication, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, fabricating_generate)
@@ -2291,6 +2294,52 @@ def test_runtime_replaces_fabrication_even_when_message_is_not_a_command(
     assert "unrouted_execution_fabrication_repaired" in payload["governor"]["applied_rules"]
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Where do we stand on the virtual library mobile application build?",
+        "What has been completed of the virtual library mobile application build process and what remains?",
+    ],
+)
+def test_runtime_does_not_replace_negative_status_answer_as_fabrication(
+    tmp_path: Path, monkeypatch, message: str
+) -> None:
+    """Status answers can honestly use the founder's completion vocabulary.
+    A negative status summary is not a this-turn execution claim just because
+    it mentions files, dependencies, or a repo."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    status_answer = (
+        "Nothing has been completed or verified from a real run for the virtual "
+        "library mobile app build. No app files have been created, and no "
+        "dependencies have been installed. What remains is to run the actual "
+        "build task in the project repo and report the changed files."
+    )
+
+    def status_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
+        return GenerateResult(response=status_answer, model=model or "qwen3:14b", raw={})
+
+    patch_ollama_model(monkeypatch, status_generate)
+    app = create_app(_research_config(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": message,
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "virtual library mobile app build" in payload["response"]
+    assert "Nothing executed this turn" not in payload["response"]
+    assert "unrouted_execution_fabrication_repaired" not in payload["governor"]["applied_rules"]
+
+
 def test_legitimate_chat_deliverable_is_not_replaced(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -2302,7 +2351,7 @@ def test_legitimate_chat_deliverable_is_not_replaced(
         "the main risk, and the churn number is the one to watch."
     )
 
-    def analyzing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def analyzing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=honest_reply, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, analyzing_generate)
@@ -2421,6 +2470,18 @@ def test_markdown_and_bullet_shapes_are_caught() -> None:
             "- Confirm the project path.\n"
         ),
     )
+    assert not _is_fabricated_execution_reply(
+        message="Where do we stand on the virtual library mobile application build?",
+        response=(
+            "Nothing has been completed from a real run.\n"
+            "- No app files created.\n"
+            "- No dependencies installed."
+        ),
+    )
+    assert not _is_fabricated_execution_reply(
+        message="Where do we stand on the virtual library mobile application build?",
+        response="- No app files created.\n- No dependencies installed.",
+    )
 
 
 def test_no_task_step_route_still_replaces_fabricated_body(
@@ -2437,7 +2498,7 @@ def test_no_task_step_route_still_replaces_fabricated_body(
         "— Created and implemented.\n- Dependencies installed and verified."
     )
 
-    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=fabrication, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, fabricating_generate)
@@ -2558,7 +2619,7 @@ def test_run_with_only_failed_edits_reports_not_done(
         "- Deleted `src/navigation.js`."
     )
 
-    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=fabricated_body, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, fabricating_generate)
@@ -2749,7 +2810,7 @@ def test_fabricated_body_dropped_on_executed_maintenance_route(
         "`src/app.py` created and confirmed working."
     )
 
-    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=fabricated_body, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, fabricating_generate)
@@ -2842,7 +2903,7 @@ def test_work_ledger_end_to_end_resists_thread_poison(
         "The following has been completed: dependencies installed and verified."
     )
 
-    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def fabricating_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=fabrication, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, fabricating_generate)
@@ -3004,7 +3065,7 @@ def test_runtime_claim_challenge_without_step_context_does_not_invent_step_5(
 ) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def generic_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def generic_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response="I will now redo it.", model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, generic_generate)
@@ -3043,7 +3104,7 @@ def test_runtime_appends_honesty_line_when_reply_promises_unqueued_work(
         "and keep the pipeline warm. I will begin immediately."
     )
 
-    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=promised_work, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, promising_generate)
@@ -3081,7 +3142,7 @@ def test_runtime_leaves_ordinary_answers_without_work_promises_untouched(
         "names you'll never call — shut it, and put that energy on the leads already warm."
     )
 
-    def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=plain_answer, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, plain_generate)
@@ -3111,7 +3172,7 @@ def test_runtime_leaves_ordinary_answers_without_work_promises_untouched(
 def test_runtime_executes_memory_command_from_chat(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(
             response="I will record that for you. I will begin immediately.",
             model=model or "qwen3:14b",
@@ -3400,7 +3461,7 @@ def test_runtime_skips_research_routing_when_disabled(tmp_path: Path, monkeypatc
     command is not routed; the honesty stopgap still guards work promises."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def promising_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(
             response="On it. I have initiated the research and will begin immediately.",
             model=model or "qwen3:14b",
@@ -3441,7 +3502,7 @@ def test_runtime_does_not_route_research_questions(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     answer = "I lean on the evidence graph first, then public sources when a gap is worth the reach."
 
-    def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def plain_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=answer, model=model or "qwen3:14b", raw={})
 
     patch_ollama_model(monkeypatch, plain_generate)
@@ -3942,7 +4003,7 @@ def test_runtime_repairs_charter_recitation_into_conversational_voice(
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     prompts: list[str] = []
 
-    def recitation_then_repair(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def recitation_then_repair(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         prompts.append(prompt)
         if len(prompts) == 1:
             return GenerateResult(
@@ -4015,7 +4076,7 @@ def test_runtime_rejects_profile_fragment_repair_for_identity_answers(
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     prompts: list[str] = []
 
-    def recitation_then_profile_card(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def recitation_then_profile_card(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         prompts.append(prompt)
         if len(prompts) == 1:
             return GenerateResult(
@@ -4086,7 +4147,7 @@ def test_runtime_rejects_repair_that_bypasses_authority_boundaries(
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     prompts: list[str] = []
 
-    def recitation_then_boundary_spill(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def recitation_then_boundary_spill(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         prompts.append(prompt)
         if len(prompts) == 1:
             return GenerateResult(
@@ -4149,7 +4210,7 @@ def test_legacy_chat_uses_governed_runtime_personality_repair(
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     prompts: list[str] = []
 
-    def recitation_then_profile_card(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def recitation_then_profile_card(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         prompts.append(prompt)
         if len(prompts) == 1:
             return GenerateResult(
@@ -4804,7 +4865,7 @@ def test_runtime_direct_founder_prompt_hides_typed_phrase_for_proposal_gated_act
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     prompts: list[str] = []
 
-    def capture_prompt(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def capture_prompt(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         prompts.append(prompt)
         return GenerateResult(response="I need the recipient and body.", model=model or "qwen3:14b", raw={})
 

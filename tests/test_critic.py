@@ -30,7 +30,7 @@ def _config(tmp_path: Path) -> KernelConfig:
 
 
 def _generate_stub(critic_response: str, calls: list[dict]):
-    def fake_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def fake_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         calls.append({"prompt": prompt, "model": model, "think": think})
         if model == REASONING_MODEL:
             return GenerateResult(response=critic_response, model=model, raw={})
@@ -156,7 +156,7 @@ def test_explicit_flag_overrides_heuristic_both_ways(tmp_path: Path, monkeypatch
 def test_critic_failure_is_non_blocking(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def failing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def failing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         if model == REASONING_MODEL:
             raise OllamaError("reasoning model offline")
         return GenerateResult(response="Prioritize evidence intake.", model=model or "qwen3:14b", raw={})

@@ -26,7 +26,7 @@ def _make(tmp_path: Path, monkeypatch, holder: dict):
     test can script the extraction output (and change it mid-test)."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
 
-    def scripted_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def scripted_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         return GenerateResult(response=holder["text"], model=model or "qwen3:14b", raw={})
 
     monkeypatch.setattr(OllamaClient, "generate", scripted_generate)

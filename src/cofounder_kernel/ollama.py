@@ -129,6 +129,19 @@ class OllamaClient:
                 "Choose an installed local model. No request was sent."
             )
 
+    def _apply_format(self, body: dict[str, Any], format: str | Mapping[str, Any] | None) -> None:
+        """Attach Ollama's server-side structured-output constraint.
+
+        `format` is either "json" or a JSON schema; the server grammar-constrains
+        sampling so the reply is guaranteed to parse and conform. Gated by
+        [ollama] structured_output so a model that degrades under grammar
+        constraints can fall back to prompt-contract-only with one config flip —
+        callers keep their tolerant parsers either way.
+        """
+        if format is None or not bool(getattr(self.config, "structured_output", True)):
+            return
+        body["format"] = format if isinstance(format, str) else dict(format)
+
     # ---- API -------------------------------------------------------------
     def health(self) -> dict[str, Any]:
         return self._get_json("/api/version")
@@ -147,6 +160,7 @@ class OllamaClient:
         think: bool | None = None,
         temperature: float | None = None,
         num_predict: int = 512,
+        format: str | Mapping[str, Any] | None = None,
     ) -> GenerateResult:
         selected_model = model or self.config.chat_model
         self._assert_model_allowed(selected_model)
@@ -161,6 +175,7 @@ class OllamaClient:
                 "num_predict": num_predict,
             },
         }
+        self._apply_format(body, format)
         try:
             raw = self._post_json("/api/generate", body)
         except OllamaThinkingUnsupported as exc:
@@ -183,6 +198,7 @@ class OllamaClient:
         temperature: float | None = None,
         num_predict: int = 512,
         tools: Sequence[Mapping[str, Any]] | None = None,
+        format: str | Mapping[str, Any] | None = None,
     ) -> GenerateResult:
         selected_model = model or self.config.chat_model
         self._assert_model_allowed(selected_model)
@@ -199,6 +215,7 @@ class OllamaClient:
         }
         if tools:
             body["tools"] = [dict(tool) for tool in tools]
+        self._apply_format(body, format)
         try:
             raw = self._post_json("/api/chat", body)
         except OllamaThinkingUnsupported as exc:

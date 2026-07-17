@@ -23,6 +23,7 @@ def fake_generate(
     think: bool | None = None,
     temperature: float | None = None,
     num_predict: int = 512,
+    format: dict | str | None = None,
 ) -> GenerateResult:
     return GenerateResult(response="Executive read.", model=model or "qwen3:14b", raw={"prompt": prompt})
 

@@ -36,7 +36,7 @@ def fake_health(self: OllamaClient) -> dict:
     return {"version": "test"}
 
 
-def fake_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+def fake_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
     if model == "deepseek-r1:14b":
         return GenerateResult(response=CRITIC_JSON, model=model, raw={})
     return GenerateResult(response="Prioritize evidence intake this week.", model=model or "qwen3:14b", raw={})
@@ -217,7 +217,7 @@ def test_converse_prompt_carries_personality_contract(tmp_path: Path, monkeypatc
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     prompts: list[str] = []
 
-    def capturing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512):
+    def capturing_generate(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
         prompts.append(prompt)
         if model == "deepseek-r1:14b":
             return GenerateResult(response=CRITIC_JSON, model=model, raw={})

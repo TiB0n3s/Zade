@@ -24,7 +24,7 @@ def _config(tmp_path: Path, **kw) -> KernelConfig:
 
 
 def _fake_generate(response: str):
-    def generate(self: OllamaClient, *, prompt: str, model=None, think=None, temperature=None, num_predict=512):
+    def generate(self: OllamaClient, *, prompt: str, model=None, think=None, temperature=None, num_predict=512, format=None):
         return SimpleNamespace(response=response, model=model or "test-model")
 
     return generate

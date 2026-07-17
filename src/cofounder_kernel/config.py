@@ -69,6 +69,12 @@ class OllamaConfig:
     # the cap bounds worst-case latency.
     tool_loop: bool = True
     tool_loop_max_rounds: int = 3
+    # Server-side structured output: JSON-contract calls (contrarian critic,
+    # role passes, distillation) send their JSON schema as Ollama's `format`
+    # field, so the shape is enforced at sampling time instead of resting on
+    # prompt discipline alone. Kill switch — turn off if a model misbehaves
+    # under grammar constraints; prompts and tolerant parsers work unchanged.
+    structured_output: bool = True
     # ---- provider policy (local-first, default local-only) ----
     # local_only:      loopback Ollama + verified local models only; no cloud,
     #                  no remote Ollama, no fallback; failures fail closed.
@@ -411,6 +417,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         chat_temperature=float(os.getenv("COFOUNDER_CHAT_TEMPERATURE", ollama_raw.get("chat_temperature", 0.65))),
         tool_loop=_bool(os.getenv("COFOUNDER_TOOL_LOOP", ollama_raw.get("tool_loop", True))),
         tool_loop_max_rounds=int(os.getenv("COFOUNDER_TOOL_LOOP_MAX_ROUNDS", ollama_raw.get("tool_loop_max_rounds", 3))),
+        structured_output=_bool(os.getenv("COFOUNDER_STRUCTURED_OUTPUT", ollama_raw.get("structured_output", True))),
         provider_policy=_provider_policy(
             os.getenv("COFOUNDER_PROVIDER_POLICY", ollama_raw.get("provider_policy", "local_only"))
         ),
