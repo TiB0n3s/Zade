@@ -370,6 +370,48 @@ def test_active_objective_and_decision_engine_create_operating_objects(tmp_path:
     assert "Active objective: Prove Zade" in brief["brief"]
 
 
+def test_decision_engine_suppresses_duplicate_open_recommendations(tmp_path: Path) -> None:
+    """Re-asking the same question about the same objective is a repeat, not a new
+    decision. The engine used to append an identical row — plus a decision memo
+    and a task — on every call. The live DB still holds three such rows from one
+    smoke test, and the first cloud review read that repetition as 'a stuck loop
+    masquerading as strategy'."""
+    founder = make_founder(tmp_path)
+    payload = {
+        "problem": "Should Zade prioritize evidence intake or UI polish next?",
+        "options": [
+            {"name": "Prioritize evidence intake", "recommended": True, "priority": 90},
+            {"name": "Prioritize UI polish", "priority": 40},
+        ],
+    }
+
+    first = founder.recommend_decision(dict(payload))
+    second = founder.recommend_decision(dict(payload))
+
+    # the repeat returns the original row and creates no second row, memo or task
+    assert second["duplicate_of"] == first["item"]["id"]
+    assert second["item"]["id"] == first["item"]["id"]
+    assert len(founder.list_decision_recommendations()) == 1
+    assert len(founder.list_decision_memos()) == 1
+    assert len(founder.list_tasks()) == 1
+    # the response keeps its full shape so callers do not special-case a repeat
+    assert second["operating_contract"]["recommendation"] == "Prioritize evidence intake"
+    assert second["decision_memo"]["id"] == first["decision_memo"]["id"]
+
+    # an explicit opt-out still allows a deliberate duplicate
+    third = founder.recommend_decision(dict(payload) | {"allow_duplicate": True})
+    assert third["item"]["id"] != first["item"]["id"]
+    assert len(founder.list_decision_recommendations()) == 2
+
+    # suppression is scoped to *open* rows: once acted on, the same question may
+    # be asked again rather than being locked out forever
+    with founder.db.connect() as conn:
+        conn.execute("UPDATE decision_recommendations SET status = 'planned'")
+    fourth = founder.recommend_decision(dict(payload))
+    assert "duplicate_of" not in fourth
+    assert fourth["item"]["id"] not in {first["item"]["id"], third["item"]["id"]}
+
+
 def test_overrides_missed_calls_and_cadence_reviews(tmp_path: Path) -> None:
     founder = make_founder(tmp_path)
     prediction = founder.create_prediction(
@@ -503,6 +545,73 @@ def test_brief_feeds_substance_and_drops_unnamed_placeholder(tmp_path: Path) -> 
     # the malformed assumption is named honestly; no invented "unnamed" row
     assert "unnamed" not in brief
     assert "a core assumption is recorded without its text" in brief
+
+
+def test_brief_reads_core_assumptions_under_canonical_statement_key(tmp_path: Path) -> None:
+    """A well-formed core assumption carries its text under "statement" — the key
+    the thesis writer, the research lane and the runtime prompt all use. Reading
+    only "assumption" matched nothing real: every intact assumption fell through
+    to the malformed branch, so the brief accused a healthy thesis of data
+    damage and never surfaced the assumptions themselves. That false claim went
+    out in a live cloud strategy review. Canonical key and aliases must resolve."""
+    founder = make_founder(tmp_path)
+    founder.upsert_thesis(
+        {
+            "vision": "v",
+            "mission": "m",
+            "core_assumptions": [
+                {"statement": "Founders will pay for private longitudinal memory", "confidence": 78},
+                {"assumption": "Local inference stays good enough", "confidence": 70},
+            ],
+            "status": "active",
+        }
+    )
+
+    brief = founder.brief()["brief"]
+
+    # the real assumption text reaches the brief under either key
+    assert "Founders will pay for private longitudinal memory" in brief
+    assert "Local inference stays good enough" in brief
+    # and an intact thesis is never accused of missing its text
+    assert "recorded without its text" not in brief
+
+
+def test_brief_answered_approval_header_carries_no_empty_marker(tmp_path: Path) -> None:
+    """The approval-pressure header is a COMPUTED answer, not a section label:
+    with nothing pending it already reads "No approval blockers." Appending the
+    "(none recorded)" marker under it contradicted the header — under the READING
+    NOTES contract that marker tells the reviewer to treat the section as an
+    unprobed unknown, when it is a known zero. Bullets only when there is
+    something to list."""
+    from cofounder_kernel.db import utc_now
+
+    founder = make_founder(tmp_path)
+
+    lines = founder.brief()["brief"].splitlines()
+    idx = next(i for i, line in enumerate(lines) if line.startswith("Approval pressure:"))
+
+    # the header answers it, and nothing is appended underneath
+    assert "No approval blockers" in lines[idx]
+    assert lines[idx + 1].strip() == ""
+
+    # a real pending request still renders as a bullet under the header
+    with founder.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO approval_requests (
+              created_at, updated_at, source_type, source_id, title, action,
+              permission_tier, authority_decision, status
+            )
+            VALUES (?, ?, 'work_item', NULL, ?, 'egress.send', 'L2_EXTERNAL',
+                    'requires_approval', 'pending')
+            """,
+            (utc_now(), utc_now(), "Approve the vendor egress grant"),
+        )
+
+    lines = founder.brief()["brief"].splitlines()
+    idx = next(i for i, line in enumerate(lines) if line.startswith("Approval pressure:"))
+    assert "1 approval request(s) waiting on you." in lines[idx]
+    assert lines[idx + 1] == "- Approve the vendor egress grant"
 
 
 def test_brief_collapses_repeated_entries_into_counts(tmp_path: Path) -> None:

@@ -1055,12 +1055,28 @@ class FounderService:
             if payload.get("objective_id")
             else self.get_active_objective()
         )
-        options = payload.get("options") or _default_decision_options(payload["problem"], objective)
+        problem = str(payload["problem"]).strip()
+        options = payload.get("options") or _default_decision_options(problem, objective)
         recommendation = _choose_recommendation(options, payload.get("force_recommendation", ""))
-        required_evidence = payload.get("required_evidence") or _required_evidence(payload["problem"], objective)
+        # Re-asking the same question about the same objective is a repeat, not a
+        # new decision. Without this the engine appended another identical row —
+        # plus a decision memo and a task — on every call, and the brief then
+        # showed the same recommendation N times; the first live cloud review read
+        # exactly that as "a stuck loop masquerading as strategy". The check runs
+        # before any memo or task is created, so a repeat call costs nothing and
+        # leaves no orphan objects behind.
+        if not payload.get("allow_duplicate", False):
+            duplicate = self._open_duplicate_recommendation(
+                objective_id=objective.get("id") if objective else None,
+                problem=problem,
+                recommendation=recommendation,
+            )
+            if duplicate:
+                return self._duplicate_recommendation_response(duplicate, objective)
+        required_evidence = payload.get("required_evidence") or _required_evidence(problem, objective)
         downside_risk = payload.get("downside_risk") or _downside_risks(objective, payload.get("constraints", []))
         confidence = _decision_confidence(objective, required_evidence, downside_risk)
-        rationale = _decision_rationale(payload["problem"], objective, recommendation, required_evidence)
+        rationale = _decision_rationale(problem, objective, recommendation, required_evidence)
         kill_condition = _kill_condition(objective, required_evidence)
         next_action = _next_action(objective, recommendation)
         authority_note = "Local recommendation only. External actions, outreach, spending, or account changes still require approval."
@@ -1068,7 +1084,7 @@ class FounderService:
         if payload.get("create_decision_memo", True):
             decision_memo = self.create_decision_memo(
                 {
-                    "problem": payload["problem"],
+                    "problem": problem,
                     "context": _decision_context(payload.get("context", ""), objective),
                     "options": options,
                     "recommendation": recommendation,
@@ -1089,7 +1105,7 @@ class FounderService:
                     "title": next_action,
                     "goal_id": _first_id(objective.get("linked_goal_ids", [])) if objective else None,
                     "owner": objective.get("owner", "") if objective else "",
-                    "strategic_value": objective.get("objective", "") if objective else payload["problem"],
+                    "strategic_value": objective.get("objective", "") if objective else problem,
                     "evidence_needed": "; ".join(required_evidence[:3]),
                     "metadata": {
                         "source": "decision_engine",
@@ -1114,7 +1130,7 @@ class FounderService:
                     now,
                     now,
                     objective.get("id") if objective else None,
-                    payload["problem"],
+                    problem,
                     payload.get("context", ""),
                     _json(options),
                     recommendation,
@@ -1187,6 +1203,79 @@ class FounderService:
 
     def get_decision_recommendation(self, recommendation_id: int) -> dict[str, Any]:
         return self.get_record("decision_recommendations", recommendation_id, DECISION_RECOMMENDATION_JSON_FIELDS)
+
+    def _open_duplicate_recommendation(
+        self,
+        *,
+        objective_id: int | None,
+        problem: str,
+        recommendation: str,
+    ) -> dict[str, Any]:
+        """A still-open recommendation identical to the one just computed.
+
+        Only 'proposed' rows match: once a recommendation has been planned or
+        acted on it no longer suppresses a fresh one for the same question. That
+        is what makes this a repeat-suppressor rather than a permanent lock on
+        ever asking the same question twice."""
+        clauses = ["status = 'proposed'", "problem = ?", "recommendation = ?"]
+        params: list[Any] = [problem, recommendation]
+        if objective_id is None:
+            clauses.append("objective_id IS NULL")
+        else:
+            clauses.append("objective_id = ?")
+            params.append(objective_id)
+        with self.db.connect() as conn:
+            row = conn.execute(
+                f"SELECT id FROM decision_recommendations WHERE {' AND '.join(clauses)}"
+                " ORDER BY id DESC LIMIT 1",
+                params,
+            ).fetchone()
+        return self.get_decision_recommendation(int(row["id"])) if row else {}
+
+    def _duplicate_recommendation_response(
+        self,
+        existing: dict[str, Any],
+        objective: dict[str, Any],
+    ) -> dict[str, Any]:
+        """The standard recommend_decision response rebuilt from an existing row.
+
+        Callers get the same shape whether or not the call was a repeat; the
+        duplicate_of field is what tells them nothing new was created."""
+        memo = (
+            self.get_record("decision_memos", int(existing["decision_memo_id"]), DECISION_JSON_FIELDS)
+            if existing.get("decision_memo_id")
+            else None
+        )
+        task = (
+            self.get_record("founder_tasks", int(existing["next_task_id"]), TASK_JSON_FIELDS)
+            if existing.get("next_task_id")
+            else None
+        )
+        self._audit(
+            "founder.decision_engine.recommend",
+            f"decision_recommendation:{existing['id']}",
+            "duplicate",
+            {
+                "objective_id": existing.get("objective_id"),
+                "reason": "an identical open recommendation already exists",
+            },
+        )
+        return {
+            "item": existing,
+            "active_objective": self.get_active_objective_by_id(int(objective["id"])) if objective else {},
+            "decision_memo": memo,
+            "next_task": task,
+            "duplicate_of": existing["id"],
+            "operating_contract": {
+                "recommendation": existing.get("recommendation", ""),
+                "confidence": existing.get("confidence"),
+                "required_evidence": existing.get("required_evidence", []),
+                "downside_risk": existing.get("downside_risk", []),
+                "kill_or_reversal_condition": existing.get("kill_or_reversal_condition", ""),
+                "next_action": existing.get("next_action", ""),
+                "authority_note": existing.get("authority_note", ""),
+            },
+        }
 
     def create_kill_criteria(self, payload: dict[str, Any]) -> InsertResult:
         with self.db.connect() as conn:
@@ -1545,6 +1634,14 @@ class FounderService:
             }
             for d in dashboard["decisions_waiting"]
         ]
+        # Approval pressure is the one section whose header is a COMPUTED answer
+        # ("No approval blockers.") rather than a label, so an empty item list is a
+        # known zero, not absent data. Emitting the "(none recorded)" marker here
+        # contradicts the header and, under the READING NOTES contract, tells the
+        # reviewer to probe a question the header already answered. Bullets only
+        # when there is something to list.
+        approval_items = dashboard["approval_pressure"]["items"]
+        approval_lines = _bullet(item.get("title") for item in approval_items) if approval_items else []
         lines = [
             f"{self.config.identity.name} founder brief",
             "Auto-assembled from the founder operating layer for outside strategic review.",
@@ -1568,7 +1665,7 @@ class FounderService:
             *_bullet(item.get("recommendation") for item in dashboard["decision_engine"]["latest_recommendations"]),
             "",
             f"Approval pressure: {dashboard['approval_pressure']['headline']}",
-            *_bullet(item.get("title") for item in dashboard["approval_pressure"]["items"]),
+            *approval_lines,
             "",
             "Top objectives:",
             *_detail_bullets(
@@ -2171,6 +2268,24 @@ def _company_health(
     return "forming"
 
 
+# The canonical key for a core assumption's text is "statement" — that is what
+# the research lane (research.py), the runtime prompt and the founder_assumptions
+# model all read. This function used to read only "assumption", which matched
+# nothing real: every well-formed assumption fell through to the malformed branch,
+# so the brief reported an intact thesis as damaged and never showed the
+# assumptions themselves. Aliases are accepted so a caller using a reasonable
+# synonym is not silently reported as broken.
+_ASSUMPTION_TEXT_KEYS = ("statement", "assumption", "text", "claim", "name")
+
+
+def _assumption_text(assumption: dict[str, Any]) -> str:
+    for key in _ASSUMPTION_TEXT_KEYS:
+        value = str(assumption.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _knowledge_gaps(thesis: dict[str, Any]) -> list[Any]:
     if not thesis:
         return ["company thesis missing"]
@@ -2178,7 +2293,7 @@ def _knowledge_gaps(thesis: dict[str, Any]) -> list[Any]:
     for assumption in thesis.get("core_assumptions", []):
         if not isinstance(assumption, dict) or assumption.get("evidence"):
             continue
-        name = str(assumption.get("assumption", "") or "").strip()
+        name = _assumption_text(assumption)
         if name:
             gaps.append(f"missing evidence for assumption: {name}")
         else:

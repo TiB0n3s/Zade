@@ -126,6 +126,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `88bf8b9` 2026-07-18 - Update config.toml
 - `3416570` 2026-07-18 - Voice
 - `b8c3527` 2026-07-17 - API integration and logic
 - `a1f8bcb` 2026-07-17 - Channel auth design
@@ -137,7 +138,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `02b0b81` 2026-07-17 - MCP and Agent Surface
 - `e8762dd` 2026-07-17 - MCP Surface
 - `9505598` 2026-07-17 - co-founder kernel enhancement
-- `a10199c` 2026-07-17 - MCP and agent surface
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
