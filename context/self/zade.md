@@ -97,8 +97,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 | --- | --- | --- | --- |
 | AI Brain hot/cold roots | local | `config.paths` | Hot root C:\AI Brain; cold root D:\AI Brain-Cold. |
 | Browser automation | approved external action | `config.browser` | Enabled=True; engine=chromium; headless=False. |
-| Deepgram | cloud | `config.voice` | STT engine nova-2; key from DEEPGRAM_API_KEY. |
-| ElevenLabs | cloud | `config.voice` | TTS model eleven_turbo_v2_5; key from ELEVENLABS_API_KEY. |
 | Ollama | local | `config.ollama` | Models at http://127.0.0.1:11434; chat=qwen3:14b, reasoning=deepseek-r1:14b. |
 | Read-only connectors | external-read | `ConnectorService` | IMAP and ICS connector routes are mounted; sync dispatches through registered app handlers. |
 | SQLite memory | local | `config.paths.database_path` | Structured memory, audit, work queue, and registry state at C:\AI Brain\memory-hot\cofounder-kernel\cofounder.sqlite. |
@@ -111,9 +109,9 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 <!-- AUTO-START: voice-loop -->
 - Pipeline: browser audio -> STT -> governed `runtime.respond()` -> TTS -> browser playback.
 - Streaming posture: batch non-streaming; first model token and streaming TTS are not exposed yet.
-- STT: `deepgram` (configured, cloud, model `nova-2`).
-- TTS: `elevenlabs` (configured, cloud, model `eleven_turbo_v2_5`).
-- Ready: yes; cloud engines in use: yes; timeout: 120s.
+- STT: `command` (configured, local).
+- TTS: `command` (configured, local).
+- Ready: yes; cloud engines in use: no; timeout: 120s.
 <!-- AUTO-END: voice-loop -->
 
 ## Runtime Prompt Wiring
@@ -128,6 +126,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `b8c3527` 2026-07-17 - API integration and logic
 - `a1f8bcb` 2026-07-17 - Channel auth design
 - `fd1a81a` 2026-07-17 - Channel auth
 - `1b7618e` 2026-07-17 - Research traversal
@@ -139,7 +138,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `9505598` 2026-07-17 - co-founder kernel enhancement
 - `a10199c` 2026-07-17 - MCP and agent surface
 - `1dfe938` 2026-07-17 - Co-founder memory
-- `eb3eebd` 2026-07-17 - v2 - teaching & memory
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

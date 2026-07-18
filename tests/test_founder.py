@@ -503,3 +503,36 @@ def test_brief_feeds_substance_and_drops_unnamed_placeholder(tmp_path: Path) -> 
     # the malformed assumption is named honestly; no invented "unnamed" row
     assert "unnamed" not in brief
     assert "a core assumption is recorded without its text" in brief
+
+
+def test_brief_collapses_repeated_entries_into_counts(tmp_path: Path) -> None:
+    """Identical entries collapse to one line with a ×N count. The first live
+    cloud review read a three-times-repeated recommendation as 'not a decision
+    engine — a stuck loop'; one line plus the count states the same fact without
+    the repetition wall, and the count is itself the signal."""
+    from cofounder_kernel.founder import _bullet
+
+    # repeats collapse and carry an honest count, first-seen order preserved
+    assert _bullet(["verify the layer", "verify the layer", "verify the layer"]) == [
+        "- verify the layer  (×3)"
+    ]
+    assert _bullet(["a", "b", "a"]) == ["- a  (×2)", "- b"]
+    # a single occurrence carries no count suffix
+    assert _bullet(["only once"]) == ["- only once"]
+    # empty still renders the explicit absence marker, not a bare "none"
+    assert _bullet([]) == ["- (none recorded)"]
+    assert _bullet([None, "  "]) == ["- (none recorded)"]
+
+    # and it holds end-to-end: four identical malformed assumptions render once
+    founder = make_founder(tmp_path)
+    founder.upsert_thesis(
+        {
+            "vision": "v",
+            "mission": "m",
+            "core_assumptions": [{"confidence": 60}, {"confidence": 61}, {"confidence": 62}],
+            "status": "active",
+        }
+    )
+    brief = founder.brief()["brief"]
+    assert brief.count("a core assumption is recorded without its text") == 1
+    assert "(×3)" in brief

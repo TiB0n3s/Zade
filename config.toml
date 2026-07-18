@@ -42,21 +42,29 @@ timeout_seconds = 1800
 max_output_chars = 40000
 
 [voice]
-# Cloud speech engines. Selecting them is NOT sufficient on its own anymore: the
-# egress gate also requires the matching [egress] standing_grants entries below,
-# and provider_policy off local_only. API keys are read from the DEEPGRAM_API_KEY
-# and ELEVENLABS_API_KEY environment variables and never written into this file.
-stt_engine = "deepgram"
-tts_engine = "elevenlabs"
-tts_voice = "ZthjuvLPty3kTMaNKVKb"
+# Local speech engines: whisper.cpp (STT) + piper (TTS), run as argv command
+# templates WITHOUT a shell — nothing leaves the machine for voice. STT
+# placeholders: {audio} (input wav) and {transcript}/{transcript_base} (output);
+# the kernel reads {transcript_base}.txt. TTS: the text to speak arrives on stdin
+# and {output} is the wav to write. To use cloud voice instead, set stt_engine =
+# "deepgram" / tts_engine = "elevenlabs" AND re-add the matching [egress] standing
+# grants below (keys are read from DEEPGRAM_API_KEY / ELEVENLABS_API_KEY, never
+# written here).
+stt_engine = "command"
+tts_engine = "command"
+stt_command = ["C:/tools/whisper/Release/whisper-cli.exe", "-m", "C:/tools/whisper/ggml-base.en.bin", "-f", "{audio}", "-otxt", "-of", "{transcript_base}", "-nt"]
+tts_command = ["C:/tools/piper/piper/piper.exe", "--model", "C:/tools/piper/en_US-amy-medium.onnx", "--output_file", "{output}"]
+# tts_voice is ElevenLabs-only and unused by the local command engine:
+# tts_voice = "ZthjuvLPty3kTMaNKVKb"
 
 [egress]
-# Data-class egress gate standing grants (see EGRESS-DESIGN.md). Each entry
-# durably permits one (data_class, vendor) cloud egress. These two re-enable the
-# cloud voice lanes; remove them (or drop provider_policy back to local_only) to
-# turn cloud voice off. Raw founder_state can never be granted here — it is
-# FORBIDDEN in the matrix regardless.
-standing_grants = ["founder_audio:deepgram", "reply_text:elevenlabs", "public_derived:public_web"]
+# Data-class egress gate standing grants (see EGRESS-DESIGN.md). Each entry durably
+# permits one (data_class, vendor) cloud egress. Voice is now fully local (whisper.cpp
+# + piper), so the founder_audio:deepgram and reply_text:elevenlabs grants are removed —
+# the egress gate now REFUSES any cloud voice attempt (fail-closed). Re-add them (and set
+# the cloud engines above) to restore cloud voice. Raw founder_state can never be granted
+# here — it is FORBIDDEN in the matrix regardless.
+standing_grants = ["public_derived:public_web"]
 
 [anthropic]
 # Cloud strategic review via Anthropic — the on-switch for the first cloud egress

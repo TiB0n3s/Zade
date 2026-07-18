@@ -149,6 +149,9 @@ class VoiceConfig:
     speech APIs. Selecting one is an explicit standing grant: audio and reply
     text leave the machine. API keys are read from the referenced environment
     variables and are never stored in config files or the database.
+
+    ``ffmpeg_path`` is only consulted for the local "command" STT engine, which
+    needs 16 kHz mono PCM WAV; leave it empty to find ffmpeg on PATH.
     """
 
     stt_engine: str = "command"
@@ -161,6 +164,7 @@ class VoiceConfig:
     tts_model: str = "eleven_turbo_v2_5"
     tts_voice: str = "21m00Tcm4TlvDq8ikWAM"
     timeout_seconds: float = 120.0
+    ffmpeg_path: str = ""
 
     @property
     def stt_configured(self) -> bool:
@@ -499,6 +503,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         tts_model=str(voice_raw.get("tts_model", "eleven_turbo_v2_5")).strip(),
         tts_voice=str(voice_raw.get("tts_voice", "21m00Tcm4TlvDq8ikWAM")).strip(),
         timeout_seconds=float(voice_raw.get("timeout_seconds", 120.0)),
+        ffmpeg_path=str(voice_raw.get("ffmpeg_path", "")).strip(),
     )
     trading_bot_raw = raw.get("trading_bot", {})
     trading_bot = TradingBotConfig(

@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import time
+import wave
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +28,8 @@ SPOKEN_TEXT_MAX_CHARS = 4000
 
 STT_ENGINES = {"command", "deepgram"}
 TTS_ENGINES = {"command", "elevenlabs"}
+# whisper.cpp reads 16 kHz mono PCM WAV and nothing else.
+WHISPER_SAMPLE_RATE = 16000
 DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
 ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 # Voice traffic carries transcripts and spoken text; lock egress to exactly the
@@ -96,14 +99,17 @@ class VoiceService:
         audio_path = self._write_artifact(f"{stamp}-in{_ext_for_mime(audio_mime)}", audio_bytes)
         transcript_path = self.voice_dir / f"{stamp}-transcript.txt"
         started = time.perf_counter()
+        engine_audio_path = audio_path
+        converted = False
         if engine == "deepgram":
             text = self._transcribe_deepgram(audio_bytes, mime=audio_mime)
             transcript_path.write_text(text, encoding="utf-8")
         else:
+            engine_audio_path, converted = self._normalize_for_local_stt(audio_path)
             self._run_engine(
                 self.config.voice.stt_command,
                 replacements={
-                    "{audio}": str(audio_path),
+                    "{audio}": str(engine_audio_path),
                     "{transcript}": str(transcript_path),
                     "{transcript_base}": str(transcript_path.with_suffix("")),
                 },
@@ -112,6 +118,14 @@ class VoiceService:
             text = _read_transcript(transcript_path)
         latency_ms = int((time.perf_counter() - started) * 1000)
         if not text:
+            if engine == "command":
+                # whisper.cpp exits 0 on audio it cannot decode, so an empty
+                # transcript is usually a format/command problem, not silence.
+                raise ValueError(
+                    "Local STT produced no transcript. Check the [voice] stt_command and that "
+                    f"{engine_audio_path.name} is 16 kHz mono PCM WAV — whisper.cpp exits "
+                    "successfully but writes nothing for audio it cannot decode."
+                )
             raise ValueError("Transcription produced no text.")
         self.db.audit(
             actor="voice",
@@ -119,7 +133,10 @@ class VoiceService:
             target=str(audio_path),
             permission_tier="L0_READ",
             status="ok",
-            details={"engine": engine, "latency_ms": latency_ms, "chars": len(text), "audio_bytes": len(audio_bytes)},
+            details={
+                "engine": engine, "latency_ms": latency_ms, "chars": len(text),
+                "audio_bytes": len(audio_bytes), "converted_audio": converted,
+            },
         )
         return {
             "text": text,
@@ -127,6 +144,8 @@ class VoiceService:
             "audio_mime": audio_mime,
             "latency_ms": latency_ms,
             "audio_path": str(audio_path),
+            "engine_audio_path": str(engine_audio_path),
+            "converted_audio": converted,
             "transcript_path": str(transcript_path),
         }
 
@@ -354,6 +373,46 @@ class VoiceService:
         path.write_bytes(data)
         return path
 
+    def _normalize_for_local_stt(self, audio_path: Path) -> tuple[Path, bool]:
+        """Coerce captured audio into the 16 kHz mono PCM WAV whisper.cpp requires.
+
+        The browser records webm/opus (MediaRecorder's default), which whisper.cpp
+        cannot decode — and it does not say so: it exits 0 and writes no transcript,
+        which would surface as a misleading "produced no text". Cloud STT hid this
+        because Deepgram decodes server-side. Audio already in the right shape is
+        passed through untouched, so a well-formed client needs no ffmpeg at all.
+
+        Returns the path to hand the engine and whether a conversion happened."""
+        if _is_whisper_ready_wav(audio_path):
+            return audio_path, False
+        ffmpeg = _resolve_ffmpeg(self.config.voice.ffmpeg_path)
+        if not ffmpeg:
+            raise ValueError(
+                f"Local STT needs 16 kHz mono PCM WAV, but got {audio_path.suffix or 'unknown'} "
+                "audio and no ffmpeg was found to convert it. Install ffmpeg, set "
+                "[voice] ffmpeg_path, or have the client send WAV."
+            )
+        converted = audio_path.with_name(f"{audio_path.stem}-16k.wav")
+        argv = [
+            ffmpeg, "-y", "-loglevel", "error", "-i", str(audio_path),
+            "-ar", str(WHISPER_SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le", str(converted),
+        ]
+        try:
+            completed = subprocess.run(  # noqa: S603 - resolved ffmpeg path, no shell
+                argv, capture_output=True, timeout=self.config.voice.timeout_seconds,
+                shell=False, check=False,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError(f"ffmpeg not found for local STT conversion: {ffmpeg}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("ffmpeg timed out converting audio for local STT.") from exc
+        if completed.returncode != 0 or not converted.is_file():
+            stderr = completed.stderr.decode("utf-8", errors="replace")[:STDERR_EXCERPT_CHARS]
+            raise ValueError(
+                f"ffmpeg could not convert the audio for local STT (exit {completed.returncode}): {stderr}"
+            )
+        return converted, True
+
     def _run_engine(
         self,
         command: tuple[str, ...],
@@ -491,3 +550,29 @@ def _clean_mime(mime: str) -> str:
 
 def _ext_for_mime(mime: str) -> str:
     return _MIME_EXT.get(_clean_mime(mime), ".bin")
+
+
+def _is_whisper_ready_wav(path: Path) -> bool:
+    """True only for 16 kHz mono 16-bit PCM WAV — the one shape whisper.cpp reads.
+
+    Anything else (a browser's webm/opus, a 48 kHz stereo WAV) must be converted
+    first. This matters because whisper.cpp does NOT fail loudly on audio it can't
+    decode: it exits 0 and writes no transcript at all."""
+    try:
+        with wave.open(str(path), "rb") as handle:
+            return (
+                handle.getnchannels() == 1
+                and handle.getsampwidth() == 2
+                and handle.getframerate() == WHISPER_SAMPLE_RATE
+                and handle.getcomptype() == "NONE"
+            )
+    except (wave.Error, EOFError, OSError):
+        return False
+
+
+def _resolve_ffmpeg(configured: str = "") -> str | None:
+    """The configured ffmpeg, else one on PATH. None when unavailable."""
+    candidate = (configured or "").strip()
+    if candidate:
+        return candidate if Path(candidate).is_file() else None
+    return shutil.which("ffmpeg")

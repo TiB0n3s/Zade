@@ -1,9 +1,12 @@
 import base64
 import io
 import json
+import shutil
 import sys
+import wave
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import cofounder_kernel.voice as voice_module
@@ -19,7 +22,19 @@ from cofounder_kernel.config import (
 from cofounder_kernel.ollama import GenerateResult, OllamaClient
 
 
-FAKE_AUDIO = base64.b64encode(b"RIFF-fake-wav-bytes").decode("ascii")
+def _wav_bytes(*, sample_rate: int = 16000, channels: int = 1, frames: int = 1600) -> bytes:
+    """A real (silent) PCM WAV. The local STT path inspects the audio header now —
+    whisper.cpp only reads 16 kHz mono PCM WAV — so test audio must actually parse."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(b"\x00\x00" * frames * channels)
+    return buffer.getvalue()
+
+
+FAKE_AUDIO = base64.b64encode(_wav_bytes()).decode("ascii")
 
 # Real subprocess engines: tiny Python scripts standing in for whisper.cpp and piper.
 STT_SCRIPT = (
@@ -464,6 +479,114 @@ def test_engine_failure_and_tts_degradation_are_handled(tmp_path: Path, monkeypa
     assert converse.json()["response"]
     assert converse.json()["speech"] is None
     assert "exit 3" in converse.json()["speech_error"]
+
+
+# --------------------------------------------------------------------------
+# Local STT audio normalization: whisper.cpp only reads 16 kHz mono PCM WAV,
+# and browsers record webm/opus. whisper exits 0 and writes NOTHING for audio
+# it cannot decode, so this must be caught before the engine runs.
+# --------------------------------------------------------------------------
+def _service(tmp_path: Path, voice: VoiceConfig | None = None):
+    """VoiceService with a stub runtime — the audio-normalization path never
+    touches the runtime, so there is no need to build the whole stack."""
+    from cofounder_kernel.config import ensure_local_paths
+    from cofounder_kernel.db import KernelDatabase
+
+    config = _config(tmp_path, voice or _voice_config())
+    ensure_local_paths(config)
+    db = KernelDatabase(config.paths.database_path)
+    db.migrate()
+    return voice_module.VoiceService(config=config, db=db, runtime=None)  # type: ignore[arg-type]
+
+
+def test_whisper_ready_wav_detection(tmp_path: Path) -> None:
+    """Only 16 kHz mono 16-bit PCM passes; the browser's webm and a 48 kHz stereo
+    WAV both fail — which is exactly what whisper.cpp silently chokes on."""
+    good = tmp_path / "good.wav"
+    good.write_bytes(_wav_bytes())
+    stereo = tmp_path / "stereo48k.wav"
+    stereo.write_bytes(_wav_bytes(sample_rate=48000, channels=2))
+    webm = tmp_path / "mic.webm"
+    webm.write_bytes(b"\x1aE\xdf\xa3-not-really-webm")
+
+    assert voice_module._is_whisper_ready_wav(good) is True
+    assert voice_module._is_whisper_ready_wav(stereo) is False
+    assert voice_module._is_whisper_ready_wav(webm) is False
+
+
+def test_correct_wav_passes_through_without_ffmpeg(tmp_path: Path, monkeypatch) -> None:
+    """A well-formed 16 kHz mono WAV needs no conversion — and therefore no ffmpeg
+    dependency at all. Proven by making ffmpeg unavailable and expecting no error."""
+    monkeypatch.setattr(voice_module, "_resolve_ffmpeg", lambda configured="": None)
+    service = _service(tmp_path)
+    audio = tmp_path / "good.wav"
+    audio.write_bytes(_wav_bytes())
+
+    path, converted = service._normalize_for_local_stt(audio)
+
+    assert path == audio
+    assert converted is False
+
+
+def test_non_wav_audio_without_ffmpeg_raises_a_clear_error(tmp_path: Path, monkeypatch) -> None:
+    """The webm/opus case with no ffmpeg: fail loudly naming the real cause rather
+    than letting whisper silently produce nothing."""
+    monkeypatch.setattr(voice_module, "_resolve_ffmpeg", lambda configured="": None)
+    service = _service(tmp_path)
+    audio = tmp_path / "mic.webm"
+    audio.write_bytes(b"\x1aE\xdf\xa3-not-really-webm")
+
+    with pytest.raises(ValueError) as excinfo:
+        service._normalize_for_local_stt(audio)
+
+    message = str(excinfo.value)
+    assert "16 kHz mono PCM WAV" in message
+    assert "ffmpeg" in message
+
+
+def test_wrong_shape_wav_is_also_converted(tmp_path: Path, monkeypatch) -> None:
+    """48 kHz stereo WAV is still unreadable by whisper — header shape matters,
+    not just the container."""
+    monkeypatch.setattr(voice_module, "_resolve_ffmpeg", lambda configured="": None)
+    service = _service(tmp_path)
+    audio = tmp_path / "stereo48k.wav"
+    audio.write_bytes(_wav_bytes(sample_rate=48000, channels=2))
+
+    with pytest.raises(ValueError, match="16 kHz mono PCM WAV"):
+        service._normalize_for_local_stt(audio)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_converts_wrong_shape_wav(tmp_path: Path) -> None:
+    """End-to-end with the real binary: the ffmpeg argv actually works and yields
+    audio whisper would accept."""
+    service = _service(tmp_path)
+    audio = tmp_path / "stereo48k.wav"
+    audio.write_bytes(_wav_bytes(sample_rate=48000, channels=2))
+
+    path, converted = service._normalize_for_local_stt(audio)
+
+    assert converted is True
+    assert path != audio
+    assert voice_module._is_whisper_ready_wav(path)
+
+
+def test_empty_local_transcript_blames_the_format_not_silence(tmp_path: Path, monkeypatch) -> None:
+    """whisper exiting 0 with no transcript must not surface as a bare
+    'produced no text' — that sent us looking for the wrong bug."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    silent_stt = VoiceConfig(
+        stt_command=(sys.executable, "-c", "pass", "{audio}", "{transcript}"),
+        tts_command=(sys.executable, "-c", TTS_SCRIPT, "{output}"),
+    )
+    client = TestClient(create_app(_config(tmp_path, silent_stt)))
+
+    failed = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
+
+    assert failed.status_code == 400
+    detail = failed.json()["detail"]
+    assert "16 kHz mono PCM WAV" in detail
+    assert "stt_command" in detail
 
 
 def test_cloud_voice_refused_by_default_egress_policy(tmp_path: Path, monkeypatch) -> None:

@@ -2205,11 +2205,33 @@ _HEALTH_GLOSS = {
 _QUALIFIER_CAP = 100  # keep a single qualifier from bloating the brief
 
 
+def _collapse_repeats(items: list[str]) -> list[str]:
+    """Collapse identical entries into one line carrying an honest ×N count.
+
+    A wall of repeated identical lines reads to an outside reviewer as a stuck
+    loop or filler rather than as data — the first live review called a
+    three-times-repeated recommendation "not a decision engine, a stuck loop."
+    One line plus a count says the same thing truthfully and compactly, and the
+    count is itself the signal worth seeing (four assumptions missing their text
+    is a clearer statement than the same sentence four times). First-seen order
+    is preserved; nothing is dropped."""
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for item in items:
+        if item not in counts:
+            order.append(item)
+            counts[item] = 0
+        counts[item] += 1
+    return [item if counts[item] == 1 else f"{item}  (×{counts[item]})" for item in order]
+
+
 def _bullet(values: Any) -> list[str]:
-    """Bullet list of plain strings. None/blank values are dropped, and an empty
-    section renders the explicit empty marker rather than a bare "none" that a
-    reviewer could mistake for a deliberate answer."""
+    """Bullet list of plain strings. None/blank values are dropped, identical
+    entries collapse to one line with a ×N count, and an empty section renders
+    the explicit empty marker rather than a bare "none" that a reviewer could
+    mistake for a deliberate answer."""
     items = [str(v).strip() for v in values if v is not None and str(v).strip()]
+    items = _collapse_repeats(items)
     return [f"- {item}" for item in items] if items else [f"- {_EMPTY_MARKER}"]
 
 
