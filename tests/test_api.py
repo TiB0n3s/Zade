@@ -9,7 +9,7 @@ from cofounder_kernel import netguard
 from cofounder_kernel.agent_surface import AgentSurface
 from cofounder_kernel.api import _build_prompt, create_app
 from cofounder_kernel.tools import ToolRegistry
-from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, PromptProfileConfig, SecurityConfig
+from cofounder_kernel.config import AnthropicConfig, AppConfig, KernelConfig, OllamaConfig, PathConfig, PromptProfileConfig, SecurityConfig
 from cofounder_kernel.ollama import GenerateResult, OllamaClient, OllamaThinkingUnsupported
 from cofounder_kernel.trading_bot import TradingBotBridge
 
@@ -6527,3 +6527,59 @@ def test_review_verify_failed_reads_as_finding_not_broken_run() -> None:
     note = _build_route_note(route)
     assert "finding" in note
     assert "NOT done" not in note
+
+
+def test_ops_providers_readout_reflects_cloud_off(tmp_path: Path, monkeypatch) -> None:
+    """/ops/providers exposes local + cloud readiness. With cloud off (default),
+    it names the unmet gates and never returns a secret."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy="local_only"),
+        anthropic=AnthropicConfig(enabled=False),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.get("/ops/providers")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["local_only"] is True
+    assert body["provider_policy"] == "local_only"
+    assert body["cloud_ready"] is False
+    assert body["local"]["provider"] == "ollama"
+
+    anthropic = body["cloud"]["anthropic"]
+    assert anthropic["enabled"] is False
+    assert anthropic["key_present"] is False
+    assert anthropic["ready"] is False
+    assert any("enabled = false" in b for b in anthropic["blockers"])
+    assert any("ANTHROPIC_API_KEY" in b for b in anthropic["blockers"])
+    # matrix cell is read directly, so it shows per_request even under local_only
+    assert anthropic["egress_cell"] == "per_request"
+    # no secret leaks into the payload
+    assert "sk-" not in response.text
+
+
+def test_ops_providers_readout_reports_cloud_ready(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy="local_preferred"),
+        anthropic=AnthropicConfig(enabled=True),
+    )
+    client = TestClient(create_app(config))
+
+    body = client.get("/ops/providers").json()
+    assert body["cloud_ready"] is True
+    anthropic = body["cloud"]["anthropic"]
+    assert anthropic["ready"] is True
+    assert anthropic["key_present"] is True
+    assert anthropic["policy_allows_cloud"] is True
+    assert anthropic["blockers"] == []
+    # the key value itself is never echoed, only its presence
+    assert "sk-ant-test" not in client.get("/ops/providers").text

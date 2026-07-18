@@ -579,6 +579,22 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     def ops_security() -> dict[str, Any]:
         return _security_summary(cfg, local_token)
 
+    @app.get("/ops/providers")
+    def ops_providers() -> dict[str, Any]:
+        """At-a-glance provider readiness across the local model provider and the
+        cloud strategic-review path. Cloud is OFF unless the founder has enabled
+        [anthropic] AND set an API key AND raised provider_policy above local_only.
+        Booleans only — no secret is exposed (key presence is a bool)."""
+        local = ollama.provider_info()
+        anthropic = strategy_review.readiness()
+        return {
+            "provider_policy": local.get("provider_policy"),
+            "local_only": local.get("provider_policy") == "local_only",
+            "local": local,
+            "cloud": {"anthropic": anthropic},
+            "cloud_ready": bool(anthropic.get("ready")),
+        }
+
     @app.get("/session/token")
     def session_token() -> dict[str, Any]:
         """Hand the loopback UI its mutation token so it can bootstrap without a
@@ -3311,6 +3327,7 @@ def _inventory_payload(
         "routes": [
             "GET /ops/health-check",
             "GET /ops/security",
+            "GET /ops/providers",
             "GET /ops/supervision",
             "POST /ops/backup",
             "GET /ops/backups",
@@ -3326,6 +3343,7 @@ def _inventory_payload(
         "operating_rules": [
             "Ops endpoints inspect local posture or create local backups only.",
             "Health checks distinguish kernel/UI/Ollama readiness from cadence freshness.",
+            "Provider readiness exposes cloud enablement and key presence as booleans; no secret is ever returned.",
             "Restores remain an operator script action, not an autonomous API action.",
             "The supervisor script owns the supervision log and restarts the kernel; the kernel only reads that history.",
         ],

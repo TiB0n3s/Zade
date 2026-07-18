@@ -201,3 +201,71 @@ def test_deny_sends_nothing(tmp_path: Path) -> None:
     assert service.deny(rid)["status"] == "denied"
     assert fake.sent == []
     assert _pending(db) == []
+
+
+# --------------------------------------------------------------------------
+# readiness() — the /ops/providers cloud-readiness readout
+# --------------------------------------------------------------------------
+def _real_service(tmp_path: Path, *, provider_policy: str = "local_preferred", enabled: bool = True):
+    """A service backed by a REAL AnthropicClient so readiness() reads live
+    config/env (the FakeAnthropic stand-in has no provider_info)."""
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy=provider_policy),
+        anthropic=AnthropicConfig(enabled=enabled),
+    )
+    ensure_local_paths(config)
+    db = KernelDatabase(config.paths.database_path)
+    db.migrate()
+    founder = FounderService(config=config, db=db)
+    ingestion = IngestionService(config=config, db=db, embedder=FakeEmbedder())
+    service = StrategyReviewService(config=config, db=db, founder=founder, ingestion=ingestion)
+    return service, db, config
+
+
+def test_readiness_lists_blockers_when_cloud_is_off(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    service, _, _ = _real_service(tmp_path, provider_policy="local_preferred", enabled=False)
+
+    r = service.readiness()
+
+    assert r["ready"] is False
+    assert r["enabled"] is False
+    assert r["key_present"] is False
+    # the unmet gates are named, without leaking any secret
+    assert any("enabled = false" in b for b in r["blockers"])
+    assert any("ANTHROPIC_API_KEY" in b for b in r["blockers"])
+    # a send always needs a per-request grant on top of the standing gates
+    assert r["requires_per_request_grant"] is True
+
+
+def test_readiness_true_when_all_standing_gates_pass(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    service, _, _ = _real_service(tmp_path, provider_policy="local_preferred", enabled=True)
+
+    r = service.readiness()
+
+    assert r["ready"] is True
+    assert r["blockers"] == []
+    assert r["enabled"] is True
+    assert r["key_present"] is True
+    assert r["policy_allows_cloud"] is True
+    assert r["egress_cell"] == "per_request"
+
+
+def test_readiness_reads_matrix_cell_directly_under_local_only(tmp_path: Path, monkeypatch) -> None:
+    """Under local_only the gate short-circuits before consulting the matrix; the
+    readout must still show the cell's true disposition (per_request), flagging
+    only the policy as the blocker — not a phantom 'forbidden' cell."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    service, _, _ = _real_service(tmp_path, provider_policy="local_only", enabled=True)
+
+    r = service.readiness()
+
+    assert r["ready"] is False
+    assert r["policy_allows_cloud"] is False
+    assert any("local_only" in b for b in r["blockers"])
+    # the cell itself is not forbidden — direct inspection proves it
+    assert r["egress_cell"] == "per_request"
+    assert r["egress_cell_ok"] is True

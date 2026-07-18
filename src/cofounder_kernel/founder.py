@@ -1530,36 +1530,75 @@ class FounderService:
     def brief(self) -> dict[str, Any]:
         dashboard = self.dashboard()
         thesis = self.get_thesis()
+        thesis_present = bool(thesis)
+        coverage = _brief_coverage(dashboard, thesis_present)
+        confidence = dashboard["overall_confidence"]
+        active = dashboard["active_objective"]
+        health = dashboard["company_health"]
+        # Pre-shape decisions so the reviewer sees the decision AND how weighed it
+        # is (how many options were considered) without dumping option internals.
+        decisions_view = [
+            {
+                "problem": d.get("problem"),
+                "status": d.get("status"),
+                "options weighed": len(d.get("options") or []) or None,
+            }
+            for d in dashboard["decisions_waiting"]
+        ]
         lines = [
             f"{self.config.identity.name} founder brief",
-            f"Company health: {dashboard['company_health']}",
-            f"Overall confidence: {dashboard['overall_confidence'] if dashboard['overall_confidence'] is not None else 'unknown'}",
-            f"Active objective: {dashboard['active_objective'].get('objective', 'none') if dashboard['active_objective'] else 'none'}",
+            "Auto-assembled from the founder operating layer for outside strategic review.",
+            "",
+            # Tell the reader how to read ABSENCE. Empty sections mean "no data
+            # entered yet", not "assessed and found clear" — without this framing an
+            # advisor over-reads a sparse brief, treating blank risk/decision
+            # sections as a confident all-clear. The coverage line quantifies how
+            # populated the brief actually is so it can be weighted accordingly.
+            f'READING NOTES: sections marked "{_EMPTY_MARKER}" have no data recorded '
+            "yet — treat them as open unknowns to probe, not as an all-clear. "
+            f"Coverage: {coverage}.",
+            "",
+            f"Company health: {health} — {_HEALTH_GLOSS.get(health, 'status unclassified')}",
+            f"Overall confidence: {confidence if confidence is not None else 'no confidence-scored items yet'}",
+            f"Active objective: {active['objective'] if active else 'none set yet'}",
+            f"Company thesis: {'present' if thesis_present else 'missing — not yet defined'}",
             f"One thing that matters most today: {dashboard['one_thing_that_matters_most_today']}",
             "",
-            "Decision engine:",
-            *_bullet(item["recommendation"] for item in dashboard["decision_engine"]["latest_recommendations"]),
+            "Decision engine — latest recommendations:",
+            *_bullet(item.get("recommendation") for item in dashboard["decision_engine"]["latest_recommendations"]),
             "",
-            "Approval pressure:",
-            f"- {dashboard['approval_pressure']['headline']}",
-            *_bullet(item["title"] for item in dashboard["approval_pressure"]["items"]),
+            f"Approval pressure: {dashboard['approval_pressure']['headline']}",
+            *_bullet(item.get("title") for item in dashboard["approval_pressure"]["items"]),
             "",
             "Top objectives:",
-            *_bullet(item["objective"] for item in dashboard["top_objectives"]),
+            *_detail_bullets(
+                dashboard["top_objectives"],
+                primary="objective",
+                extras=(("risk", "current_risk"), ("priority", "priority"), ("blockers", "blockers")),
+            ),
             "",
             "Decisions waiting:",
-            *_bullet(item["problem"] for item in dashboard["decisions_waiting"]),
+            *_detail_bullets(
+                decisions_view,
+                primary="problem",
+                extras=(("status", "status"), ("options weighed", "options weighed")),
+            ),
             "",
             "Risks increasing:",
-            *_bullet(item["objective"] for item in dashboard["critical_risks"]),
+            *_detail_bullets(
+                dashboard["critical_risks"],
+                primary="objective",
+                extras=(("risk", "current_risk"),),
+            ),
             "",
             "Knowledge gaps:",
-            *_bullet(str(item) for item in dashboard["knowledge_gaps"]),
+            *_bullet(dashboard["knowledge_gaps"]),
         ]
         return {
             "brief": "\n".join(lines).strip(),
             "dashboard": dashboard,
             "thesis_status": thesis.get("status", "missing") if thesis else "missing",
+            "coverage": coverage,
         }
 
     def get_record(self, table: str, item_id: int, json_fields: dict[str, str]) -> dict[str, Any]:
@@ -2136,16 +2175,91 @@ def _knowledge_gaps(thesis: dict[str, Any]) -> list[Any]:
     if not thesis:
         return ["company thesis missing"]
     gaps = list(thesis.get("unknown_unknowns", []))
-    assumptions = thesis.get("core_assumptions", [])
-    for assumption in assumptions:
-        if isinstance(assumption, dict) and not assumption.get("evidence"):
-            gaps.append(f"missing evidence for assumption: {assumption.get('assumption', 'unnamed')}")
+    for assumption in thesis.get("core_assumptions", []):
+        if not isinstance(assumption, dict) or assumption.get("evidence"):
+            continue
+        name = str(assumption.get("assumption", "") or "").strip()
+        if name:
+            gaps.append(f"missing evidence for assumption: {name}")
+        else:
+            # A core assumption with no text is a data-integrity gap, not a real
+            # assumption — flag it honestly instead of inventing an "unnamed" name
+            # that reads to a reviewer as though a real assumption exists.
+            gaps.append("a core assumption is recorded without its text (fix the thesis entry)")
     return gaps[:10]
 
 
+# How an empty section renders. The parenthetical signals *absent data*, not a
+# deliberate "none" answer, so a reviewer does not over-read a blank section.
+_EMPTY_MARKER = "(none recorded)"
+
+# Plain-language gloss for the one-word health token, so an outside reader isn't
+# left to guess what "unformed"/"forming" mean.
+_HEALTH_GLOSS = {
+    "unformed": "no objectives recorded yet",
+    "forming": "objectives set; confidence still assembling",
+    "focused": "clear objectives and healthy confidence",
+    "at_risk": "one or more high/critical risks active",
+}
+
+_QUALIFIER_CAP = 100  # keep a single qualifier from bloating the brief
+
+
 def _bullet(values: Any) -> list[str]:
-    items = [str(value) for value in values if str(value).strip()]
-    return [f"- {item}" for item in items] if items else ["- none"]
+    """Bullet list of plain strings. None/blank values are dropped, and an empty
+    section renders the explicit empty marker rather than a bare "none" that a
+    reviewer could mistake for a deliberate answer."""
+    items = [str(v).strip() for v in values if v is not None and str(v).strip()]
+    return [f"- {item}" for item in items] if items else [f"- {_EMPTY_MARKER}"]
+
+
+def _detail_bullets(
+    items: list[dict[str, Any]],
+    *,
+    primary: str,
+    extras: tuple[tuple[str, str], ...] = (),
+) -> list[str]:
+    """One bullet per item: its primary field plus any present extras as bracketed
+    qualifiers. Feeds real substance (risk level, priority, blockers, decision
+    status) instead of a bare title, skips items whose primary field is empty
+    rather than emitting a placeholder, and renders the explicit empty marker for
+    an empty section."""
+    lines: list[str] = []
+    for item in items:
+        head = str(item.get(primary, "") or "").strip()
+        if not head:
+            continue
+        quals: list[str] = []
+        for label, key in extras:
+            val = item.get(key)
+            if isinstance(val, (list, tuple, set)):
+                val = ", ".join(str(v).strip() for v in val if str(v).strip())
+            if val is None or (isinstance(val, str) and not val.strip()):
+                continue
+            text = str(val).strip()
+            if len(text) > _QUALIFIER_CAP:
+                text = text[: _QUALIFIER_CAP - 1] + "…"
+            quals.append(f"{label}: {text}")
+        lines.append(f"- {head}" + (f"  [{'; '.join(quals)}]" if quals else ""))
+    return lines or [f"- {_EMPTY_MARKER}"]
+
+
+def _brief_coverage(dashboard: dict[str, Any], thesis_present: bool) -> str:
+    """A one-line, quantified read on how populated the brief is, so a reviewer can
+    weight it — a brief with almost no data should not be read as confident."""
+    scored = int(dashboard.get("prediction_accuracy", {}).get("scored_count", 0) or 0)
+    parts = [
+        _count_phrase(len(dashboard["top_objectives"]), "objective"),
+        _count_phrase(len(dashboard["decisions_waiting"]), "open decision"),
+        _count_phrase(len(dashboard["critical_risks"]), "rising risk"),
+        f"thesis {'present' if thesis_present else 'missing'}",
+        _count_phrase(scored, "scored prediction"),
+    ]
+    return ", ".join(parts)
+
+
+def _count_phrase(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
 def _default_decision_options(problem: str, objective: dict[str, Any]) -> list[dict[str, Any]]:

@@ -448,3 +448,58 @@ def test_cadence_review_prioritizes_pending_approval_pressure(tmp_path: Path) ->
     assert review["metadata"]["approval_console_url"] == "/ui/approvals.html"
     assert "Approval pressure:" in brief["brief"]
     assert "Approve local customer research sync" in brief["brief"]
+
+
+def test_brief_labels_empty_state_instead_of_bare_none(tmp_path: Path) -> None:
+    """A sparse brief must read as 'no data yet', not a confident all-clear. The
+    first live cloud review over-read bare '- none' rows as signal; the brief now
+    frames absence explicitly and quantifies its own coverage."""
+    founder = make_founder(tmp_path)
+
+    brief = founder.brief()["brief"]
+
+    # the framing that tells an outside advisor how to read empty sections
+    assert "READING NOTES" in brief
+    # the old ambiguous marker is gone; empty sections are explicitly labeled
+    assert "- none" not in brief
+    assert "(none recorded)" in brief
+    # coverage is quantified so a near-empty brief is weighted, not trusted
+    assert "Coverage:" in brief
+    assert "0 objectives" in brief
+    # the one-word health token carries a plain-language gloss
+    assert "no objectives recorded yet" in brief
+
+
+def test_brief_feeds_substance_and_drops_unnamed_placeholder(tmp_path: Path) -> None:
+    """Populated sections carry real substance (risk level), and a malformed
+    core assumption is flagged honestly rather than leaking an 'unnamed' row."""
+    founder = make_founder(tmp_path)
+    founder.upsert_thesis(
+        {
+            "vision": "v",
+            "mission": "m",
+            # a core assumption with no text and no evidence — a data-integrity
+            # gap that previously rendered as "assumption: unnamed"
+            "core_assumptions": [{"confidence": 60}],
+            "status": "active",
+        }
+    )
+    founder.create_initiative(
+        {
+            "objective": "Ship the pilot",
+            "why_it_matters": "Proves willingness to pay.",
+            "priority": 90,
+            "current_risk": "high",
+        }
+    )
+
+    brief = founder.brief()["brief"]
+
+    # the objective bullet carries its risk level as substance, not a bare title
+    assert "Ship the pilot" in brief
+    assert "risk: high" in brief
+    # a high-risk objective surfaces under Risks increasing
+    assert "Risks increasing:" in brief
+    # the malformed assumption is named honestly; no invented "unnamed" row
+    assert "unnamed" not in brief
+    assert "a core assumption is recorded without its text" in brief

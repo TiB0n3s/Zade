@@ -23,7 +23,7 @@ from typing import Any
 from .anthropic_client import AnthropicClient, AnthropicNotConfigured
 from .config import KernelConfig
 from .db import KernelDatabase
-from .egress import DataClass, EgressAuthorization, EgressPolicy, EgressRequest, Verdict
+from .egress import DataClass, Disposition, EgressAuthorization, EgressPolicy, EgressRequest, Verdict
 
 SOURCE_TYPE = "strategy_review"
 VENDOR = "anthropic"
@@ -63,6 +63,63 @@ class StrategyReviewService:
             vendor=VENDOR,
             purpose="strategic review",
         )
+
+    # -- readiness readout (no send, no filing) -------------------------------
+    def readiness(self) -> dict[str, Any]:
+        """At-a-glance readiness of the ``founder_brief → anthropic`` cloud path:
+        which of the standing preconditions hold and whether a review COULD reach
+        the approval step. Booleans only — no secret is exposed. Pure inspection;
+        nothing is sent and no grant is filed.
+
+        The four preconditions mirror the send-time gates: ``[anthropic] enabled``,
+        an API key in the env, ``provider_policy`` above ``local_only``, and the
+        egress matrix cell not FORBIDDEN. ``ready`` here means those standing gates
+        pass — a send STILL needs a per-request founder typed-phrase grant at
+        approval time (``requires_per_request_grant``)."""
+        info = self.anthropic.provider_info()
+        enabled = bool(info.get("enabled"))
+        key_present = bool(info.get("key_present"))
+        policy = str(info.get("provider_policy") or "local_only")
+        policy_allows_cloud = policy != "local_only"
+        # Read the matrix cell DIRECTLY rather than via decide(): under local_only
+        # decide() short-circuits at the policy overlay before consulting the cell,
+        # which would hide the cell's true disposition. Inspection stays honest
+        # regardless of the current provider_policy.
+        egress_policy = self._policy()
+        vendor = egress_policy.vendors.get(VENDOR)
+        disposition = (
+            egress_policy.matrix.get(DataClass.FOUNDER_BRIEF, {}).get(vendor.tier)
+            if vendor
+            else None
+        )
+        egress_cell = disposition.value if disposition else Disposition.FORBIDDEN.value
+        egress_cell_ok = disposition in (Disposition.PER_REQUEST, Disposition.STANDING)
+
+        blockers: list[str] = []
+        if not enabled:
+            blockers.append("[anthropic] enabled = false")
+        if not key_present:
+            blockers.append(f"{self.config.anthropic.api_key_env} is not set in the environment")
+        if not policy_allows_cloud:
+            blockers.append("provider_policy = local_only (raise it deliberately to enable cloud egress)")
+        if not egress_cell_ok:
+            blockers.append(f"egress matrix cell founder_brief → anthropic is {egress_cell}")
+
+        return {
+            "provider": VENDOR,
+            "tier": vendor.tier.value if vendor else None,
+            "model": info.get("model"),
+            "endpoint_host": info.get("endpoint_host"),
+            "enabled": enabled,
+            "key_present": key_present,
+            "provider_policy": policy,
+            "policy_allows_cloud": policy_allows_cloud,
+            "egress_cell": egress_cell,
+            "egress_cell_ok": egress_cell_ok,
+            "ready": enabled and key_present and policy_allows_cloud and egress_cell_ok,
+            "requires_per_request_grant": True,
+            "blockers": blockers,
+        }
 
     # -- founder-facing: propose a review -------------------------------------
     def request_review(self, *, focus: str = "", question: str = "") -> dict[str, Any]:
