@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `ce9ffc0` 2026-07-19 - feat: bootstrap mobile intake projects offline
 - `01fa89d` 2026-07-19 - fix: require real scaffold verification
 - `5f4151d` 2026-07-19 - fix: allow project scans to finish long builds
 - `458e8ab` 2026-07-19 - fix: make project intake reconciliation idempotent
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `8c9dd87` 2026-07-19 - feat: discover and route project intake
 - `e476379` 2026-07-19 - feat: add project intake persistence
 - `58bdd1b` 2026-07-19 - feat: add safe initial project migration
-- `a245fe6` 2026-07-19 - feat: watch the project intake vault
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

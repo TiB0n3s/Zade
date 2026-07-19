@@ -89,7 +89,10 @@ class ProjectIntakeService:
             self.db.append_project_event(project_id, event_type="repository_initialized")
         if self.delegation is None:
             return self._set_state(project, manifest, "blocked", {"reason": "delegation unavailable"})
-        context = f"{self._documentation_context(root)}\n\n{self._mobile_tooling_context()}".strip()
+        context = (
+            f"{self._documentation_context(root)}\n\n"
+            f"{self._mobile_tooling_context(manifest.name)}"
+        ).strip()
         result = self.delegation.queue_delegation(
             task=(
                 f"Create and build the initial {manifest.product_type.replace('_', ' ')} "
@@ -401,7 +404,7 @@ class ProjectIntakeService:
         return "\n\n".join(sections)[:30000]
 
     @staticmethod
-    def _mobile_tooling_context() -> str:
+    def _mobile_tooling_context(project_name: str) -> str:
         tool_names = ("node", "npm", "npx", "java", "gradle", "adb", "flutter", "dart")
         lines = [
             "## Verified local mobile tooling",
@@ -412,9 +415,11 @@ class ProjectIntakeService:
             state = f"available ({resolved})" if resolved else "unavailable"
             lines.append(f"- {name}: {state}")
         if _mobile_tool_path("flutter"):
+            flutter_name = _flutter_project_name(project_name)
             lines.extend(
                 [
-                    "- Approved offline Flutter bootstrap: flutter create --no-pub .",
+                    "- Approved offline Flutter bootstrap: "
+                    f"flutter create --no-pub --project-name {flutter_name} .",
                     "- Approved offline Flutter dependency resolution: flutter pub get --offline",
                 ]
             )
@@ -497,6 +502,13 @@ def _mobile_tool_path(name: str) -> str | None:
         "dart": Path(r"C:\tools\flutter\bin\dart.bat"),
     }.get(name)
     return str(known) if known is not None and known.is_file() else None
+
+
+def _flutter_project_name(name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower()).strip("_")
+    if not normalized or not normalized[0].isalpha():
+        normalized = f"app_{normalized}" if normalized else "mobile_app"
+    return normalized[:64]
 
 
 def _verification_block_reason(dispatch: dict[str, Any]) -> str:

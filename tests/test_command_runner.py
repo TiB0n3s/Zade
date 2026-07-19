@@ -380,9 +380,16 @@ def test_coding_agent_flutter_policy_allows_only_offline_root_bootstrap_and_veri
     assert allowed.backend == "host"
 
     _profile, create = normalize_coding_agent_command(
-        ("flutter", "create", "--no-pub", ".")
+        ("flutter", "create", "--no-pub", "--project-name", "same_ground", ".")
     )
-    assert create == (str(flutter), "create", "--no-pub", ".")
+    assert create == (
+        str(flutter),
+        "create",
+        "--no-pub",
+        "--project-name",
+        "same_ground",
+        ".",
+    )
     _profile, pub_get = normalize_coding_agent_command(
         ("flutter", "pub", "get", "--offline")
     )
@@ -392,5 +399,9 @@ def test_coding_agent_flutter_policy_allows_only_offline_root_bootstrap_and_veri
         normalize_coding_agent_command(("flutter", "pub", "get"))
     with pytest.raises(CommandPolicyError, match="shape"):
         normalize_coding_agent_command(("flutter", "create", "nested-project"))
+    with pytest.raises(CommandPolicyError, match="shape"):
+        normalize_coding_agent_command(
+            ("flutter", "create", "--no-pub", "--project-name", "../escape", ".")
+        )
     with pytest.raises(CommandPolicyError, match="shape"):
         normalize_coding_agent_command(("flutter", "build", "apk"))

@@ -163,7 +163,6 @@ _CODING_COMMAND_PREFIXES: dict[str, tuple[tuple[str, ...], ...]] = {
     ),
     "node": (("--version",), ("--test",), ("--check",)),
     "flutter": (
-        ("create", "--no-pub", "."),
         ("pub", "get", "--offline"),
         ("analyze", "--no-pub"),
         ("test", "--no-pub"),
@@ -212,13 +211,22 @@ def normalize_coding_agent_command(argv: tuple[str, ...]) -> tuple[str, tuple[st
         )
     normalized_tail = tuple(normalized[1:])
     allowed_prefixes = _CODING_COMMAND_PREFIXES[profile]
+    flutter_create = (
+        profile == "flutter"
+        and len(normalized_tail) == 5
+        and normalized_tail[:3] == ("create", "--no-pub", "--project-name")
+        and normalized_tail[-1] == "."
+    )
+    valid_flutter_create = flutter_create and bool(
+        re.fullmatch(r"[a-z][a-z0-9_]{0,63}", normalized_tail[3])
+    )
     exact_flutter_bootstrap = (
         profile == "flutter"
         and normalized_tail
         and normalized_tail[0] in {"create", "pub"}
     )
     allowed_shape = (
-        normalized_tail in allowed_prefixes
+        (valid_flutter_create or normalized_tail in allowed_prefixes)
         if exact_flutter_bootstrap
         else any(
             normalized_tail[: len(prefix)] == prefix

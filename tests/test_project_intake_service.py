@@ -186,7 +186,7 @@ def test_scaffold_context_reports_available_mobile_tooling(tmp_path: Path, monke
     assert "node: available" in context
     assert "npm: available" in context
     assert "flutter: available" in context
-    assert "flutter create --no-pub ." in context
+    assert "flutter create --no-pub --project-name same_ground ." in context
     assert "Do not choose a framework whose required local toolchain is unavailable" in context
 
 
