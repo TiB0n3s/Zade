@@ -221,6 +221,46 @@ def test_build_profile_is_system_message_and_task_is_user_role(tmp_path: Path, f
             "run_command", "git_status", "git_diff"} <= tool_names
 
 
+def test_write_allowlist_blocks_other_files_and_mutating_commands(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    svc, ollama = _service(
+        tmp_path,
+        fixture_repo,
+        [
+            {"tool_calls": [_call("write_file", path="calc.py", content="tampered\n")]},
+            {
+                "tool_calls": [
+                    _call(
+                        "write_file",
+                        path=".zade/build/requirements.md",
+                        content="# Requirements\n",
+                    )
+                ]
+            },
+            {"content": "Requirements recorded."},
+        ],
+    )
+
+    result = svc.run(
+        task="Write requirements only.",
+        workspace=fixture_repo,
+        write_allowlist=(".zade/build/requirements.md",),
+    )
+
+    assert "return a - b" in (fixture_repo / "calc.py").read_text(encoding="utf-8")
+    assert (fixture_repo / ".zade" / "build" / "requirements.md").is_file()
+    assert result["steps"][0]["ok"] is False
+    tool_messages = [
+        message
+        for message in ollama.calls[1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert "not allowed by this build phase" in tool_messages[-1]["content"]
+    tool_names = {item["function"]["name"] for item in ollama.calls[0]["tools"]}
+    assert "run_command" not in tool_names
+
+
 # 20-22. a full read -> edit -> test cycle through real local tools ------------------
 
 def test_agent_reads_edits_and_tests_fixture_repo(tmp_path: Path, fixture_repo: Path) -> None:

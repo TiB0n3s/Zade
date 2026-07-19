@@ -76,20 +76,38 @@ def _local_assessment(
 
 def _local_build(self: CodingAgentService, **kwargs: Any) -> dict[str, Any]:
     del self
+    context = str(kwargs.get("context") or "")
+    workspace = Path(str(kwargs.get("workspace") or ""))
+    phase_artifacts = {
+        "Build phase: requirements": ".zade/build/requirements.md",
+        "Build phase: architecture": ".zade/build/architecture.md",
+        "Build phase: planning": ".zade/build/plan.md",
+    }
+    artifact = next(
+        (path for marker, path in phase_artifacts.items() if marker in context), ""
+    )
+    if artifact:
+        target = workspace / artifact
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# Test build artifact\n", encoding="utf-8")
     return {
         "ok": True,
         "status": "ok",
         "error": "",
         "model": kwargs.get("model") or "local-coder",
         "provider": {"provider": "ollama", "fallback_attempted": False},
-        "workspace": str(kwargs.get("workspace") or ""),
+        "workspace": str(workspace),
         "rounds": 1,
         "used_tools": False,
         "steps": [],
-        "changed_files": [],
-        "workspace_changes": {"added": [], "modified": [], "deleted": []},
+        "changed_files": [artifact] if artifact else [],
+        "workspace_changes": {
+            "added": [artifact] if artifact else [],
+            "modified": [],
+            "deleted": [],
+        },
         "auto_verification": {"ok": True, "command": ["pytest"]},
-        "verifier_review": None,
+        "verifier_review": {"verdict": "pass", "notes": ""},
         "progress_notes": [],
         "response": "Completed locally.",
     }
@@ -97,12 +115,14 @@ def _local_build(self: CodingAgentService, **kwargs: Any) -> dict[str, Any]:
 
 @pytest.fixture
 def build_client(tmp_path: Path, monkeypatch):
-    workspace = tmp_path / "workspace"
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = workspace_root / "project"
     workspace.mkdir()
     (workspace / "app.py").write_text("LABEL = 'old'\n", encoding="utf-8")
     monkeypatch.setattr(OllamaClient, "chat", _local_assessment)
     monkeypatch.setattr(CodingAgentService, "run", _local_build)
-    app = create_app(_config(tmp_path, workspace), run_boot_maintenance=False)
+    app = create_app(_config(tmp_path, workspace_root), run_boot_maintenance=False)
     return TestClient(app), app, workspace
 
 
@@ -148,6 +168,81 @@ def test_build_assess_is_protected_and_never_constructs_cloud_client(
     assert body["approval_request_id"]
     assert body["recommended_limits"]["dollar_micro"] >= 1_000_000
     assert body["usage"]["actual_microdollars"] == 0
+
+
+def test_build_assess_rejects_the_non_repository_workspace_container(
+    build_client,
+) -> None:
+    client, app, workspace = build_client
+    container = workspace.parent
+
+    response = client.post(
+        "/build/assess",
+        headers=_headers(),
+        json={
+            "task": "Build the product",
+            "acceptance": "Tests pass",
+            "workspace": str(container),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "project directory" in response.json()["detail"]
+    assert app.state.build_store.list_sessions() == []
+
+
+def test_build_assess_rejects_a_workspace_outside_the_configured_root(
+    build_client, tmp_path: Path,
+) -> None:
+    client, _app, _workspace = build_client
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    response = client.post(
+        "/build/assess",
+        headers=_headers(),
+        json={"task": "Build the product", "workspace": str(outside)},
+    )
+
+    assert response.status_code == 400
+    assert "outside the configured build workspace root" in response.json()["detail"]
+
+
+def test_build_session_can_be_quarantined_without_deleting_audit_history(
+    build_client,
+) -> None:
+    client, _app, workspace = build_client
+    prepared = _assess(client, workspace)
+    session_id = prepared["session"]["id"]
+    approved = client.post(
+        f"/build/sessions/{session_id}/approve",
+        headers=_headers(),
+        json={"typed_confirmation": CONFIRMATION},
+    )
+    assert approved.status_code == 200
+
+    response = client.post(
+        f"/build/sessions/{session_id}/quarantine",
+        headers=_headers(),
+        json={"reason": "Incorrect project boundary selected."},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["session"]["status"] == "quarantined"
+    assert body["session"]["checkpoint"]["quarantine"]["reason"] == "Incorrect project boundary selected."
+    assert body["lease"]["state"] == "paused"
+    assert client.post(
+        f"/build/sessions/{session_id}/run-next", headers=_headers(), json={}
+    ).json()["status"] == "quarantined"
+    start = client.post(
+        f"/build/sessions/{session_id}/start", headers=_headers(), json={}
+    ).json()
+    assert start == {
+        "started": False,
+        "status": "quarantined",
+        "session_id": session_id,
+    }
 
 
 def test_build_session_routes_approve_local_work_and_report_remaining_budget(
@@ -352,6 +447,7 @@ def test_durable_build_mutations_require_local_token(build_client) -> None:
         "pause",
         "resume",
         "cancel",
+        "quarantine",
         "verify",
     ):
         response = client.post(f"/build/sessions/{session_id}/{route}", json={})
@@ -367,19 +463,23 @@ def test_swarm_ui_exposes_durable_build_controls() -> None:
         "buildPauseBtn",
         "buildResumeBtn",
         "buildCancelBtn",
+        "buildQuarantineBtn",
         "buildVerifyBtn",
         "buildReviewPrepareBtn",
         "buildReviewRunBtn",
     ):
         assert f'id="{control_id}"' in html
     assert "/run-next" in html
+    assert "/quarantine" in html
     assert "/build/toolchains" in html
 
 
 def test_openai_review_has_separate_lease_egress_and_calibration(
     tmp_path: Path, monkeypatch
 ) -> None:
-    workspace = tmp_path / "workspace"
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = workspace_root / "project"
     workspace.mkdir()
     (workspace / "app.py").write_text("LABEL = 'review me'\n", encoding="utf-8")
     monkeypatch.setenv("OPENAI_API_KEY", "test-only-key")
@@ -419,7 +519,7 @@ def test_openai_review_has_separate_lease_egress_and_calibration(
         lambda **_kwargs: type("Client", (), {"responses": Responses()})(),
     )
     config = replace(
-        _config(tmp_path, workspace),
+        _config(tmp_path, workspace_root),
         openai_review=OpenAIReviewConfig(enabled=True),
     )
     client = TestClient(create_app(config, run_boot_maintenance=False))

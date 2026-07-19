@@ -153,6 +153,8 @@
               <button id="buildResumeBtn" class="secondary">Resume</button>
               <button id="buildCancelBtn" class="bad">Cancel</button>
             </div>
+            <input class="wide" id="buildQuarantineReason" placeholder="Quarantine reason">
+            <button id="buildQuarantineBtn" class="bad wide">Quarantine session</button>
             <select id="buildProfile" aria-label="Verification profile">
               <option value="">Detected profile</option>
               <option value="python-saas">Python SaaS</option>
@@ -328,13 +330,14 @@
       byId('buildApproveBtn').hidden = !(pendingInitial || pendingUpgrade);
       byId('buildApproveBtn').textContent = pendingUpgrade ? 'Approve upgrade' : 'Approve lease';
       byId('buildDenyBtn').hidden = !pendingInitial;
-      const terminal = ['complete', 'cancelled'].includes(session.status) || session.phase === 'complete';
+      const terminal = ['complete', 'cancelled', 'quarantined'].includes(session.status) || session.phase === 'complete';
       const workerRunning = build.worker && build.worker.worker_status === 'running';
       byId('buildRunBtn').hidden = terminal || session.status === 'paused' || workerRunning;
       byId('buildStartBtn').hidden = terminal || session.status === 'paused' || workerRunning;
       byId('buildPauseBtn').hidden = session.status !== 'active';
       byId('buildResumeBtn').hidden = session.status !== 'paused';
       byId('buildCancelBtn').hidden = terminal;
+      byId('buildQuarantineBtn').hidden = terminal;
     }
     async function loadBuild(sessionId) {
       currentBuild = await api(`/build/sessions/${sessionId}`);
@@ -406,6 +409,23 @@
         await loadBuild(currentBuild.session.id);
         note.textContent = `Build ${action} recorded.`; note.className = 'note good';
         if (action === 'start' || action === 'resume') setTimeout(() => loadBuild(currentBuild.session.id), 900);
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+    async function quarantineBuild() {
+      if (!currentBuild) return;
+      const note = byId('buildNote'); note.textContent = ''; note.className = 'note';
+      const reason = byId('buildQuarantineReason').value.trim();
+      if (!reason) {
+        note.textContent = 'A quarantine reason is required.'; note.className = 'note err';
+        return;
+      }
+      try {
+        await api(`/build/sessions/${currentBuild.session.id}/quarantine`, {
+          method: 'POST', body: JSON.stringify({ reason })
+        });
+        await loadBuild(currentBuild.session.id);
+        note.textContent = 'Build session quarantined and active leases paused.';
+        note.className = 'note good';
       } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
     }
     async function verifyBuild() {
@@ -509,6 +529,7 @@
     byId('buildPauseBtn').addEventListener('click', () => withBusy(byId('buildPauseBtn'), 'Pausing…', () => controlBuild('pause')));
     byId('buildResumeBtn').addEventListener('click', () => withBusy(byId('buildResumeBtn'), 'Resuming…', () => controlBuild('resume')));
     byId('buildCancelBtn').addEventListener('click', () => withBusy(byId('buildCancelBtn'), 'Cancelling…', () => controlBuild('cancel')));
+    byId('buildQuarantineBtn').addEventListener('click', () => withBusy(byId('buildQuarantineBtn'), 'Quarantining…', quarantineBuild));
     byId('buildVerifyBtn').addEventListener('click', () => withBusy(byId('buildVerifyBtn'), 'Verifying…', verifyBuild));
     byId('buildRefreshBtn').addEventListener('click', () => loadBuild(currentBuild.session.id));
     byId('buildReviewPrepareBtn').addEventListener('click', () => withBusy(byId('buildReviewPrepareBtn'), 'Preparing…', prepareReview));

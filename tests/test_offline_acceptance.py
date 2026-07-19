@@ -130,6 +130,7 @@ def test_offline_acceptance_all_operations_are_loopback_local(
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (workspace / ".git").mkdir()
     (workspace / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
     (workspace / "test_calc.py").write_text(
         "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n", encoding="utf-8"

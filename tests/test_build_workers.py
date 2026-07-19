@@ -21,12 +21,24 @@ class BlockingAgent:
     def run(self, **_kwargs: Any) -> dict[str, Any]:
         self.entered.set()
         self.release.wait(timeout=5)
-        return {"ok": True, "status": "ok", "response": "done"}
+        return {
+            "ok": True,
+            "status": "ok",
+            "response": "done",
+            "auto_verification": {"ok": True},
+            "verifier_review": {"verdict": "pass", "notes": ""},
+        }
 
 
 class SuccessAgent:
     def run(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"ok": True, "status": "ok", "response": "done"}
+        return {
+            "ok": True,
+            "status": "ok",
+            "response": "done",
+            "auto_verification": {"ok": True},
+            "verifier_review": {"verdict": "pass", "notes": ""},
+        }
 
 
 def make_runtime(tmp_path: Path, agent: Any):

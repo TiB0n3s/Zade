@@ -41,6 +41,7 @@ from .anthropic_client import (
 from .build_assessment import BuildAssessmentService
 from .build_budget import BuildBudgetExceeded, BuildBudgetService
 from .build_calibration import BuildCalibrationService, ManagedAgentsReadinessService
+from .build_workspace import BuildWorkspacePolicy
 from .build_orchestrator import BuildOrchestrator, BuildPlanner
 from .build_routing import BuildRouter
 from .build_service import BUILD_LEASE_SOURCE, BUILD_UPGRADE_SOURCE, BuildService
@@ -105,6 +106,7 @@ from .models import (
     BuildCalibrationRequest,
     BuildLeaseApproveRequest,
     BuildLeaseDenyRequest,
+    BuildQuarantineRequest,
     BuildPlanRequest,
     BuildTaskCreateRequest,
     BuildVerifyRequest,
@@ -400,7 +402,10 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     build_service = BuildService(
         config=cfg,
         db=db,
-        assessor=BuildAssessmentService(local_client=ollama),
+        assessor=BuildAssessmentService(
+            local_client=ollama,
+            workspace_policy=BuildWorkspacePolicy(cfg.delegation.workspace_root),
+        ),
         store=build_store,
         budget=build_budget,
         router=build_router,
@@ -1518,6 +1523,16 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         require_build_session(session_id)
         try:
             return build_service.cancel(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/build/sessions/{session_id}/quarantine")
+    def build_session_quarantine(
+        session_id: int, payload: BuildQuarantineRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            return build_service.quarantine(session_id, reason=payload.reason)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

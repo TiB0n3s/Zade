@@ -18,12 +18,15 @@ from cofounder_kernel.toolchain_profiles import ToolchainRegistry
 
 
 class FakeAgent:
-    def __init__(self, *, ok: bool = True):
+    def __init__(self, *, ok: bool = True, result: dict[str, Any] | None = None):
         self.ok = ok
+        self.result = result
         self.calls: list[dict[str, Any]] = []
 
     def run(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
+        if self.result is not None:
+            return dict(self.result)
         return {
             "ok": self.ok,
             "status": "ok" if self.ok else "model_error",
@@ -96,6 +99,20 @@ def test_planner_creates_idempotent_full_lifecycle_graph(tmp_path: Path) -> None
     assert first[0].dependencies == ()
     assert all(task.dependencies == (first[index - 1].id,) for index, task in enumerate(first) if index)
     assert first[4].payload["toolchain_profile"] == "python-saas"
+    assert first[1].payload["output_contract"] == {
+        "required_artifacts": [".zade/build/requirements.md"],
+        "allowed_write_paths": [".zade/build/requirements.md"],
+    }
+    assert first[2].payload["output_contract"] == {
+        "required_artifacts": [".zade/build/architecture.md"],
+        "allowed_write_paths": [".zade/build/architecture.md"],
+    }
+    assert first[3].payload["output_contract"] == {
+        "required_artifacts": [".zade/build/plan.md"],
+        "allowed_write_paths": [".zade/build/plan.md"],
+    }
+    assert first[1].max_attempts == 2
+    assert first[3].max_attempts == 2
 
 
 def test_flutter_plan_requires_github_ios_workflow_evidence(tmp_path: Path) -> None:
@@ -251,3 +268,129 @@ def test_failed_task_is_recorded_without_raising_from_run_next(tmp_path: Path) -
     assert result["status"] == "failed"
     assert "local model failed" in result["error"]
     assert store.get_task(task.id).status is BuildTaskStatus.FAILED
+
+
+def test_phase_contract_rejects_product_code_written_during_requirements(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = make_store(tmp_path)
+    session = create_session(store, workspace)
+    task = store.create_task(
+        session.id,
+        phase="requirements",
+        kind=BuildTaskKind.AGENT,
+        title="Write requirements",
+        payload={
+            "route": "local",
+            "output_contract": {
+                "required_artifacts": [".zade/build/requirements.md"],
+                "allowed_write_paths": [".zade/build/requirements.md"],
+            },
+        },
+        idempotency_key="requirements",
+    )
+    agent = FakeAgent(
+        result={
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "changed_files": ["app/src/AuthActivity.java"],
+            "workspace_changes": {
+                "added": ["app/src/AuthActivity.java"],
+                "modified": [],
+                "deleted": [],
+            },
+            "auto_verification": None,
+            "verifier_review": None,
+        }
+    )
+    orchestrator = BuildOrchestrator(
+        store=store,
+        planner=BuildPlanner(store=store, toolchains=ToolchainRegistry()),
+        router=make_router(store),
+        local_agent=agent,
+    )
+
+    result = orchestrator.run_next(session.id)
+
+    assert result["status"] == "failed"
+    assert result["result"]["status"] == "phase_contract_failed"
+    assert "app/src/AuthActivity.java" in result["result"]["evidence_gate"]["unexpected_changes"]
+    assert store.get_task(task.id).status is BuildTaskStatus.FAILED
+
+
+def test_implementation_requires_positive_mechanical_verification(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = make_store(tmp_path)
+    session = create_session(store, workspace)
+    task = store.create_task(
+        session.id,
+        phase="implementation",
+        kind=BuildTaskKind.AGENT,
+        title="Implement feature",
+        payload={"route": "local"},
+        idempotency_key="implementation",
+    )
+    orchestrator = BuildOrchestrator(
+        store=store,
+        planner=BuildPlanner(store=store, toolchains=ToolchainRegistry()),
+        router=make_router(store),
+        local_agent=FakeAgent(
+            result={
+                "ok": True,
+                "status": "ok",
+                "error": "",
+                "changed_files": ["lib/main.dart"],
+                "auto_verification": {"ok": None, "mode": "none"},
+                "verifier_review": {"verdict": "pass", "notes": ""},
+            }
+        ),
+    )
+
+    result = orchestrator.run_next(session.id)
+
+    assert result["status"] == "failed"
+    assert result["result"]["status"] == "verification_required"
+    assert store.get_task(task.id).status is BuildTaskStatus.FAILED
+
+
+def test_fresh_context_verifier_failure_prevents_task_advancement(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = make_store(tmp_path)
+    session = create_session(store, workspace)
+    task = store.create_task(
+        session.id,
+        phase="implementation",
+        kind=BuildTaskKind.AGENT,
+        title="Implement feature",
+        payload={"route": "local"},
+        idempotency_key="implementation",
+    )
+    orchestrator = BuildOrchestrator(
+        store=store,
+        planner=BuildPlanner(store=store, toolchains=ToolchainRegistry()),
+        router=make_router(store),
+        local_agent=FakeAgent(
+            result={
+                "ok": True,
+                "status": "ok",
+                "error": "",
+                "changed_files": ["lib/main.dart"],
+                "auto_verification": {"ok": True, "mode": "flutter-test"},
+                "verifier_review": {
+                    "verdict": "fail",
+                    "notes": "lib/main.dart does not satisfy acceptance",
+                },
+            }
+        ),
+    )
+
+    result = orchestrator.run_next(session.id)
+
+    assert result["status"] == "failed"
+    assert result["result"]["status"] == "verifier_rejected"
+    assert "does not satisfy" in result["error"]
