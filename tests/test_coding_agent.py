@@ -660,6 +660,34 @@ def test_fresh_context_verifier_reviews_changed_files(tmp_path: Path) -> None:
     assert "fresh-eyes verifier" in str(verifier_call["messages"][0].get("content", ""))
 
 
+def test_fresh_context_verifier_ignores_generated_flutter_outputs(
+    tmp_path: Path,
+) -> None:
+    ws = tmp_path / "flutter-ws"
+    (ws / "lib").mkdir(parents=True)
+    (ws / "build" / "native_assets" / "windows").mkdir(parents=True)
+    (ws / "lib" / "main.dart").write_text("void main() {}\n", encoding="utf-8")
+    generated = ws / "build" / "native_assets" / "windows" / "native_assets.json"
+    generated.write_text('{"generated": true}\n', encoding="utf-8")
+    svc, ollama = _service(
+        tmp_path,
+        ws,
+        [{"content": "VERDICT: PASS"}],
+    )
+
+    review = svc._fresh_context_verifier(
+        task="Keep the app valid",
+        root=ws,
+        targets=["build/native_assets/windows/native_assets.json", "lib/main.dart"],
+        model="fake-local:1b",
+    )
+
+    assert review == {"verdict": "pass", "notes": "VERDICT: PASS"}
+    prompt = str(ollama.calls[-1]["messages"][-1]["content"])
+    assert "lib/main.dart" in prompt
+    assert "build/native_assets" not in prompt
+
+
 def test_verification_plan_adds_tsc_for_typescript_workspaces(tmp_path: Path) -> None:
     """Live incident item #70: a type-broken .tsx shipped under 'verification
     passed' because jest never imported it. TypeScript workspaces get tsc as a

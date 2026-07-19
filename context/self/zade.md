@@ -133,6 +133,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `50f9405` 2026-07-19 - fix: verify Flutter implementation phases locally
 - `a027968` 2026-07-19 - Merge branch 'codex/build-runtime-enablement'
 - `10a1f38` 2026-07-19 - feat: harden durable build phase gates
 - `49900e9` 2026-07-19 - feat: governed design-update endpoint for experiments
@@ -144,7 +145,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `de459ce` 2026-07-19 - feat: expose durable product build orchestration
 - `1455d76` 2026-07-19 - Connectors: in-place update endpoint (POST /connectors/{name}/update)
 - `8956197` 2026-07-19 - feat: add optional review and build calibration
-- `6abd2c9` 2026-07-19 - Ops scripts: bootstrap mutation token from /session/token; stable pwsh alias in tasks
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

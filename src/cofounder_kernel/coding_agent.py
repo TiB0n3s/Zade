@@ -487,7 +487,10 @@ class CodingAgentService:
         task. Returns {"verdict": "pass"|"fail", "notes": ...} or None (no
         reviewable files, unparseable verdict, or model error). Advisory only."""
         excerpts: list[str] = []
-        for rel in targets[:6]:
+        review_targets = [
+            rel for rel in targets if not _is_generated_review_target(rel)
+        ]
+        for rel in review_targets[:6]:
             path = root / rel
             if not path.is_file():
                 continue
@@ -1297,6 +1300,23 @@ class CodingAgentService:
 
 
 # ---- helpers (shared shapes with investigation.py) ----------------------------
+
+
+def _is_generated_review_target(relative_path: str) -> bool:
+    parts = tuple(
+        part.casefold()
+        for part in Path(relative_path.replace("\\", "/")).parts
+        if part not in {"", "."}
+    )
+    if not parts:
+        return True
+    if parts[0] in {"build", ".dart_tool", ".gradle"}:
+        return True
+    return parts[:2] == ("android", ".gradle") or parts[:3] == (
+        "ios",
+        "flutter",
+        "ephemeral",
+    )
 
 
 def _tool_schemas(tools: dict[str, AgentTool]) -> list[dict[str, Any]]:
