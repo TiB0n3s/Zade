@@ -279,3 +279,49 @@ def test_parse_ics_events_unfolds_and_normalizes() -> None:
     # Folded DESCRIPTION line is joined.
     assert events[0]["DESCRIPTION"].endswith("two solo founders.")
     assert events[1]["DTSTART"] == "20260717"
+
+
+def test_connector_update_edits_in_place_with_same_rules(tmp_path: Path, monkeypatch) -> None:
+    """Update is partial (omitted fields keep stored values), replaces config
+    wholesale under the same no-secrets/required-field rules, and never changes
+    name or connector_type."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    client = TestClient(create_app(_config(tmp_path)))
+    client.post(
+        "/connectors",
+        json={
+            "name": "inbox",
+            "connector_type": "imap",
+            "description": "original",
+            "config": {"host": "imap.example.com", "username": "zade", "password_env": "ZADE_TEST_IMAP_PW"},
+        },
+    )
+
+    paused = client.post("/connectors/inbox/update", json={"enabled": False, "description": "paused: blocked"})
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["item"]["enabled"] is False
+    assert paused.json()["item"]["description"] == "paused: blocked"
+    # config untouched by a partial update
+    assert paused.json()["item"]["config"]["host"] == "imap.example.com"
+
+    with_secret = client.post(
+        "/connectors/inbox/update",
+        json={"config": {"host": "h2", "username": "u2", "password": "hunter2", "password_env": "PW"}},
+    )
+    assert with_secret.status_code == 400
+    assert "must not contain secrets" in with_secret.json()["detail"]
+
+    incomplete = client.post("/connectors/inbox/update", json={"config": {"host": "h2"}})
+    assert incomplete.status_code == 400
+
+    replaced = client.post(
+        "/connectors/inbox/update",
+        json={"config": {"host": "imap.gmail.com", "username": "z@example.com", "password_env": "PW2"}, "enabled": True},
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["item"]["config"]["host"] == "imap.gmail.com"
+    assert replaced.json()["item"]["enabled"] is True
+    assert replaced.json()["item"]["name"] == "inbox"
+
+    missing = client.post("/connectors/nope/update", json={"enabled": True})
+    assert missing.status_code == 404

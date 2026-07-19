@@ -69,24 +69,7 @@ class ConnectorService:
         if connector_type not in CONNECTOR_TYPES:
             raise ValueError(f"Connector type must be one of: {', '.join(sorted(CONNECTOR_TYPES))}")
         config = dict(payload.get("config", {}))
-        leaked = sorted(
-            key
-            for key in config
-            if not key.strip().lower().endswith("_env")
-            and any(fragment in key.strip().lower() for fragment in SECRET_KEY_FRAGMENTS)
-        )
-        if leaked:
-            raise ValueError(
-                f"Connector config must not contain secrets ({', '.join(leaked)}). "
-                "Store the credential in an environment variable and reference it via password_env."
-            )
-        if connector_type == "imap":
-            for required in ("host", "username", "password_env"):
-                if not str(config.get(required, "")).strip():
-                    raise ValueError(f"IMAP connector config requires '{required}'.")
-        if connector_type == "ics":
-            if not str(config.get("url", "")).strip() and not str(config.get("path", "")).strip():
-                raise ValueError("ICS connector config requires 'url' or 'path'.")
+        _validate_connector_config(connector_type, config)
         now = utc_now()
         with self.db.connect() as conn:
             existing = conn.execute("SELECT id FROM connectors WHERE name = ?", (name,)).fetchone()
@@ -118,6 +101,44 @@ class ConnectorService:
             permission_tier="L1_MEMORY_WRITE",
             status="ok",
             details={"connector_type": connector_type, "config_keys": sorted(config.keys())},
+        )
+        return self.get_connector(name)
+
+    def update_connector(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Update description/config/enabled in place. Name and connector_type are
+        immutable (register a new connector instead); a supplied config replaces
+        the stored one wholesale and passes the same no-secrets + required-field
+        rules as create."""
+        connector = self.get_connector(name)
+        requested_type = str(payload.get("connector_type", "")).strip().lower()
+        if requested_type and requested_type != connector["connector_type"]:
+            raise ValueError("connector_type is immutable; register a new connector instead.")
+        config = dict(payload["config"]) if "config" in payload and payload["config"] is not None else connector["config"]
+        _validate_connector_config(connector["connector_type"], config)
+        description = (
+            str(payload["description"]) if payload.get("description") is not None else connector["description"]
+        )
+        enabled = bool(payload["enabled"]) if payload.get("enabled") is not None else connector["enabled"]
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE connectors
+                SET updated_at = ?, description = ?, config_json = ?, enabled = ?
+                WHERE id = ?
+                """,
+                (utc_now(), description, json.dumps(config, sort_keys=True), int(enabled), connector["id"]),
+            )
+        self.db.audit(
+            actor="connectors",
+            action="connectors.update",
+            target=name,
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={
+                "connector_type": connector["connector_type"],
+                "config_keys": sorted(config.keys()),
+                "enabled": enabled,
+            },
         )
         return self.get_connector(name)
 
@@ -452,6 +473,29 @@ class ConnectorService:
                 "UPDATE connectors SET updated_at = ?, last_sync_at = ?, last_sync_status = ? WHERE id = ?",
                 (utc_now(), utc_now(), status, connector_id),
             )
+
+
+def _validate_connector_config(connector_type: str, config: dict[str, Any]) -> None:
+    """Shared create/update rules: no inline secrets (env-var references only)
+    and the per-type required fields."""
+    leaked = sorted(
+        key
+        for key in config
+        if not key.strip().lower().endswith("_env")
+        and any(fragment in key.strip().lower() for fragment in SECRET_KEY_FRAGMENTS)
+    )
+    if leaked:
+        raise ValueError(
+            f"Connector config must not contain secrets ({', '.join(leaked)}). "
+            "Store the credential in an environment variable and reference it via password_env."
+        )
+    if connector_type == "imap":
+        for required in ("host", "username", "password_env"):
+            if not str(config.get(required, "")).strip():
+                raise ValueError(f"IMAP connector config requires '{required}'.")
+    if connector_type == "ics":
+        if not str(config.get("url", "")).strip() and not str(config.get("path", "")).strip():
+            raise ValueError("ICS connector config requires 'url' or 'path'.")
 
 
 def fetch_imap_items(config: dict[str, Any], password: str, *, limit: int = DEFAULT_FETCH_LIMIT) -> list[dict[str, Any]]:

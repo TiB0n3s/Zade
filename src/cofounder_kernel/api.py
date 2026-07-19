@@ -105,6 +105,7 @@ from .models import (
     CommitmentRenegotiate,
     CompanyThesisUpsert,
     ConnectorCreate,
+    ConnectorUpdate,
     ConnectorItemDismiss,
     ConnectorItemsImport,
     ContrarianReviewCreate,
@@ -985,6 +986,14 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             return {"item": connectors.get_connector(name)}
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/connectors/{name}/update")
+    def update_connector(name: str, payload: ConnectorUpdate) -> dict[str, Any]:
+        try:
+            return {"item": connectors.update_connector(name, payload.model_dump(exclude_unset=True))}
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc).lower() else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post("/connectors/{name}/sync")
     def queue_connector_sync(name: str) -> dict[str, Any]:

@@ -309,6 +309,15 @@ class ConnectorCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConnectorUpdate(BaseModel):
+    """Partial update: omitted fields keep their stored values. Name and
+    connector_type are immutable."""
+
+    description: str | None = Field(default=None, max_length=1000)
+    config: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+
 class ConnectorItemsImport(BaseModel):
     item_ids: list[int] = Field(min_length=1)
     create_evidence: bool = True
