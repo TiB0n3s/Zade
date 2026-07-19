@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `022bc70` 2026-07-19 - docs: plan project intake MVP autonomy implementation
 - `65a107c` 2026-07-19 - docs: design project intake MVP autonomy loop
 - `b37bd93` 2026-07-19 - test: update stale schema-version pins to v32
 - `d3a9259` 2026-07-19 - docs: orchestrator integration handoff for the project-autonomy contract
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `ce9ffc0` 2026-07-19 - feat: bootstrap mobile intake projects offline
 - `01fa89d` 2026-07-19 - fix: require real scaffold verification
 - `5f4151d` 2026-07-19 - fix: allow project scans to finish long builds
-- `458e8ab` 2026-07-19 - fix: make project intake reconciliation idempotent
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

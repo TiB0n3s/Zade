@@ -59,7 +59,7 @@ def test_migration_creates_build_budget_tables(tmp_path: Path) -> None:
             )
         }
 
-    assert SCHEMA_VERSION == 32
+    assert SCHEMA_VERSION == 33
     assert {
         "build_assessments",
         "build_sessions",

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -3620,6 +3620,49 @@ CREATE TABLE IF NOT EXISTS project_events (
 
 CREATE INDEX IF NOT EXISTS idx_project_events_project
   ON project_events (project_id, id);
+
+CREATE TABLE IF NOT EXISTS project_autonomy_states (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  phase TEXT NOT NULL DEFAULT 'planning',
+  priority TEXT NOT NULL DEFAULT 'normal',
+  plan_revision TEXT NOT NULL DEFAULT '',
+  state_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS project_autonomy_leases (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  owner TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_autonomy_leases_expiry
+  ON project_autonomy_leases (expires_at);
+
+CREATE TABLE IF NOT EXISTS project_autonomy_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  topic TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  dedupe_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT NOT NULL DEFAULT '',
+  notification_id INTEGER REFERENCES notifications(id),
+  delivered_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_autonomy_outbox_due
+  ON project_autonomy_outbox (status, next_attempt_at, id);
 
 CREATE TABLE IF NOT EXISTS build_assessments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

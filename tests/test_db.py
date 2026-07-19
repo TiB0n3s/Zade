@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from cofounder_kernel.db import KernelDatabase
+from cofounder_kernel.db import SCHEMA_VERSION, KernelDatabase
+
+
+def test_current_schema_version(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+
+    assert SCHEMA_VERSION == 33
+    assert db.schema_version() == 33
 
 
 def test_memory_write_search_and_audit(tmp_path: Path) -> None:

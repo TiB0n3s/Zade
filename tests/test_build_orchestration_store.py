@@ -60,7 +60,7 @@ def test_migration_creates_durable_orchestration_tables(tmp_path: Path) -> None:
             )
         }
 
-    assert SCHEMA_VERSION == 32
+    assert SCHEMA_VERSION == 33
     assert {"build_tasks", "build_task_runs", "build_artifacts"} <= tables
 
 
