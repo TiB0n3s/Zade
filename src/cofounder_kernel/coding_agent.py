@@ -1,4 +1,4 @@
-"""Native local coding agent — Zade's own tool-calling build loop on Ollama.
+"""Zade's bounded tool-calling build loop.
 
 This replaces the external Claude Code CLI as the default engine for delegated
 build work. The selected LOCAL model (resolved by the inventory service via a
@@ -9,10 +9,9 @@ command runner, and git status/diff. The loop is bounded, every tool execution
 is validated at the boundary and audited, and every path is confined to the
 workspace root.
 
-Provider posture: the only model this loop can ever call is the loopback Ollama
-client it was constructed with. If the model cannot drive the tools, the run
-returns a local capability error naming eligible installed models — it never
-escalates to a cloud provider.
+Provider posture: Ollama remains the default. An explicitly injected model
+client can drive the same confined tool loop, but this service never selects a
+cloud provider or falls back between providers on its own.
 """
 from __future__ import annotations
 
@@ -31,6 +30,7 @@ from typing import Any, Callable
 from .config import KernelConfig
 from .db import KernelDatabase
 from .inventory import ModelInventoryError, ModelInventoryService
+from .model_client import CodingModelClient, CodingModelError
 from .ollama import OllamaClient, OllamaError
 from .prompts import PromptProfileRegistry, PromptRuntimeBindings
 
@@ -123,7 +123,7 @@ class AgentTool:
 
 
 class CodingAgentService:
-    """Bounded, audited, workspace-confined coding loop on the local model."""
+    """Bounded, audited, workspace-confined coding loop."""
 
     def __init__(
         self,
@@ -131,12 +131,14 @@ class CodingAgentService:
         config: KernelConfig,
         db: KernelDatabase,
         ollama: OllamaClient,
+        model_client: CodingModelClient | None = None,
         inventory: ModelInventoryService | None = None,
         notifier: Any | None = None,
     ):
         self.config = config
         self.db = db
         self.ollama = ollama
+        self.model_client = model_client or ollama
         self.inventory = inventory or ModelInventoryService(config=config, ollama=ollama)
         self.prompt_profiles = PromptProfileRegistry()
         # Optional NotificationBus: send_progress raises native toasts so the
@@ -222,7 +224,7 @@ class CodingAgentService:
             for round_index in range(cap + 1):
                 allow_tools = round_index < cap
                 try:
-                    generated = self.ollama.chat(
+                    generated = self.model_client.chat(
                         messages=messages,
                         model=selected_model,
                         think=self.config.ollama.think_for_role("coding"),
@@ -230,18 +232,24 @@ class CodingAgentService:
                         num_predict=2048,
                         tools=schemas if allow_tools else None,
                     )
-                except OllamaError as exc:
+                except (CodingModelError, OllamaError) as exc:
                     if (
                         not state["used_tools"]
                         and state["rounds"] == 0
                         and "does not support tools" in str(exc).lower()
                     ):
                         state["status"] = "capability_error"
-                        state["error"] = (
-                            f"Model {selected_model!r} rejected native tools: {str(exc)[:200]}. "
-                            "No cloud escalation was attempted. Set [ollama] coding_agent_model "
-                            "to a tool-capable installed model."
-                        )
+                        if self.model_client is self.ollama:
+                            state["error"] = (
+                                f"Model {selected_model!r} rejected native tools: {str(exc)[:200]}. "
+                                "No cloud escalation was attempted. Set [ollama] coding_agent_model "
+                                "to a tool-capable installed model."
+                            )
+                        else:
+                            state["error"] = (
+                                f"Model {selected_model!r} rejected native tools: {str(exc)[:200]}. "
+                                "No provider fallback was attempted."
+                            )
                         return
                     state["status"] = "model_error"
                     state["error"] = str(exc)[:400]
@@ -408,7 +416,7 @@ class CodingAgentService:
                 else None
             ),
             "model": selected_model,
-            "provider": self.ollama.provider_info(),
+            "provider": self.model_client.provider_info(),
             "workspace": str(root),
             "rounds": rounds,
             "used_tools": used_tools,
@@ -481,14 +489,14 @@ class CodingAgentService:
             },
         ]
         try:
-            generated = self.ollama.chat(
+            generated = self.model_client.chat(
                 messages=messages,
                 model=model,
                 think=self.config.ollama.think_for_role("coding"),
                 temperature=0.1,
                 num_predict=700,
             )
-        except OllamaError:
+        except (CodingModelError, OllamaError):
             return None
         text = (generated.response or "").strip()
         if re.search(r"(?im)^\s*verdict:\s*fail\b", text):

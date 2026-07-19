@@ -18,6 +18,7 @@ from cofounder_kernel.config import (
 )
 from cofounder_kernel.db import KernelDatabase
 from cofounder_kernel.ollama import OllamaClient
+from cofounder_kernel.ollama import GenerateResult
 
 
 def _config(tmp_path: Path, workspace: Path, **ollama_kw) -> KernelConfig:
@@ -96,6 +97,72 @@ def _service(tmp_path: Path, workspace: Path, script: list[dict[str, Any]]):
 class _StubInventory:
     def resolve_coding_agent_model(self) -> str:
         return "fake-local:1b"
+
+
+class ScriptedModelClient:
+    def __init__(self, script: list[dict[str, Any]]):
+        self.script = list(script)
+        self.calls: list[dict[str, Any]] = []
+
+    def chat(
+        self,
+        *,
+        messages,
+        model=None,
+        think=None,
+        temperature=None,
+        num_predict=512,
+        tools=None,
+        format=None,
+    ) -> GenerateResult:
+        self.calls.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "tools": list(tools or []),
+            }
+        )
+        step = self.script.pop(0) if self.script else {"content": "done"}
+        message: dict[str, Any] = {"role": "assistant", "content": step.get("content", "")}
+        if step.get("tool_calls"):
+            message["tool_calls"] = step["tool_calls"]
+        return GenerateResult(
+            response=message["content"], model=model or "cloud-test", raw={"message": message}
+        )
+
+    def provider_info(self) -> dict[str, Any]:
+        return {
+            "provider": "fake-cloud",
+            "verified_local": False,
+            "fallback_attempted": False,
+        }
+
+
+def test_coding_loop_uses_injected_model_client_with_same_local_tools(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    cfg = _config(tmp_path, fixture_repo)
+    local = ScriptedOllama(cfg.ollama, [])
+    cloud = ScriptedModelClient(
+        [
+            {"tool_calls": [_call("read_file", path="calc.py")]},
+            {"content": "Reviewed the file."},
+        ]
+    )
+    service = CodingAgentService(
+        config=cfg,
+        db=_db(tmp_path),
+        ollama=local,
+        model_client=cloud,
+        inventory=_StubInventory(),
+    )
+
+    result = service.run(task="Review calc.py", workspace=fixture_repo, model="cloud-test")
+
+    assert result["provider"]["provider"] == "fake-cloud"
+    assert any(step["tool"] == "read_file" for step in result["steps"])
+    assert local.calls == []
+    assert {call["model"] for call in cloud.calls} == {"cloud-test"}
 
 
 # 17-19. message discipline and real tool schemas -----------------------------------
