@@ -571,6 +571,92 @@
       if (media.rec && media.rec.state !== 'inactive') media.rec.stop();
       if (media.stream) media.stream.getTracks().forEach((t) => t.stop());
     }
+    // Streaming voice loop: draft tokens render live, sentence-chunked audio
+    // plays back-to-back while later chunks are still synthesizing. Spoken
+    // audio is always the governed final text. Returns null on an older
+    // kernel so the caller can fall back to the batch endpoint.
+    async function converseStream(body, clientTiming) {
+      const response = await fetch('/voice/converse/stream', { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+      if (!response.ok || !response.body) return null;
+      const result = { timing: null, speech_error: '', transcript: '' };
+      let assistantMessage = null;
+      let draft = '';
+      let renderQueued = false;
+      const queueRender = () => {
+        if (renderQueued) return;
+        renderQueued = true;
+        setTimeout(() => { renderQueued = false; renderThread(); }, 120);
+      };
+      const ensureAssistant = () => {
+        if (!assistantMessage) { assistantMessage = { role: 'assistant', content: '' }; state.messages.push(assistantMessage); }
+        return assistantMessage;
+      };
+      const audioQueue = [];
+      let audioPlaying = false;
+      let firstPlay = false;
+      const playNext = () => {
+        if (audioPlaying || !audioQueue.length) return;
+        audioPlaying = true;
+        const audio = audioQueue.shift();
+        audio.addEventListener('ended', () => { audioPlaying = false; playNext(); });
+        audio.addEventListener('error', () => { audioPlaying = false; playNext(); });
+        audio.play().then(() => {
+          if (firstPlay) return;
+          firstPlay = true;
+          const speechStoppedAt = clientTiming.speech_stopped_at_ms || clientTiming.request_started_at_ms;
+          result.client_playback_started_ms = performance.now() - speechStoppedAt;
+          if (assistantMessage) { assistantMessage.trace = buildTrace(result, 'voice'); renderThread(); }
+        }).catch(() => { audioPlaying = false; playNext(); });
+      };
+      let streamError = null;
+      const handleEvent = (event) => {
+        if (event.type === 'transcript') {
+          result.transcript = event.text || '';
+          state.messages.push({ role: 'founder', content: event.text || '(no speech detected)' });
+          queueRender();
+        } else if (event.type === 'token') {
+          draft += event.text;
+          ensureAssistant().content = draft + ' ▌';
+          queueRender();
+        } else if (event.type === 'response') {
+          result.response = event.response;
+          result.governor = event.governor;
+          result.contrarian = event.contrarian;
+          const message = ensureAssistant();
+          message.content = event.response || event.spoken_text || '(no reply)';
+          message.note = contrarianNote(event.contrarian);
+          queueRender();
+        } else if (event.type === 'audio') {
+          try { audioQueue.push(new Audio('data:audio/' + (event.format || 'wav') + ';base64,' + event.audio_base64)); playNext(); }
+          catch (e) { /* autoplay blocked */ }
+        } else if (event.type === 'done') {
+          clientTiming.response_received_at_ms = performance.now();
+          result.timing = event.timing;
+          result.speech_error = event.speech_error || '';
+          if (assistantMessage) assistantMessage.trace = buildTrace(result, 'voice');
+          queueRender();
+        } else if (event.type === 'error') {
+          streamError = event.detail || 'voice stream failed';
+        }
+      };
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        let newline;
+        while ((newline = buffered.indexOf('\n')) >= 0) {
+          const line = buffered.slice(0, newline).trim();
+          buffered = buffered.slice(newline + 1);
+          if (line) handleEvent(JSON.parse(line));
+        }
+      }
+      if (streamError) throw new Error(streamError);
+      return result;
+    }
+
     async function sendRecording(mimeType) {
       const blob = new Blob(media.chunks, { type: mimeType || 'audio/webm' });
       if (!blob.size) return;
@@ -585,10 +671,14 @@
           recording_stopped_at_ms: media.stoppedAtMs,
           request_started_at_ms: performance.now()
         };
-        const result = await api('/voice/converse', {
-          method: 'POST',
-          body: JSON.stringify({ audio_base64, audio_mime: blob.type || 'audio/webm', conversation_id, use_semantic_memory: true, speak_response: true, speak_full: false, client_timing: clientTiming })
-        });
+        const body = { audio_base64, audio_mime: blob.type || 'audio/webm', conversation_id, use_semantic_memory: true, speak_response: true, speak_full: false, client_timing: clientTiming };
+        const streamedResult = await converseStream(body, clientTiming);
+        if (streamedResult) {
+          if (streamedResult.speech_error) byId('composerError').textContent = 'Answer ready, but speech failed.';
+          return;
+        }
+        // Fallback: batch endpoint (stream unavailable).
+        const result = await api('/voice/converse', { method: 'POST', body: JSON.stringify(body) });
         clientTiming.response_received_at_ms = performance.now();
         state.messages.push({ role: 'founder', content: result.transcript || '(no speech detected)' });
         const assistantMessage = { role: 'assistant', content: result.response || result.spoken_text || '(no reply)', note: contrarianNote(result.contrarian), trace: buildTrace(result, 'voice') };

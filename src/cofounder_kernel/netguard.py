@@ -7,7 +7,7 @@ drifting apart. The kernel is local-first and talks to very few hosts:
   * the local Ollama server (loopback)                   -> allow_private
   * an optional founder calendar/ICS feed (public https) -> allow_loopback_http+require_https
   * the founder's own SMS gateway (often a LAN device)   -> allow_private
-  * two fixed cloud voice APIs (Deepgram, ElevenLabs)    -> require_https + allowed_hosts
+  * fixed cloud APIs pinned to known hosts               -> require_https + allowed_hosts
 
 Call sites declare intent (allow_private, require_https, allowed_hosts) and this
 module enforces it. DNS is resolved (fail-closed) so a public hostname cannot

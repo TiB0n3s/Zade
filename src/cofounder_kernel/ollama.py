@@ -240,6 +240,107 @@ class OllamaClient:
         response = message.get("content", "") if isinstance(message, dict) else ""
         return GenerateResult(response=response, model=selected_model, raw=raw)
 
+    def chat_stream(
+        self,
+        *,
+        messages: Sequence[Any],
+        on_token: Any,
+        model: str | None = None,
+        think: bool | None = None,
+        temperature: float | None = None,
+        num_predict: int = 512,
+    ) -> GenerateResult:
+        """chat() with server-side token streaming: behaves identically (same
+        policy asserts, same thinking fallback, same GenerateResult), but invokes
+        ``on_token(delta)`` for each content fragment as Ollama emits it, so a
+        caller can surface the first token ~immediately instead of after the
+        full generation. Thinking fragments are NOT forwarded — only reply
+        content. Used by the voice streaming pipeline; no tools, no format
+        (structured output and streaming don't compose here)."""
+        selected_model = model or self.config.chat_model
+        self._assert_model_allowed(selected_model)
+        requested_think = self.config.think if think is None else think
+        body: dict[str, Any] = {
+            "model": selected_model,
+            "messages": [_chat_message_payload(message) for message in messages],
+            "stream": True,
+            "think": requested_think,
+            "options": {
+                "temperature": self.config.temperature if temperature is None else temperature,
+                "num_predict": num_predict,
+            },
+        }
+        try:
+            raw = self._post_stream("/api/chat", body, on_token=on_token)
+        except OllamaThinkingUnsupported as exc:
+            if requested_think is not True:
+                raise
+            body["think"] = False
+            raw = self._post_stream("/api/chat", body, on_token=on_token)
+            raw["_zade_effective_think"] = False
+            raw["_zade_think_fallback"] = f"thinking_not_supported: {exc}"
+        else:
+            raw["_zade_effective_think"] = requested_think
+        message = raw.get("message") or {}
+        response = message.get("content", "") if isinstance(message, dict) else ""
+        return GenerateResult(response=response, model=selected_model, raw=raw)
+
+    def _post_stream(self, path: str, body: dict[str, Any], *, on_token: Any) -> dict[str, Any]:
+        """POST with stream=true and fold Ollama's NDJSON chunk stream back into
+        one chat-shaped raw dict (final metrics + full assembled content)."""
+        data = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.config.base_url}{path}",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        self._assert_endpoint_allowed(request.full_url)
+        try:
+            netguard.assert_allowed(request.full_url, allow_private=True)
+        except netguard.EgressError as exc:
+            raise OllamaError(str(exc)) from exc
+        content_parts: list[str] = []
+        final: dict[str, Any] = {}
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_for(path)) as response:
+                for line in response:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    chunk = json.loads(line.decode("utf-8"))
+                    message = chunk.get("message") or {}
+                    delta = message.get("content", "") if isinstance(message, dict) else ""
+                    if delta:
+                        content_parts.append(delta)
+                        on_token(delta)
+                    if chunk.get("done"):
+                        final = chunk
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = ""
+            if "does not support thinking" in detail.lower():
+                raise OllamaThinkingUnsupported(detail or str(exc)) from exc
+            message = f"Ollama request failed: HTTP Error {exc.code}: {exc.reason}"
+            if detail:
+                message = f"{message}: {detail}"
+            raise OllamaError(message) from exc
+        except urllib.error.URLError as exc:
+            raise OllamaError(f"Ollama request failed: {exc}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise OllamaError("Ollama request timed out.") from exc
+        except http.client.IncompleteRead as exc:
+            raise OllamaError("Ollama returned a truncated response.") from exc
+        except json.JSONDecodeError as exc:
+            raise OllamaError("Ollama returned invalid JSON") from exc
+        final_message = dict(final.get("message") or {})
+        final_message["content"] = "".join(content_parts)
+        final["message"] = final_message
+        return final
+
     _EMBED_MEMO_SIZE = 8
 
     def embed(self, *, text: str, model: str | None = None) -> list[float]:

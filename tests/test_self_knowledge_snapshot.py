@@ -12,7 +12,7 @@ def _config(tmp_path: Path) -> KernelConfig:
             cold_root=tmp_path / "cold",
             data_dir=tmp_path / "data",
         ),
-        voice=VoiceConfig(stt_engine="deepgram", tts_engine="elevenlabs"),
+        voice=VoiceConfig(stt_command=("whisper-cli", "-f", "{audio}"), tts_command=("piper", "{output}")),
     )
 
 
@@ -30,8 +30,10 @@ def test_collect_snapshots_reads_runtime_app_state(tmp_path: Path) -> None:
     assert {"Ollama", "SQLite memory", "AI Brain hot/cold roots", "Read-only connectors"}.issubset(
         integration_names
     )
-    assert snapshots["voice-loop"]["stt"]["engine"] == "deepgram"
-    assert snapshots["voice-loop"]["tts"]["engine"] == "elevenlabs"
+    assert snapshots["voice-loop"]["stt"]["engine"] == "command"
+    assert snapshots["voice-loop"]["tts"]["engine"] == "command"
+    # Cloud speech integrations are gone: voice is local-only.
+    assert not {"Deepgram", "ElevenLabs"} & integration_names
     assert snapshots["skills"]["summary"]["total"] == 0
     assert snapshots["runtime-prompt-wiring"]["prompt_builder"].endswith("RuntimeService._build_governed_prompt")
     assert isinstance(snapshots["recent-activity"], list)
@@ -61,7 +63,7 @@ def test_real_snapshot_renders_doc_end_to_end(tmp_path: Path) -> None:
             cold_root=tmp_path / "cold",
             data_dir=tmp_path / "data",
         ),
-        voice=VoiceConfig(stt_engine="deepgram", tts_engine="elevenlabs"),
+        voice=VoiceConfig(stt_command=("whisper-cli", "-f", "{audio}"), tts_command=("piper", "{output}")),
     )
     template = Path("context/self/zade.md").read_text(encoding="utf-8")
 
@@ -70,7 +72,7 @@ def test_real_snapshot_renders_doc_end_to_end(tmp_path: Path) -> None:
 
     assert "`memory.search`" in rendered
     assert "`local.vault.move`" in rendered
-    assert "Deepgram" in rendered
+    assert "Deepgram" not in rendered
     assert "Zade is a context-rich, truth-seeking co-founder." in rendered
 
 

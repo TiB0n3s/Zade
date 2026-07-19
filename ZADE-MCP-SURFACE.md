@@ -28,9 +28,11 @@ Landed in [`agent_surface.py`](src/cofounder_kernel/agent_surface.py) as `EXPOSE
 
 | Tool | Effect | Notes |
 |---|---|---|
-| `memory.search` | read | FTS over Zade's memory |
-| `audit.recent` | read | recent audit events |
-| `memory.write` | write | **live (promoted 2026-07-17)**; non-destructive/append-only, L1/audited, `source` auto-stamped to the calling agent |
+| `memory.search` | read | FTS over Zade's memory (founder-marked-shareable records only) |
+| `audit.recent` | read | recent audit events (scoped to the calling agent's own rows) |
+| `work.status` | read | work-queue counts + item titles/states, no bodies (added 2026-07-18) |
+| `evidence.recent` | read | filed founder-OS evidence: claim, reliability grade, strength, linkage — no metadata blob (added 2026-07-19) |
+| `memory.write` | write | **live (promoted 2026-07-17)**; non-destructive/append-only, L1/audited, `source` auto-stamped to the calling agent, held for founder approval + quarantined from grounding |
 | ~~`memory.forget`~~ | — | **deliberately excluded** — destructive; an external agent must not delete founder memory |
 
 > **Governance note — external writes are currently autonomous.** `memory.write` routes through the authority policy as a known-local L1 action, which is auto-allowed (no founder approval), attributed, and audited. It is append-only (an agent cannot edit or delete), but because memory feeds Zade's recall/grounding, an agent could append unreviewed records. If that's too permissive, the follow-up is to force approval for `mcp:`-actor writes, or quarantine externally-written memory out of grounding until reviewed. Not done — flagged for your call.

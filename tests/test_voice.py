@@ -82,9 +82,34 @@ def _chat_from_generate(generate_func):
     return fake_chat
 
 
+def _chat_stream_from_generate(generate_func):
+    """Fake of OllamaClient.chat_stream: same result as chat(), but the reply
+    text arrives through on_token in two deltas first — enough to prove the
+    token events flow end-to-end."""
+
+    def fake_chat_stream(self, *, messages, on_token, model=None, think=None, temperature=None, num_predict=512):
+        result = generate_func(
+            self,
+            prompt=_messages_to_prompt(messages),
+            model=model,
+            think=think,
+            temperature=temperature,
+            num_predict=num_predict,
+        )
+        text = result.response
+        middle = max(1, len(text) // 2)
+        for delta in (text[:middle], text[middle:]):
+            if delta:
+                on_token(delta)
+        return result
+
+    return fake_chat_stream
+
+
 def patch_ollama_model(monkeypatch, generate_func) -> None:
     monkeypatch.setattr(OllamaClient, "generate", generate_func)
     monkeypatch.setattr(OllamaClient, "chat", _chat_from_generate(generate_func))
+    monkeypatch.setattr(OllamaClient, "chat_stream", _chat_stream_from_generate(generate_func))
 
 
 def _voice_config() -> VoiceConfig:
@@ -105,10 +130,10 @@ def _config(tmp_path: Path, voice: VoiceConfig | None = None) -> KernelConfig:
 
 
 def _cloud_ready_config(tmp_path: Path, voice: VoiceConfig) -> KernelConfig:
-    """Cloud voice deliberately re-enabled: provider_policy raised off local_only
-    and the two voice standing grants enabled. This is the explicit opt-in the
-    egress gate requires — the default posture ([ollama] local_only, no grants)
-    refuses cloud voice (see test_cloud_voice_refused_by_default_egress_policy)."""
+    """The strongest posture a config could ever assert toward cloud voice:
+    provider_policy raised off local_only and the two dead voice standing grants
+    re-added. After the 2026-07-19 adapter removal, even this must change
+    nothing — there is no cloud code left for the grants to reach."""
     return KernelConfig(
         app=AppConfig(),
         paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -235,6 +260,123 @@ def test_converse_returns_tier1_latency_timing_breakdown(tmp_path: Path, monkeyp
     assert "playback_started" in timing["unavailable"]
 
 
+def _stream_events(client, payload: dict) -> list[dict]:
+    response = client.post("/voice/converse/stream", json=payload)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    return [json.loads(line) for line in response.text.splitlines() if line.strip()]
+
+
+def test_converse_stream_emits_governed_event_sequence(tmp_path: Path, monkeypatch) -> None:
+    """The streaming loop: transcript -> token* -> response -> audio* -> done.
+    Tokens carry the model draft; the audio is synthesized from the GOVERNED
+    final text (identical to what the response event carries); timing exposes
+    the real first-token and first-audio milestones batch mode never had."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+    client = TestClient(create_app(_config(tmp_path, _voice_config())))
+
+    events = _stream_events(client, {"audio_base64": FAKE_AUDIO, "use_semantic_memory": False, "contrarian": False})
+
+    kinds = [e["type"] for e in events]
+    assert kinds[0] == "transcript"
+    assert kinds[-1] == "done"
+    assert "response" in kinds and "token" in kinds and "audio" in kinds
+    # strict order: all tokens before the response event, all audio after it
+    assert max(i for i, k in enumerate(kinds) if k == "token") < kinds.index("response")
+    assert min(i for i, k in enumerate(kinds) if k == "audio") > kinds.index("response")
+
+    transcript = events[0]
+    assert transcript["text"] == "what should we prioritize next"
+    draft = "".join(e["text"] for e in events if e["type"] == "token")
+    response_event = next(e for e in events if e["type"] == "response")
+    assert draft == "Prioritize evidence intake this week."
+    assert response_event["response"]
+    assert response_event["event_id"]
+    # Spoken audio is the governed final text, chunked at sentence boundaries.
+    audio_events = [e for e in events if e["type"] == "audio"]
+    spoken = "".join(
+        base64.b64decode(e["audio_base64"]).decode("utf-8").removeprefix("FAKEWAV:") for e in audio_events
+    )
+    assert spoken == response_event["spoken_text"]
+    done = events[-1]
+    assert done["speech_error"] == ""
+    assert done["audio_chunks"] == len(audio_events)
+    timing = done["timing"]
+    assert timing["pipeline"] == "streaming"
+    assert timing["streaming"] == {"stt": False, "model": True, "tts": True, "playback": True}
+    assert timing["milestones_ms"]["model_first_token"] is not None
+    assert timing["milestones_ms"]["first_audio_byte"] is not None
+    assert timing["milestones_ms"]["first_audio_byte"] >= timing["milestones_ms"]["model_response_complete"]
+    # The exchange is audited as a streaming converse.
+    audit = client.get("/audit/recent")
+    assert "voice.converse_stream" in {e["action"] for e in audit.json()["events"]}
+
+
+def test_converse_stream_records_episodic_turns(tmp_path: Path, monkeypatch) -> None:
+    """Streaming answers land in conversation memory exactly like batch ones."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+    client = TestClient(create_app(_config(tmp_path, _voice_config())))
+    conversation = client.post("/conversations", json={"title": "Streamed voice thread"})
+    conversation_id = conversation.json()["conversation"]["id"]
+
+    events = _stream_events(
+        client,
+        {"audio_base64": FAKE_AUDIO, "conversation_id": conversation_id, "use_semantic_memory": False},
+    )
+
+    assert events[-1]["type"] == "done"
+    turns = client.get(f"/conversations/{conversation_id}/turns").json()["turns"]
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert turns[0]["content"] == "what should we prioritize next"
+
+
+def test_converse_stream_surfaces_errors_as_events(tmp_path: Path, monkeypatch) -> None:
+    """A stream cannot change its HTTP status mid-flight, so failures arrive as
+    an explicit error event — never a silent truncation."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    patch_ollama_model(monkeypatch, fake_generate)
+    broken_stt = VoiceConfig(
+        stt_command=(sys.executable, "-c", FAILING_SCRIPT, "{audio}", "{transcript}"),
+        tts_command=(sys.executable, "-c", TTS_SCRIPT, "{output}"),
+    )
+    client = TestClient(create_app(_config(tmp_path, broken_stt)))
+
+    events = _stream_events(client, {"audio_base64": FAKE_AUDIO, "use_semantic_memory": False})
+
+    assert [e["type"] for e in events] == ["error"]
+    assert "exit 3" in events[0]["detail"]
+
+    # TTS failure mid-stream: the reply still arrives in text, with the error named.
+    stt_only = VoiceConfig(
+        stt_command=(sys.executable, "-c", STT_SCRIPT, "{audio}", "{transcript}"),
+        tts_command=(sys.executable, "-c", FAILING_SCRIPT, "{output}"),
+    )
+    client2 = TestClient(create_app(_config(tmp_path / "second", stt_only)))
+    events2 = _stream_events(client2, {"audio_base64": FAKE_AUDIO, "use_semantic_memory": False})
+    kinds2 = [e["type"] for e in events2]
+    assert "response" in kinds2 and "audio" not in kinds2
+    assert events2[-1]["type"] == "done"
+    assert "exit 3" in events2[-1]["speech_error"]
+
+
+def test_speech_chunks_split_on_sentences_first_chunk_small() -> None:
+    from cofounder_kernel.voice import _speech_chunks
+
+    assert _speech_chunks("") == []
+    assert _speech_chunks("One short reply.") == ["One short reply."]
+    long_first = "This is the opening sentence of a reply. " + " ".join(
+        f"Sentence number {i} carries more of the answer." for i in range(2, 10)
+    )
+    chunks = _speech_chunks(long_first)
+    assert len(chunks) >= 2
+    assert chunks[0] == "This is the opening sentence of a reply."  # fast first audio
+    assert all(len(c) <= 400 for c in chunks)
+    # Nothing lost, nothing reordered, sentences never split mid-way.
+    assert " ".join(chunks) == long_first
+
+
 def test_voice_surfaces_send_and_render_latency_timing() -> None:
     standalone = Path("ui/voice.html").read_text(encoding="utf-8")
     dashboard = Path("ui/index.html").read_text(encoding="utf-8")
@@ -307,45 +449,55 @@ def test_converse_speak_full_includes_contrarian_block(tmp_path: Path, monkeypat
 
 
 def _cloud_voice_config() -> VoiceConfig:
-    return VoiceConfig(stt_engine="deepgram", tts_engine="elevenlabs", tts_voice="voice123")
+    return VoiceConfig(stt_engine="deepgram", tts_engine="elevenlabs")
 
 
-class FakeHttpResponse(io.BytesIO):
-    status = 200
+def test_cloud_voice_engines_are_gone_and_refuse_as_removed(tmp_path: Path, monkeypatch) -> None:
+    """Stage-2 teardown: the Deepgram/ElevenLabs adapter code is DELETED. Even
+    the strongest possible opt-in — cloud engine names configured, BOTH dead
+    standing grants present, provider_policy raised, API keys set — refuses
+    every voice operation without attempting a network call, and the refusal
+    names the removal and the local path forward."""
+    import urllib.request
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-
-def test_cloud_voice_lane_is_dead_no_bytes_can_leave(tmp_path: Path, monkeypatch) -> None:
-    """The cloud voice lane is torn down at the egress matrix: FOUNDER_AUDIO and
-    REPLY_TEXT × cloud_service are FORBIDDEN. Even the strongest possible
-    opt-in — cloud engines configured, BOTH standing grants present, API keys
-    set — must refuse every voice operation WITHOUT attempting a network call.
-    (Voice went actually-local 2026-07-17; the adapters are dead code until
-    their stage-2 removal, and dead code must not be reachable.)"""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     patch_ollama_model(monkeypatch, fake_generate)
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-key")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
 
-    def forbidden_urlopen(request, timeout=120):
-        raise AssertionError(f"cloud voice attempted a network call: {request.full_url}")
+    def forbidden_urlopen(request, *args, **kwargs):
+        raise AssertionError(f"cloud voice attempted a network call: {request}")
 
-    monkeypatch.setattr(voice_module.urllib.request, "urlopen", forbidden_urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", forbidden_urlopen)
     client = TestClient(create_app(_cloud_ready_config(tmp_path, _cloud_voice_config())))
 
+    status = client.get("/voice/status")
     transcribe = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
     speak = client.post("/voice/speak", json={"text": "hello"})
     converse = client.post("/voice/converse", json={"audio_base64": FAKE_AUDIO, "use_semantic_memory": False})
 
+    # status reports the config as unusable, not ready
+    assert status.status_code == 200
+    assert status.json()["ready"] is False
+    assert status.json()["stt"]["supported"] is False
+    assert "removed" in status.json()["stt"]["reason"]
     # every operation refuses loudly; forbidden_urlopen proves zero bytes left
     assert transcribe.status_code == 503
+    assert "removed" in transcribe.json()["detail"]
+    assert "command" in transcribe.json()["detail"]
     assert speak.status_code == 503
+    assert "removed" in speak.json()["detail"]
     assert converse.status_code == 503
+
+
+def test_voice_module_has_no_cloud_remnants() -> None:
+    """The adapter removal is total: no cloud hosts, no API-key plumbing, no
+    urllib in the voice module. Guards against a partial revert."""
+    import inspect
+
+    source = inspect.getsource(voice_module)
+    for remnant in ("api.deepgram.com", "api.elevenlabs.io", "urllib", "api_key", "_http_call"):
+        assert remnant not in source, f"cloud-voice remnant in voice.py: {remnant}"
 
 
 def test_engine_failure_and_tts_degradation_are_handled(tmp_path: Path, monkeypatch) -> None:
@@ -487,32 +639,27 @@ def test_empty_local_transcript_blames_the_format_not_silence(tmp_path: Path, mo
     assert "stt_command" in detail
 
 
-def test_cloud_voice_refused_by_default_egress_policy(tmp_path: Path, monkeypatch) -> None:
-    """Default posture ([ollama] local_only, no [egress] standing grants): cloud
-    STT/TTS is refused by the egress gate BEFORE any bytes leave — even with the
-    API keys set — and the refusal names the local engine as the way forward.
-    The refusal is audited (redacted). No network call is made."""
+def test_cloud_engine_names_refuse_under_default_posture_too(tmp_path: Path, monkeypatch) -> None:
+    """Default posture ([ollama] local_only, no [egress] grants) with cloud
+    engine names in config: same refusal, no network call — the removal does
+    not depend on egress posture; the code simply is not there."""
+    import urllib.request
+
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-key")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
 
-    def exploding_urlopen(request, timeout=120):
-        raise AssertionError("egress gate must refuse before any network call")
+    def exploding_urlopen(request, *args, **kwargs):
+        raise AssertionError("removed cloud voice must never reach the network")
 
-    monkeypatch.setattr(voice_module.urllib.request, "urlopen", exploding_urlopen)
-    # Cloud engines selected, but provider_policy stays local_only and no grants.
+    monkeypatch.setattr(urllib.request, "urlopen", exploding_urlopen)
     client = TestClient(create_app(_config(tmp_path, _cloud_voice_config())))
 
     transcribe = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
     speak = client.post("/voice/speak", json={"text": "hello"})
-    audit = client.get("/audit/recent")
 
     assert transcribe.status_code == 503
-    assert "egress policy" in transcribe.json()["detail"]
+    assert "removed" in transcribe.json()["detail"]
     assert "command" in transcribe.json()["detail"]
     assert speak.status_code == 503
-    assert "egress policy" in speak.json()["detail"]
-    # The refusal is recorded, and the audit row carries no audio/text payload.
-    events = audit.json()["events"]
-    egress_events = [e for e in events if e["action"] == "egress.decision"]
-    assert egress_events and all(e["status"] == "refused" for e in egress_events)
+    assert "removed" in speak.json()["detail"]

@@ -206,12 +206,10 @@
       return `<div class="status-cell" title="${esc(hint || '')}"><strong>${d}${esc(value)}</strong><span>${esc(label)}</span></div>`;
     }
 
-    // Engine names arrive as raw config values ("command", "deepgram",
-    // "elevenlabs"); show them the way a non-technical founder would expect.
+    // Engine names arrive as raw config values; voice is local-only, so
+    // "command" is the only supported engine.
     function prettyEngineLabel(engine) {
       if (engine === 'command') return 'Local command-line tool';
-      if (engine === 'deepgram') return 'Deepgram (cloud)';
-      if (engine === 'elevenlabs') return 'ElevenLabs (cloud)';
       return prettyLabel(engine);
     }
 
@@ -223,8 +221,8 @@
     async function loadStatus() {
       try {
         const s = await api('/voice/status');
-        const sttDot = s.stt.configured && (s.stt.engine === 'command' ? s.stt.binary_found : s.stt.credential_set) ? 'ok' : 'bad';
-        const ttsDot = s.tts.configured && (s.tts.engine === 'command' ? s.tts.binary_found : s.tts.credential_set) ? 'ok' : 'bad';
+        const sttDot = s.stt.configured && s.stt.binary_found ? 'ok' : 'bad';
+        const ttsDot = s.tts.configured && s.tts.binary_found ? 'ok' : 'bad';
         state.ready = s.ready && sttDot === 'ok' && ttsDot === 'ok';
         byId('status').innerHTML = [
           statusCell(prettyEngineLabel(s.stt.engine), 'Listens to you (speech-to-text)', sttDot, 'The tool Zade uses to turn your voice into text'),
@@ -234,8 +232,8 @@
         ].join('');
         if (!state.ready) {
           const missing = [];
-          if (sttDot !== 'ok') missing.push('speech-to-text (' + (s.stt.credential_env || 'command') + ')');
-          if (ttsDot !== 'ok') missing.push('text-to-speech (' + (s.tts.credential_env || 'command') + ')');
+          if (sttDot !== 'ok') missing.push('speech-to-text (command)');
+          if (ttsDot !== 'ok') missing.push('text-to-speech (command)');
           notice('Voice isn\'t fully set up yet: ' + missing.join(', ') + '. Set the engine and credentials in config.toml, then restart the kernel.', true);
         }
       } catch (err) {
@@ -370,6 +368,90 @@
       });
     }
 
+    // Sequential playback of streamed TTS chunks: each 'audio' event queues a
+    // WAV; chunks play back-to-back so the reply sounds continuous while later
+    // sentences are still being synthesized server-side.
+    function makeAudioQueue(onFirstPlay) {
+      const queue = [];
+      let playing = false;
+      let firstStarted = false;
+      function playNext() {
+        if (playing || !queue.length) return;
+        playing = true;
+        const audio = queue.shift();
+        audio.addEventListener('ended', () => { playing = false; playNext(); });
+        audio.addEventListener('error', () => { playing = false; playNext(); });
+        audio.play().then(() => {
+          if (!firstStarted) { firstStarted = true; onFirstPlay(); }
+        }).catch(() => { playing = false; playNext(); });
+      }
+      return {
+        push(base64, format) {
+          queue.push(new Audio('data:audio/' + (format || 'wav') + ';base64,' + base64));
+          playNext();
+        }
+      };
+    }
+
+    // Streaming voice loop: transcript -> draft tokens (display) -> governed
+    // response -> sentence-chunked audio -> done. The spoken audio is always
+    // the governed final text; tokens are the live draft for the caption.
+    async function converseStreaming(body, clientTiming, play) {
+      const response = await fetch('/voice/converse/stream', {
+        method: 'POST', headers: headers(), body: JSON.stringify(body)
+      });
+      if (!response.ok || !response.body) return false; // older kernel: caller falls back to batch
+      const audioQueue = makeAudioQueue(() => {
+        clientTiming.playback_started_at_ms = performance.now();
+        if (state.lastTimingResult) renderTiming(state.lastTimingResult, clientTiming);
+      });
+      let draft = '';
+      let zadeBubble = null;
+      let sawError = null;
+      const handleEvent = (event) => {
+        if (event.type === 'transcript') {
+          addBubble('You', event.text || '(no speech detected)');
+          byId('micState').textContent = 'Thinking…';
+        } else if (event.type === 'token') {
+          draft += event.text;
+          setCaption(draft + ' ▌');
+          if (!zadeBubble) zadeBubble = addBubble('Zade', '');
+          zadeBubble.el.querySelector('.body').textContent = draft + ' ▌';
+        } else if (event.type === 'response') {
+          const fullText = event.response || event.spoken_text || '(no reply)';
+          setCaption(fullText);
+          if (!zadeBubble) zadeBubble = addBubble('Zade', '');
+          zadeBubble.el.querySelector('.body').textContent = fullText;
+        } else if (event.type === 'audio') {
+          if (play) audioQueue.push(event.audio_base64, event.format);
+        } else if (event.type === 'done') {
+          clientTiming.response_received_at_ms = performance.now();
+          state.lastTimingResult = { timing: event.timing, speech_error: event.speech_error };
+          renderTiming(state.lastTimingResult, clientTiming);
+          if (event.speech_error) notice('Answer ready, but speech failed: ' + event.speech_error + ' — text is shown above.', true);
+          else notice('');
+        } else if (event.type === 'error') {
+          sawError = event.detail || 'voice stream failed';
+        }
+      };
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        let newline;
+        while ((newline = buffered.indexOf('\n')) >= 0) {
+          const line = buffered.slice(0, newline).trim();
+          buffered = buffered.slice(newline + 1);
+          if (line) handleEvent(JSON.parse(line));
+        }
+      }
+      if (sawError) throw new Error(sawError);
+      return true;
+    }
+
     async function sendRecording(mimeType) {
       try {
         const blob = new Blob(state.chunks, { type: mimeType || 'audio/webm' });
@@ -383,33 +465,41 @@
           recording_stopped_at_ms: state.recordingStoppedAtMs,
           request_started_at_ms: performance.now()
         };
-        const result = await api('/voice/converse', {
-          method: 'POST',
-          body: JSON.stringify({
-            audio_base64,
-            audio_mime: blob.type || mimeType || 'audio/webm',
-            conversation_id,
-            task_type: byId('taskType').value,
-            speak_full: byId('speakFull').checked,
-            speak_response: play,
-            client_timing: clientTiming
-          })
-        });
-        clientTiming.response_received_at_ms = performance.now();
-        addBubble('You', result.transcript || '(no speech detected)');
-        const speech = result.speech || {};
-        const fullText = result.response || result.spoken_text || '(no reply)';
-        setCaption(fullText);
-        const added = addBubble('Zade', fullText, speech.audio_base64, 'audio/' + (speech.format || 'mpeg'), play);
-        renderTiming(result, clientTiming);
-        if (added.audio) {
-          added.audio.addEventListener('playing', () => {
-            clientTiming.playback_started_at_ms = performance.now();
-            renderTiming(result, clientTiming);
-          }, { once: true });
+        const body = {
+          audio_base64,
+          audio_mime: blob.type || mimeType || 'audio/webm',
+          conversation_id,
+          task_type: byId('taskType').value,
+          speak_full: byId('speakFull').checked,
+          speak_response: play,
+          client_timing: clientTiming
+        };
+        let streamed = false;
+        try {
+          streamed = await converseStreaming(body, clientTiming, play);
+        } catch (streamErr) {
+          notice('Voice exchange failed: ' + streamErr.message, true);
+          return;
         }
-        if (result.speech_error) notice('Answer ready, but speech failed: ' + result.speech_error + ' — text is shown above.', true);
-        else notice('');
+        if (!streamed) {
+          // Fallback: batch endpoint (older kernel or stream unavailable).
+          const result = await api('/voice/converse', { method: 'POST', body: JSON.stringify(body) });
+          clientTiming.response_received_at_ms = performance.now();
+          addBubble('You', result.transcript || '(no speech detected)');
+          const speech = result.speech || {};
+          const fullText = result.response || result.spoken_text || '(no reply)';
+          setCaption(fullText);
+          const added = addBubble('Zade', fullText, speech.audio_base64, 'audio/' + (speech.format || 'mpeg'), play);
+          renderTiming(result, clientTiming);
+          if (added.audio) {
+            added.audio.addEventListener('playing', () => {
+              clientTiming.playback_started_at_ms = performance.now();
+              renderTiming(result, clientTiming);
+            }, { once: true });
+          }
+          if (result.speech_error) notice('Answer ready, but speech failed: ' + result.speech_error + ' — text is shown above.', true);
+          else notice('');
+        }
       } catch (err) {
         notice('Voice exchange failed: ' + err.message, true);
       } finally {

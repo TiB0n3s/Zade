@@ -25,6 +25,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 | Name | Category | Permission | Description |
 | --- | --- | --- | --- |
 | `audit.recent` | audit | `L0_READ` | Read recent local audit events. |
+| `evidence.recent` | evidence | `L0_READ` | Read recently filed founder-OS evidence records. Read-only. |
 | `memory.forget` | memory | `L1_MEMORY_WRITE` | Delete a local memory record and its search-index entry at the founder's request. |
 | `memory.search` | memory | `L0_READ` | Search local memory using SQLite FTS. |
 | `memory.write` | memory | `L1_MEMORY_WRITE` | Write a local memory record to SQLite. |
@@ -110,7 +111,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 
 <!-- AUTO-START: voice-loop -->
 - Pipeline: browser audio -> STT -> governed `runtime.respond()` -> TTS -> browser playback.
-- Streaming posture: batch non-streaming; first model token and streaming TTS are not exposed yet.
+- Streaming posture: `/voice/converse/stream` streams draft tokens + sentence-chunked TTS; spoken audio is always the governed final text. Batch `/voice/converse` remains.
 - STT: `command` (configured, local).
 - TTS: `command` (configured, local).
 - Ready: yes; cloud engines in use: no; timeout: 120s.
@@ -128,6 +129,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `3509e5b` 2026-07-19 - Persona primacy: identity leads the prompt; contrarian memo only on explicit request
 - `81c6f73` 2026-07-19 - Make Ollama request timeout configurable; raise default to 600s
 - `d3fe1d9` 2026-07-18 - Add direct Telegram Bot API adapter; retire OpenClaw for channels
 - `fa6e28c` 2026-07-18 - Merge branch 'main' into codex/token-budgeted-build-delegation
@@ -139,7 +141,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `27efc28` 2026-07-18 - feat: route build work local first
 - `c46c4eb` 2026-07-18 - feat: enforce atomic cloud budgets
 - `64f1090` 2026-07-18 - Channel transport, ingress hardening, egress ledger
-- `a90fa9d` 2026-07-18 - feat: persist build sessions and leases
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

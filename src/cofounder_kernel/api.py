@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import hmac
+import json
 import logging
 import os
 import secrets
@@ -11,7 +12,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .approval import ApprovalService
@@ -1291,6 +1292,22 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/voice/converse/stream")
+    def voice_converse_stream(payload: VoiceConverseRequest) -> StreamingResponse:
+        """Streaming voice loop: NDJSON events (transcript -> token* -> response
+        -> audio* -> done). Errors after the stream opens arrive as an
+        {"type": "error"} event, not an HTTP status — a stream cannot change
+        its status code mid-flight."""
+
+        def event_lines() -> Any:
+            try:
+                for event in voice.converse_stream(**payload.model_dump()):
+                    yield json.dumps(event) + "\n"
+            except (VoiceNotConfigured, OllamaError, ValueError) as exc:
+                yield json.dumps({"type": "error", "detail": str(exc)}) + "\n"
+
+        return StreamingResponse(event_lines(), media_type="application/x-ndjson")
 
     @app.post("/action-plans")
     def create_action_plan(payload: ActionPlanCreate) -> dict[str, Any]:
@@ -3244,6 +3261,7 @@ def _inventory_payload(
             "POST /voice/transcribe",
             "POST /voice/speak",
             "POST /voice/converse",
+            "POST /voice/converse/stream",
         ],
         "engines": {
             "stt_configured": cfg.voice.stt_configured,

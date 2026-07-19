@@ -69,10 +69,10 @@ def test_integrations_generator_renders_fixture_integrations() -> None:
                 "summary": "Chat model qwen3:14b at http://127.0.0.1:11434.",
             },
             {
-                "name": "Deepgram",
-                "mode": "cloud",
-                "source": "config.voice",
-                "summary": "STT engine; key from DEEPGRAM_API_KEY.",
+                "name": "Trading-bot bridge",
+                "mode": "local WSL",
+                "source": "config.trading_bot",
+                "summary": "Read-only activity snapshot bridge.",
             },
         ]
     )
@@ -80,28 +80,29 @@ def test_integrations_generator_renders_fixture_integrations() -> None:
     assert markdown == (
         "| Name | Mode | Source | Summary |\n"
         "| --- | --- | --- | --- |\n"
-        "| Deepgram | cloud | `config.voice` | STT engine; key from DEEPGRAM_API_KEY. |\n"
-        "| Ollama | local | `config.ollama` | Chat model qwen3:14b at http://127.0.0.1:11434. |"
+        "| Ollama | local | `config.ollama` | Chat model qwen3:14b at http://127.0.0.1:11434. |\n"
+        "| Trading-bot bridge | local WSL | `config.trading_bot` | Read-only activity snapshot bridge. |"
     )
 
 
 def test_voice_loop_generator_renders_fixture_status() -> None:
     markdown = render_voice_loop(
         {
-            "stt": {"engine": "deepgram", "configured": True, "cloud": True, "model": "nova-2"},
-            "tts": {"engine": "elevenlabs", "configured": True, "cloud": True, "model": "eleven_turbo_v2_5"},
+            "stt": {"engine": "command", "configured": True},
+            "tts": {"engine": "command", "configured": True},
             "ready": True,
-            "cloud_engines_in_use": True,
+            "cloud_engines_in_use": False,
             "timeout_seconds": 120.0,
         }
     )
 
     assert markdown == (
         "- Pipeline: browser audio -> STT -> governed `runtime.respond()` -> TTS -> browser playback.\n"
-        "- Streaming posture: batch non-streaming; first model token and streaming TTS are not exposed yet.\n"
-        "- STT: `deepgram` (configured, cloud, model `nova-2`).\n"
-        "- TTS: `elevenlabs` (configured, cloud, model `eleven_turbo_v2_5`).\n"
-        "- Ready: yes; cloud engines in use: yes; timeout: 120s."
+        "- Streaming posture: `/voice/converse/stream` streams draft tokens + sentence-chunked TTS; "
+        "spoken audio is always the governed final text. Batch `/voice/converse` remains.\n"
+        "- STT: `command` (configured, local).\n"
+        "- TTS: `command` (configured, local).\n"
+        "- Ready: yes; cloud engines in use: no; timeout: 120s."
     )
 
 

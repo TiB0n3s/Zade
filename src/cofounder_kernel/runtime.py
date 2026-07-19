@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from .authority import AuthorityDecision, AuthorityPolicy, AuthorityRequest, AuthorityResult
@@ -484,7 +484,13 @@ class RuntimeService:
         contrarian: bool | None = None,
         use_tools: bool | None = None,
         authority_ceiling: str | None = None,
+        on_token: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
+        # on_token streams the DRAFT model tokens (display-only) as they are
+        # generated; the returned response is still the fully governed text
+        # (repair, regulator, contrarian) and can differ from the streamed
+        # draft. Ignored when the investigation tool loop runs — a tool loop
+        # interleaves model calls and cannot stream one coherent draft.
         # authority_ceiling caps a NON-local caller (a channel-authenticated
         # founder message): below L3 it may converse but never autonomously trigger
         # the L3 action routes (chat action / research / build). None = local
@@ -557,6 +563,14 @@ class RuntimeService:
             if resolved_use_tools:
                 generated, investigation_summary = self.investigation.run_loop(
                     messages=model_messages,
+                    model=selected_model,
+                    think=resolved_think,
+                    temperature=self.config.ollama.chat_temperature,
+                )
+            elif on_token is not None:
+                generated = self.ollama.chat_stream(
+                    messages=model_messages,
+                    on_token=on_token,
                     model=selected_model,
                     think=resolved_think,
                     temperature=self.config.ollama.chat_temperature,

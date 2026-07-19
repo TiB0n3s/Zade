@@ -84,6 +84,14 @@ class ToolRegistry:
                 handler=self._work_status,
             )
         )
+        self.register(
+            ToolDefinition(
+                name="evidence.recent",
+                description="Read recently filed founder-OS evidence records. Read-only.",
+                permission_tier=PermissionTier.READ,
+                handler=self._evidence_recent,
+            )
+        )
 
     def register(self, tool: ToolDefinition) -> None:
         self._tools[tool.name] = tool
@@ -256,6 +264,35 @@ class ToolRegistry:
             for item in self.db.list_work_items(status=status, limit=limit)
         ]
         return ToolResult(ok=True, data={"counts": self.db.work_queue_counts(), "items": items})
+
+    def _evidence_recent(self, args: dict[str, Any]) -> ToolResult:
+        """Filed-evidence readout: the most recent founder_evidence rows, newest
+        first. Read-only and curated — the metadata blob stays internal; a reader
+        gets the claim, grade, strength, and linkage, which is what an external
+        reviewer needs to judge what evidence exists and how strong it is."""
+        limit = max(1, min(int(args.get("limit", 10)), 50))
+        reliability = str(args.get("reliability") or "").strip().upper() or None
+        evidence_type = str(args.get("evidence_type") or "").strip() or None
+        query = (
+            "SELECT id, created_at, evidence_type, source, evidence_date, reliability, "
+            "strength, claim_supported, claim_contradicted, linked_assumption_id, "
+            "linked_decision_id, notes FROM founder_evidence"
+        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if reliability:
+            clauses.append("reliability = ?")
+            params.append(reliability)
+        if evidence_type:
+            clauses.append("evidence_type = ?")
+            params.append(evidence_type)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        with self.db.connect() as conn:
+            rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+        return ToolResult(ok=True, data={"evidence": rows, "count": len(rows)})
 
     def _audit_recent(self, args: dict[str, Any]) -> ToolResult:
         # 'audit_scope_actor' is a caller-set control: the agent surface pins it to

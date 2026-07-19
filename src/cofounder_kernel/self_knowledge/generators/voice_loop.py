@@ -15,7 +15,7 @@ def render_voice_loop(status: Mapping[str, Any]) -> str:
         return "\n".join(
             [
                 "- Pipeline: browser audio -> STT -> governed `runtime.respond()` -> TTS -> browser playback.",
-                "- Streaming posture: batch non-streaming; first model token and streaming TTS are not exposed yet.",
+                "- Streaming posture: `/voice/converse/stream` streams draft tokens + sentence-chunked TTS; spoken audio is always the governed final text. Batch `/voice/converse` remains.",
                 stt,
                 tts,
                 (

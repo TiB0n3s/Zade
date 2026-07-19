@@ -150,45 +150,33 @@ class SkillConfig:
 
 @dataclass(frozen=True)
 class VoiceConfig:
-    """Founder-configured speech engines.
+    """Founder-configured speech engines. Local-only.
 
-    Engine "command" runs local argv arrays without a shell (e.g. whisper.cpp
-    and piper). STT commands may use the placeholders {audio}, {transcript},
-    and {transcript_base}; TTS commands may use {output} and receive the text
-    to speak on stdin.
+    The single supported engine, "command", runs local argv arrays without a
+    shell (e.g. whisper.cpp and piper). STT commands may use the placeholders
+    {audio}, {transcript}, and {transcript_base}; TTS commands may use {output}
+    and receive the text to speak on stdin. The former cloud engines
+    (deepgram/elevenlabs) were removed 2026-07-19; a config still naming one
+    fails closed as unconfigured.
 
-    Engines "deepgram" (STT) and "elevenlabs" (TTS) call the founder's cloud
-    speech APIs. Selecting one is an explicit standing grant: audio and reply
-    text leave the machine. API keys are read from the referenced environment
-    variables and are never stored in config files or the database.
-
-    ``ffmpeg_path`` is only consulted for the local "command" STT engine, which
-    needs 16 kHz mono PCM WAV; leave it empty to find ffmpeg on PATH.
+    ``ffmpeg_path`` is only consulted for STT input conversion, which needs
+    16 kHz mono PCM WAV; leave it empty to find ffmpeg on PATH.
     """
 
     stt_engine: str = "command"
     tts_engine: str = "command"
     stt_command: tuple[str, ...] = ()
     tts_command: tuple[str, ...] = ()
-    stt_api_key_env: str = "DEEPGRAM_API_KEY"
-    tts_api_key_env: str = "ELEVENLABS_API_KEY"
-    stt_model: str = "nova-2"
-    tts_model: str = "eleven_turbo_v2_5"
-    tts_voice: str = "21m00Tcm4TlvDq8ikWAM"
     timeout_seconds: float = 120.0
     ffmpeg_path: str = ""
 
     @property
     def stt_configured(self) -> bool:
-        if self.stt_engine == "command":
-            return bool(self.stt_command)
-        return True
+        return self.stt_engine == "command" and bool(self.stt_command)
 
     @property
     def tts_configured(self) -> bool:
-        if self.tts_engine == "command":
-            return bool(self.tts_command)
-        return True
+        return self.tts_engine == "command" and bool(self.tts_command)
 
 
 @dataclass(frozen=True)
@@ -544,9 +532,9 @@ class EgressConfig:
     """Data-class egress gate (see egress.py and EGRESS-DESIGN.md).
 
     ``standing_grants`` are durable ``"data_class:vendor"`` authorizations for
-    the matrix's STANDING cells — e.g. ``"founder_audio:deepgram"`` re-enables
-    cloud STT. Empty by default: under the shipped local-first posture nothing
-    cloud egresses, and the gate is inert anyway while
+    the matrix's STANDING cells — e.g. ``"reply_text:telegram"`` lets governed
+    channel replies leave. Empty by default: under the shipped local-first
+    posture nothing cloud egresses, and the gate is inert anyway while
     ``[ollama] provider_policy`` stays ``local_only``. The gate reads
     provider_policy from the ollama section; it is not duplicated here.
     """
@@ -688,11 +676,6 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         tts_engine=str(voice_raw.get("tts_engine", "command")).strip().lower(),
         stt_command=_command(voice_raw.get("stt_command")),
         tts_command=_command(voice_raw.get("tts_command")),
-        stt_api_key_env=str(voice_raw.get("stt_api_key_env", "DEEPGRAM_API_KEY")).strip(),
-        tts_api_key_env=str(voice_raw.get("tts_api_key_env", "ELEVENLABS_API_KEY")).strip(),
-        stt_model=str(voice_raw.get("stt_model", "nova-2")).strip(),
-        tts_model=str(voice_raw.get("tts_model", "eleven_turbo_v2_5")).strip(),
-        tts_voice=str(voice_raw.get("tts_voice", "21m00Tcm4TlvDq8ikWAM")).strip(),
         timeout_seconds=float(voice_raw.get("timeout_seconds", 120.0)),
         ffmpeg_path=str(voice_raw.get("ffmpeg_path", "")).strip(),
     )

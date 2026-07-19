@@ -2,23 +2,19 @@ from __future__ import annotations
 
 import base64
 import binascii
-import json
-import os
+import queue
+import re
 import shutil
 import subprocess
+import threading
 import time
 import wave
-import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-from . import netguard
 from .config import KernelConfig
 from .db import KernelDatabase
-from .egress import DataClass, EgressPolicy, EgressRequest
 from .runtime import RuntimeService
 
 
@@ -26,15 +22,15 @@ CONTRARIAN_MARKER = "\n---\nContrarian check"
 STDERR_EXCERPT_CHARS = 400
 SPOKEN_TEXT_MAX_CHARS = 4000
 
-STT_ENGINES = {"command", "deepgram"}
-TTS_ENGINES = {"command", "elevenlabs"}
+# Voice is local-only. The cloud engines (Deepgram STT / ElevenLabs TTS) were
+# torn down in two stages: 2026-07-17 flipped their egress-matrix cells to
+# FORBIDDEN; 2026-07-19 removed the adapter code entirely. Re-adding cloud
+# voice is a deliberate rebuild, not a config flip.
+STT_ENGINES = {"command"}
+TTS_ENGINES = {"command"}
+_REMOVED_CLOUD_ENGINES = {"deepgram", "elevenlabs"}
 # whisper.cpp reads 16 kHz mono PCM WAV and nothing else.
 WHISPER_SAMPLE_RATE = 16000
-DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
-ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
-# Voice traffic carries transcripts and spoken text; lock egress to exactly the
-# two cloud hosts so a misconfigured or injected endpoint cannot exfiltrate it.
-_VOICE_ALLOWED_HOSTS = frozenset({"api.deepgram.com", "api.elevenlabs.io"})
 
 
 class VoiceService:
@@ -62,28 +58,17 @@ class VoiceService:
         if voice.stt_engine == "command":
             stt |= {"command": list(voice.stt_command), "binary_found": _binary_found(voice.stt_command)}
         else:
-            stt |= {
-                "model": voice.stt_model,
-                "credential_env": voice.stt_api_key_env,
-                "credential_set": bool(os.environ.get(voice.stt_api_key_env)),
-                "cloud": True,
-            }
+            stt |= {"supported": False, "reason": _unsupported_engine_reason("STT", voice.stt_engine)}
         tts: dict[str, Any] = {"engine": voice.tts_engine, "configured": voice.tts_configured}
         if voice.tts_engine == "command":
             tts |= {"command": list(voice.tts_command), "binary_found": _binary_found(voice.tts_command)}
         else:
-            tts |= {
-                "model": voice.tts_model,
-                "voice_id": voice.tts_voice,
-                "credential_env": voice.tts_api_key_env,
-                "credential_set": bool(os.environ.get(voice.tts_api_key_env)),
-                "cloud": True,
-            }
+            tts |= {"supported": False, "reason": _unsupported_engine_reason("TTS", voice.tts_engine)}
         return {
             "stt": stt,
             "tts": tts,
             "ready": voice.stt_configured and voice.tts_configured,
-            "cloud_engines_in_use": voice.stt_engine != "command" or voice.tts_engine != "command",
+            "cloud_engines_in_use": False,
             "voice_dir": str(self.voice_dir),
             "timeout_seconds": voice.timeout_seconds,
         }
@@ -91,7 +76,7 @@ class VoiceService:
     def transcribe(self, *, audio_base64: str, audio_mime: str = "audio/wav") -> dict[str, Any]:
         engine = self.config.voice.stt_engine
         if engine not in STT_ENGINES:
-            raise ValueError(f"Unknown STT engine: {engine}. Supported: {', '.join(sorted(STT_ENGINES))}")
+            raise VoiceNotConfigured(_unsupported_engine_reason("STT", engine))
         if not self.config.voice.stt_configured:
             raise VoiceNotConfigured("STT engine is not configured; set [voice] stt_command in config.toml.")
         audio_bytes = _decode_audio(audio_base64)
@@ -99,34 +84,26 @@ class VoiceService:
         audio_path = self._write_artifact(f"{stamp}-in{_ext_for_mime(audio_mime)}", audio_bytes)
         transcript_path = self.voice_dir / f"{stamp}-transcript.txt"
         started = time.perf_counter()
-        engine_audio_path = audio_path
-        converted = False
-        if engine == "deepgram":
-            text = self._transcribe_deepgram(audio_bytes, mime=audio_mime)
-            transcript_path.write_text(text, encoding="utf-8")
-        else:
-            engine_audio_path, converted = self._normalize_for_local_stt(audio_path)
-            self._run_engine(
-                self.config.voice.stt_command,
-                replacements={
-                    "{audio}": str(engine_audio_path),
-                    "{transcript}": str(transcript_path),
-                    "{transcript_base}": str(transcript_path.with_suffix("")),
-                },
-                engine="stt",
-            )
-            text = _read_transcript(transcript_path)
+        engine_audio_path, converted = self._normalize_for_local_stt(audio_path)
+        self._run_engine(
+            self.config.voice.stt_command,
+            replacements={
+                "{audio}": str(engine_audio_path),
+                "{transcript}": str(transcript_path),
+                "{transcript_base}": str(transcript_path.with_suffix("")),
+            },
+            engine="stt",
+        )
+        text = _read_transcript(transcript_path)
         latency_ms = int((time.perf_counter() - started) * 1000)
         if not text:
-            if engine == "command":
-                # whisper.cpp exits 0 on audio it cannot decode, so an empty
-                # transcript is usually a format/command problem, not silence.
-                raise ValueError(
-                    "Local STT produced no transcript. Check the [voice] stt_command and that "
-                    f"{engine_audio_path.name} is 16 kHz mono PCM WAV — whisper.cpp exits "
-                    "successfully but writes nothing for audio it cannot decode."
-                )
-            raise ValueError("Transcription produced no text.")
+            # whisper.cpp exits 0 on audio it cannot decode, so an empty
+            # transcript is usually a format/command problem, not silence.
+            raise ValueError(
+                "Local STT produced no transcript. Check the [voice] stt_command and that "
+                f"{engine_audio_path.name} is 16 kHz mono PCM WAV — whisper.cpp exits "
+                "successfully but writes nothing for audio it cannot decode."
+            )
         self.db.audit(
             actor="voice",
             action="voice.transcribe",
@@ -152,30 +129,17 @@ class VoiceService:
     def speak(self, *, text: str) -> dict[str, Any]:
         engine = self.config.voice.tts_engine
         if engine not in TTS_ENGINES:
-            raise ValueError(f"Unknown TTS engine: {engine}. Supported: {', '.join(sorted(TTS_ENGINES))}")
+            raise VoiceNotConfigured(_unsupported_engine_reason("TTS", engine))
         if not self.config.voice.tts_configured:
             raise VoiceNotConfigured("TTS engine is not configured; set [voice] tts_command in config.toml.")
         spoken = text.strip()[:SPOKEN_TEXT_MAX_CHARS]
         if not spoken:
             raise ValueError("Nothing to speak.")
         stamp = _stamp()
-        audio_format = "mp3" if engine == "elevenlabs" else "wav"
+        audio_format = "wav"
         output_path = self.voice_dir / f"{stamp}-out.{audio_format}"
-        self.voice_dir.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
-        if engine == "elevenlabs":
-            audio_bytes = self._speak_elevenlabs(spoken)
-            output_path.write_bytes(audio_bytes)
-        else:
-            self._run_engine(
-                self.config.voice.tts_command,
-                replacements={"{output}": str(output_path)},
-                engine="tts",
-                stdin_text=spoken,
-            )
-            if not output_path.is_file() or output_path.stat().st_size == 0:
-                raise ValueError("TTS engine produced no audio output.")
-            audio_bytes = output_path.read_bytes()
+        audio_bytes = self._synthesize_wav(spoken, output_path)
         latency_ms = int((time.perf_counter() - started) * 1000)
         self.db.audit(
             actor="voice",
@@ -281,91 +245,188 @@ class VoiceService:
             "timing": timing,
         }
 
-    def _transcribe_deepgram(self, audio_bytes: bytes, *, mime: str = "audio/wav") -> str:
-        # Raw founder audio is the most sensitive continuous stream in the system.
-        # Gate it through the data-class egress policy BEFORE the key is read or a
-        # single byte is sent — under the shipped local-first posture this refuses,
-        # and the local 'command' STT engine is the intended path.
-        self._assert_egress_allowed(
-            data_class=DataClass.FOUNDER_AUDIO, vendor="deepgram", purpose="voice.transcribe"
-        )
-        api_key = self._require_api_key(self.config.voice.stt_api_key_env, engine="Deepgram")
-        params = urllib.parse.urlencode({"model": self.config.voice.stt_model, "smart_format": "true"})
-        request = urllib.request.Request(
-            f"{DEEPGRAM_URL}?{params}",
-            data=audio_bytes,
-            headers={"Authorization": f"Token {api_key}", "Content-Type": _clean_mime(mime)},
-            method="POST",
-        )
-        payload = json.loads(self._http_call(request, engine="Deepgram STT").decode("utf-8", errors="replace"))
+    def converse_stream(
+        self,
+        *,
+        audio_base64: str,
+        audio_mime: str = "audio/wav",
+        conversation_id: int | None = None,
+        task_type: str = "general",
+        contrarian: bool | None = None,
+        use_semantic_memory: bool = True,
+        speak_response: bool = True,
+        speak_full: bool = False,
+        client_timing: dict[str, Any] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """The streaming voice loop: same governed pipeline as converse(), but
+        the client hears/sees progress as it happens instead of one batch reply.
+
+        Event order on the wire (NDJSON, one JSON object per line):
+          transcript -> token* -> response -> audio* -> done   (or: error)
+
+        Governance note: ``token`` events are the model's DRAFT, streamed for
+        display only. What is SPOKEN (the ``audio`` events) is synthesized from
+        the final governed response — repair, regulator, citations audit,
+        contrarian — exactly the text converse() would return. Streaming
+        changes when you hear it, never what governs it. TTS is chunked at
+        sentence boundaries so the first audio arrives after the first
+        sentence is synthesized, not after the whole reply."""
+        server_started = time.perf_counter()
         try:
-            transcript = payload["results"]["channels"][0]["alternatives"][0]["transcript"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ValueError(f"Deepgram STT returned an unexpected response shape: {exc}") from exc
-        return str(transcript).strip()
+            transcription = self.transcribe(audio_base64=audio_base64, audio_mime=audio_mime)
+        except ValueError as exc:
+            yield {"type": "error", "detail": str(exc), "stage": "transcribe"}
+            return
+        transcript_final_ms = _elapsed_ms(server_started)
+        yield {
+            "type": "transcript",
+            "text": transcription["text"],
+            "latency_ms": transcription["latency_ms"],
+            "transcript_final_ms": transcript_final_ms,
+        }
 
-    def _speak_elevenlabs(self, text: str) -> bytes:
-        # Reply text can embed answers and strategy — gate it before it leaves.
-        self._assert_egress_allowed(
-            data_class=DataClass.REPLY_TEXT, vendor="elevenlabs", purpose="voice.speak"
-        )
-        api_key = self._require_api_key(self.config.voice.tts_api_key_env, engine="ElevenLabs")
-        voice_id = urllib.parse.quote(self.config.voice.tts_voice, safe="")
-        request = urllib.request.Request(
-            f"{ELEVENLABS_URL}/{voice_id}",
-            data=json.dumps({"text": text, "model_id": self.config.voice.tts_model}).encode("utf-8"),
-            headers={"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
-            method="POST",
-        )
-        audio = self._http_call(request, engine="ElevenLabs TTS")
-        if not audio:
-            raise ValueError("ElevenLabs TTS returned no audio.")
-        return audio
+        # The model call is synchronous and long; run respond() in a worker so
+        # draft tokens can be forwarded to the client while it generates.
+        events: queue.Queue[Any] = queue.Queue()
+        first_token_ms: list[int] = []
 
-    def _require_api_key(self, env_name: str, *, engine: str) -> str:
-        api_key = os.environ.get(env_name, "").strip()
-        if not api_key:
-            raise VoiceNotConfigured(f"{engine} API key environment variable is not set: {env_name}")
-        return api_key
+        def on_token(delta: str) -> None:
+            if not first_token_ms:
+                first_token_ms.append(_elapsed_ms(server_started))
+            events.put({"type": "token", "text": delta})
 
-    def _assert_egress_allowed(self, *, data_class: DataClass, vendor: str, purpose: str) -> None:
-        """Run the data-class egress gate before any cloud voice bytes leave.
+        result_box: dict[str, Any] = {}
 
-        Composes with — does not replace — the netguard SSRF check in
-        ``_http_call``: this decides whether data of this class may go to this
-        vendor at all; netguard decides whether the network target is safe. Both
-        must pass. Every decision is audited (redacted — no audio, no text). A
-        refusal is surfaced as VoiceNotConfigured so the API returns 503 with
-        guidance, and so ``converse`` degrades to a text-only reply rather than
-        crashing when TTS is refused."""
-        decision = EgressPolicy.from_config(self.config).decide(
-            EgressRequest(request_id=_stamp(), data_class=data_class, vendor=vendor, purpose=purpose)
-        )
+        def worker() -> None:
+            try:
+                result_box["response"] = self.runtime.respond(
+                    message=transcription["text"],
+                    task_type=task_type,  # type: ignore[arg-type]
+                    conversation_id=conversation_id,
+                    contrarian=contrarian,
+                    use_semantic_memory=use_semantic_memory,
+                    # Voice stays tool-loop-free (latency) — and the tool loop
+                    # could not stream one coherent draft anyway.
+                    use_tools=False,
+                    on_token=on_token,
+                )
+            except Exception as exc:  # surfaced as an error event by the drain loop
+                result_box["error"] = exc
+            finally:
+                events.put(None)  # sentinel: generation finished either way
+
+        thread = threading.Thread(target=worker, name="voice-converse-stream", daemon=True)
+        thread.start()
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield item
+        thread.join()
+        if "error" in result_box:
+            yield {"type": "error", "detail": str(result_box["error"]), "stage": "respond"}
+            return
+        response = result_box["response"]
+        runtime_response_ms = _elapsed_ms(server_started) - transcript_final_ms
+        model_response_complete_ms = _elapsed_ms(server_started)
+        spoken_text = response["response"] if speak_full else _strip_contrarian_block(response["response"])
+        yield {
+            "type": "response",
+            "transcript": transcription["text"],
+            "response": response["response"],
+            "spoken_text": spoken_text,
+            "event_id": response["event_id"],
+            "model": response["model"],
+            "authority": response["authority"],
+            "governor": response["governor"],
+            "conversation": response.get("conversation"),
+            "contrarian": response.get("contrarian"),
+        }
+
+        speech_error = ""
+        chunk_count = 0
+        first_audio_byte_ms: int | None = None
+        audio_ready_ms: int | None = None
+        if speak_response:
+            stamp = _stamp()
+            for seq, chunk_text in enumerate(_speech_chunks(spoken_text)):
+                try:
+                    chunk_path = self.voice_dir / f"{stamp}-out-{seq}.wav"
+                    audio_bytes = self._synthesize_wav(chunk_text, chunk_path)
+                except (VoiceNotConfigured, ValueError) as exc:
+                    speech_error = str(exc)
+                    break
+                if first_audio_byte_ms is None:
+                    first_audio_byte_ms = _elapsed_ms(server_started)
+                chunk_count += 1
+                yield {
+                    "type": "audio",
+                    "seq": seq,
+                    "format": "wav",
+                    "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+                    "text": chunk_text,
+                }
+            if chunk_count:
+                audio_ready_ms = _elapsed_ms(server_started)
+
+        server_response_ready_ms = _elapsed_ms(server_started)
+        timing = {
+            "pipeline": "streaming",
+            "client_reported": dict(client_timing or {}),
+            "streaming": {"stt": False, "model": True, "tts": True, "playback": True},
+            "segments_ms": {
+                "transcription": int(transcription["latency_ms"]),
+                "runtime_response": runtime_response_ms,
+                "speech_synthesis": (
+                    (audio_ready_ms - model_response_complete_ms)
+                    if audio_ready_ms is not None
+                    else None
+                ),
+                "server_total": server_response_ready_ms,
+            },
+            "milestones_ms": {
+                "server_received": 0,
+                "transcript_final": transcript_final_ms,
+                "model_first_token": first_token_ms[0] if first_token_ms else None,
+                "model_response_complete": model_response_complete_ms,
+                "first_audio_byte": first_audio_byte_ms,
+                "audio_ready": audio_ready_ms,
+                "server_response_ready": server_response_ready_ms,
+                "playback_started": None,  # filled client-side when audio starts
+            },
+            "unavailable": {
+                "playback_started": "Playback starts in the browser and is filled by the UI when audio begins.",
+            },
+        }
         self.db.audit(
             actor="voice",
-            action="egress.decision",
-            target=vendor,
-            permission_tier="L3_EXTERNAL_ACTION",
-            status="ok" if decision.allowed else "refused",
-            details=decision.audit_record(),
+            action="voice.converse_stream",
+            target=f"conversation:{conversation_id}" if conversation_id else "local_runtime",
+            permission_tier="L0_READ",
+            status="ok" if not speech_error else "degraded",
+            details={
+                "event_id": response["event_id"],
+                "transcript_chars": len(transcription["text"]),
+                "audio_chunks": chunk_count,
+                "speech_error": speech_error,
+                "timing": timing,
+            },
         )
-        if not decision.allowed:
-            raise VoiceNotConfigured(
-                f"Cloud voice is disabled by egress policy ({decision.reason}). "
-                "Use the local 'command' STT/TTS engine (whisper.cpp / piper), or enable a "
-                "deliberate [egress] standing grant and raise [ollama] provider_policy."
-            )
+        yield {"type": "done", "timing": timing, "speech_error": speech_error, "audio_chunks": chunk_count}
 
-    def _http_call(self, request: urllib.request.Request, *, engine: str) -> bytes:
-        netguard.assert_allowed(request.full_url, require_https=True, allowed_hosts=_VOICE_ALLOWED_HOSTS)
-        try:
-            with urllib.request.urlopen(request, timeout=self.config.voice.timeout_seconds) as response:  # noqa: S310 - allowlisted https endpoints
-                return response.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:200]
-            raise ValueError(f"{engine} request failed (HTTP {exc.code}): {detail}") from exc
-        except Exception as exc:
-            raise ValueError(f"{engine} request failed: {exc}") from exc
+    def _synthesize_wav(self, text: str, output_path: Path) -> bytes:
+        """Run the local TTS engine for one piece of text and return the WAV
+        bytes. The shared core of speak() and the streaming chunk synthesizer."""
+        self.voice_dir.mkdir(parents=True, exist_ok=True)
+        self._run_engine(
+            self.config.voice.tts_command,
+            replacements={"{output}": str(output_path)},
+            engine="tts",
+            stdin_text=text,
+        )
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            raise ValueError("TTS engine produced no audio output.")
+        return output_path.read_bytes()
 
     def _write_artifact(self, name: str, data: bytes) -> Path:
         self.voice_dir.mkdir(parents=True, exist_ok=True)
@@ -379,7 +440,7 @@ class VoiceService:
         The browser records webm/opus (MediaRecorder's default), which whisper.cpp
         cannot decode — and it does not say so: it exits 0 and writes no transcript,
         which would surface as a misleading "produced no text". Cloud STT hid this
-        because Deepgram decodes server-side. Audio already in the right shape is
+        because cloud STT decoded server-side. Audio already in the right shape is
         passed through untouched, so a well-formed client needs no ffmpeg at all.
 
         Returns the path to hand the engine and whether a conversion happened."""
@@ -446,6 +507,16 @@ class VoiceNotConfigured(ValueError):
     """Raised when a voice endpoint is used without a configured engine."""
 
 
+def _unsupported_engine_reason(label: str, engine: str) -> str:
+    if engine in _REMOVED_CLOUD_ENGINES:
+        return (
+            f"Cloud {label} engine '{engine}' was removed; voice is local-only "
+            "(whisper.cpp / piper via the 'command' engine). Set [voice] "
+            f"{label.lower()}_engine = \"command\" in config.toml."
+        )
+    return f"Unknown {label} engine: {engine}. Supported: {', '.join(sorted(STT_ENGINES))}."
+
+
 def _substitute(argument: str, replacements: dict[str, str]) -> str:
     for token, value in replacements.items():
         argument = argument.replace(token, value)
@@ -468,6 +539,41 @@ def _read_transcript(transcript_path: Path) -> str:
         if candidate.is_file():
             return candidate.read_text(encoding="utf-8", errors="replace").strip()
     return ""
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+# The first chunk is deliberately small — usually the first sentence alone — so
+# the first audio byte lands as fast as the engine can say one sentence; later
+# chunks pack more sentences for better prosody and fewer engine spawns.
+FIRST_CHUNK_TARGET_CHARS = 60
+CHUNK_TARGET_CHARS = 320
+
+
+def _speech_chunks(text: str) -> list[str]:
+    """Split spoken text into sentence-boundary chunks for streaming TTS.
+
+    Greedy packing: sentences are appended to the current chunk until it
+    reaches the target size (a smaller target for the first chunk, so the
+    first audio byte arrives after roughly one sentence of synthesis). Never
+    splits inside a sentence; total output respects SPOKEN_TEXT_MAX_CHARS."""
+    spoken = text.strip()[:SPOKEN_TEXT_MAX_CHARS]
+    if not spoken:
+        return []
+    sentences = [part.strip() for part in _SENTENCE_SPLIT_RE.split(spoken) if part.strip()]
+    if not sentences:
+        return [spoken]
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        target = FIRST_CHUNK_TARGET_CHARS if not chunks else CHUNK_TARGET_CHARS
+        if current and len(current) + 1 + len(sentence) > target:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = f"{current} {sentence}".strip()
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _strip_contrarian_block(text: str) -> str:
@@ -544,7 +650,7 @@ _MIME_EXT = {
 
 
 def _clean_mime(mime: str) -> str:
-    # Browsers send values like "audio/webm;codecs=opus"; Deepgram wants the base type.
+    # Browsers send values like "audio/webm;codecs=opus"; keep the base type.
     return (mime or "audio/wav").split(";", 1)[0].strip().lower() or "audio/wav"
 
 

@@ -48,7 +48,7 @@ def _pending_write_requests(db: KernelDatabase, status: str = "pending") -> list
 def test_manifest_exposes_curated_allowlist_only(tmp_path: Path) -> None:
     surface, _db, _ing = _surface(tmp_path)
     names = {t.name for t in surface.manifest()}
-    assert names == {"memory.search", "audit.recent", "work.status", "memory.write"}
+    assert names == {"memory.search", "audit.recent", "work.status", "evidence.recent", "memory.write"}
     assert "memory.forget" not in names
 
 
@@ -252,6 +252,42 @@ def test_ungated_external_write_is_also_quarantined(tmp_path: Path) -> None:
     assert "Ungated claim" in {m.title for m in db.search_memories("revenue", 10)}  # explicit still finds it
 
 
+def _file_evidence(db: KernelDatabase, *, source: str, reliability: str = "B", claim: str = "", notes: str = "") -> int:
+    with db.connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO founder_evidence (created_at, evidence_type, source, reliability,
+              claim_supported, strength, notes, metadata_json)
+            VALUES (datetime('now'), 'founder observation', ?, ?, ?, 60, ?, '{"internal": "stays-private"}')
+            """,
+            (source, reliability, claim, notes),
+        )
+        return int(cur.lastrowid)
+
+
+def test_evidence_recent_reads_filed_evidence_curated(tmp_path: Path) -> None:
+    """An external agent can read filed evidence — claim, grade, strength,
+    linkage — newest first, capped, filterable, and WITHOUT the internal
+    metadata blob."""
+    surface, db, _ing = _surface(tmp_path)
+    _file_evidence(db, source="pilot report", reliability="A", claim="Pilot converts at 40%")
+    _file_evidence(db, source="hallway chat", reliability="D", claim="Users love the onboarding")
+
+    result = surface.call("evidence.recent", {"limit": 10}, client="codex")
+    assert result.ok is True
+    rows = result.data["evidence"]
+    assert [r["source"] for r in rows] == ["hallway chat", "pilot report"]  # newest first
+    assert rows[1]["claim_supported"] == "Pilot converts at 40%"
+    assert rows[1]["reliability"] == "A"
+    # The internal metadata blob never crosses the surface.
+    assert all("metadata_json" not in r and "metadata" not in r for r in rows)
+    # Filter by reliability grade.
+    graded = surface.call("evidence.recent", {"reliability": "a"}, client="codex").data["evidence"]
+    assert [r["reliability"] for r in graded] == ["A"]
+    # Attributed in the ledger like every surface call.
+    assert "mcp:codex" in {e["actor"] for e in db.recent_audit_events(10)}
+
+
 def test_audit_recent_is_scoped_to_the_calling_agent(tmp_path: Path) -> None:
     """An external agent sees ONLY its own audit rows via audit.recent — never the
     whole kernel's ledger (memory content, founder decisions, egress, other agents)."""
@@ -310,6 +346,18 @@ def test_flood_global_cap_resists_clientinfo_name_rotation(tmp_path: Path) -> No
     assert overflow.ok is False
     assert overflow.data["error"] == "too_many_pending_writes"
     assert overflow.data["pending_total"] >= AgentSurface.MAX_PENDING_WRITES_TOTAL
+
+
+def test_memory_page_surfaces_shareable_review_ux() -> None:
+    """The founder can SEE and revoke exactly what external agents can read:
+    the memory page lists /memory/shareable with unshare controls, and search
+    results carry a share toggle. Governance needs a surface, not just endpoints."""
+    html = Path("ui/memory.html").read_text(encoding="utf-8")
+    assert "What outside agents can see" in html
+    assert "/memory/shareable" in html
+    assert "/share" in html and "/unshare" in html
+    assert "data-unshare" in html and "data-share" in html
+    assert "private by default" in html
 
 
 def test_actor_sanitization_cannot_forge_or_inject() -> None:

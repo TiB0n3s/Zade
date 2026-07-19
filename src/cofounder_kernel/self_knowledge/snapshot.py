@@ -129,24 +129,8 @@ def _collect_integrations(state: Any) -> list[dict[str, str]]:
             "summary": f"Enabled={cfg.research.enabled}; max URLs/run={cfg.research.max_urls_per_run}.",
         },
     ]
-    if cfg.voice.stt_engine != "command":
-        integrations.append(
-            {
-                "name": "Deepgram",
-                "mode": "cloud",
-                "source": "config.voice",
-                "summary": f"STT engine {cfg.voice.stt_model}; key from {cfg.voice.stt_api_key_env}.",
-            }
-        )
-    if cfg.voice.tts_engine != "command":
-        integrations.append(
-            {
-                "name": "ElevenLabs",
-                "mode": "cloud",
-                "source": "config.voice",
-                "summary": f"TTS model {cfg.voice.tts_model}; key from {cfg.voice.tts_api_key_env}.",
-            }
-        )
+    # Voice is local-only (whisper.cpp + piper via [voice] command engines);
+    # the cloud speech integrations (Deepgram/ElevenLabs) were removed 2026-07-19.
     return integrations
 
 

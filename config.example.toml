@@ -52,9 +52,9 @@ coding_agent_model = ""
 # active policy, endpoint host, per-role models, whether Ollama Cloud is
 # disabled (set OLLAMA_NO_CLOUD=1 in Ollama's environment for a hard server-
 # side guarantee), and the provider/model used by the most recent request.
-# Note: cloud SPEECH engines ([voice] deepgram/elevenlabs) and approved web
-# research fetches are external DATA tools under their own permission gates —
-# they are not model inference and are not authorized by any llm policy.
+# Note: approved web research fetches are external DATA tools under their own
+# permission gates — they are not model inference and are not authorized by
+# any llm policy. (Voice is local-only; cloud speech engines were removed.)
 
 [security]
 local_token = ""
@@ -79,19 +79,12 @@ max_prompt_chars = 1800
 default = "general"
 
 [voice]
-# Engines: "command" runs local argv arrays (no shell); "deepgram" (STT) and
-# "elevenlabs" (TTS) call your cloud speech APIs. Selecting a cloud engine is a
-# standing grant: audio and reply text leave the machine. API keys are read
-# from the environment variables below and are never stored in this file.
-stt_engine = "command"   # "command" | "deepgram"
-tts_engine = "command"   # "command" | "elevenlabs"
-
-# Cloud engine settings (used when the engine above is deepgram/elevenlabs):
-stt_api_key_env = "DEEPGRAM_API_KEY"
-stt_model = "nova-2"
-tts_api_key_env = "ELEVENLABS_API_KEY"
-tts_model = "eleven_turbo_v2_5"
-tts_voice = "21m00Tcm4TlvDq8ikWAM"
+# Voice is LOCAL-ONLY: "command" is the single supported engine and runs local
+# argv arrays (no shell) — e.g. whisper.cpp (STT) and piper (TTS). Nothing
+# leaves the machine for voice. The former cloud engines (deepgram/elevenlabs)
+# were removed 2026-07-19; their egress-matrix cells remain FORBIDDEN.
+stt_engine = "command"
+tts_engine = "command"
 
 # Local command engines as argv arrays. Leave empty to disable.
 # STT placeholders: {audio} (input wav), {transcript} (output .txt), {transcript_base} ({transcript} minus .txt).

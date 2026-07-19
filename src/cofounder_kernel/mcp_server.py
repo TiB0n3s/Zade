@@ -34,13 +34,21 @@ from .tools import ToolRegistry
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {"name": "zade", "title": "Zade governed surface", "version": "0.1.0"}
 
-# The LIVE surface for the shipped server. Three reads plus memory.write —
+# The LIVE surface for the shipped server. Four reads plus memory.write —
 # promoted to the wire 2026-07-17 after the read-only doorway was verified with a
 # real agent; work.status added 2026-07-18 (read-only queue counts + item
-# titles/states, no bodies). memory.write is non-destructive (append-only), stays
-# L1/audited via the registry, and is attributed to the calling agent.
-# Destructive tools (memory.forget) remain off the wire — see agent_surface.EXPOSED.
-LIVE_EXPOSED = {"memory.search": READ, "audit.recent": READ, "work.status": READ, "memory.write": WRITE}
+# titles/states, no bodies); evidence.recent added 2026-07-19 (filed founder-OS
+# evidence: claim, grade, strength, linkage — no metadata blob). memory.write is
+# non-destructive (append-only), stays L1/audited via the registry, and is
+# attributed to the calling agent. Destructive tools (memory.forget) remain off
+# the wire — see agent_surface.EXPOSED.
+LIVE_EXPOSED = {
+    "memory.search": READ,
+    "audit.recent": READ,
+    "work.status": READ,
+    "evidence.recent": READ,
+    "memory.write": WRITE,
+}
 
 # JSON-RPC error codes.
 _PARSE_ERROR = -32700

@@ -51,6 +51,7 @@ EXPOSED: dict[str, str] = {
     "memory.search": READ,
     "audit.recent": READ,
     "work.status": READ,
+    "evidence.recent": READ,
     "memory.write": WRITE,
     # memory.forget — deliberately NOT exposed (destructive: deletes founder memory)
 }
@@ -89,6 +90,27 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
             "properties": {
                 "status": {"type": "string", "description": "Filter to one status (e.g. pending, done)."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+            },
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    },
+    "evidence.recent": {
+        "description": (
+            "Read recently filed founder-OS evidence records (claim, reliability "
+            "grade, strength, linkage). Read-only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                "reliability": {
+                    "type": "string",
+                    "description": "Filter to one reliability grade (A/B/C/D).",
+                },
+                "evidence_type": {
+                    "type": "string",
+                    "description": "Filter to one evidence type (e.g. founder observation).",
+                },
             },
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},

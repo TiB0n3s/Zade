@@ -75,6 +75,10 @@
       <div class="section-head">What I hold about you</div>
       <div id="holdList"><div class="empty">Loading…</div></div>
 
+      <div class="section-head">What outside agents can see</div>
+      <div class="zade-page-sub" style="margin-top:0; font-size:12.5px;">My memory is private by default. A connected outside agent (MCP) can read only what you put on this list — nothing else, ever. Pull anything back whenever you want.</div>
+      <div id="sharedList"><div class="empty">Loading…</div></div>
+
       <div class="section-head">Tell me something to hold</div>
       <div class="stack">
         <input id="mTitle" placeholder="What should I remember?">
@@ -146,13 +150,32 @@
     }
     function renderMemoryMatch(m) {
       const quote = [m.title, m.content].filter(Boolean).join(' — ') || '(no text)';
-      const src = ['held memory', prettyLabel(m.kind)].filter(Boolean).join(' · ');
+      const shared = sharedIds.has(Number(m.id));
+      const src = ['held memory', prettyLabel(m.kind), shared ? 'shared with outside agents' : ''].filter(Boolean).join(' · ');
       return `<div class="result result-held">
         <span class="result-quote">"${esc(quote)}" <span class="result-src">— ${esc(src)}</span></span>
-        <button type="button" class="secondary forget-btn" data-forget="${esc(m.id)}">Forget</button>
+        <span class="row-actions">
+          <button type="button" class="secondary forget-btn" data-share="${esc(m.id)}" data-shared="${shared ? '1' : '0'}">${shared ? 'Unshare' : 'Share'}</button>
+          <button type="button" class="secondary forget-btn" data-forget="${esc(m.id)}">Forget</button>
+        </span>
       </div>`;
     }
     byId('searchResults').addEventListener('click', (ev) => {
+      const shareBtn = ev.target.closest('button[data-share]');
+      if (shareBtn) {
+        const id = Number(shareBtn.dataset.share);
+        const nowShared = shareBtn.dataset.shared !== '1';
+        withBusy(shareBtn, '…', async () => {
+          try {
+            await api('/memory/' + id + (nowShared ? '/share' : '/unshare'), { method: 'POST' });
+            await loadShared();
+            runSearch(); // re-render the result rows with the new share state
+          } catch (err) {
+            shareBtn.closest('.result').insertAdjacentHTML('beforeend', `<span class="result-src"> — failed: ${esc(err.message)}</span>`);
+          }
+        });
+        return;
+      }
       const btn = ev.target.closest('button[data-forget]');
       if (!btn) return;
       const row = btn.closest('.result');
@@ -161,8 +184,49 @@
           await api('/memory/' + Number(btn.dataset.forget), { method: 'DELETE' });
           row.innerHTML = '<span class="result-src">Forgotten. Gone from this machine — I don’t keep copies.</span>';
           loadStats();
+          loadShared();
         } catch (err) {
           row.insertAdjacentHTML('beforeend', `<span class="result-src"> — couldn’t forget: ${esc(err.message)}</span>`);
+        }
+      });
+    });
+
+    // ---- Shared-with-outside-agents review: the exact list an external MCP
+    // client's memory.search can read. Private by default; unshare pulls it back.
+    let sharedIds = new Set();
+    async function loadShared() {
+      try {
+        const { shareable } = await api('/memory/shareable?limit=200');
+        const list = shareable || [];
+        sharedIds = new Set(list.map((m) => Number(m.id)));
+        byId('sharedList').innerHTML = list.length
+          ? list.map(renderShared).join('')
+          : '<div class="empty">Nothing is shared. Outside agents see none of my memory.</div>';
+      } catch (err) { byId('sharedList').innerHTML = '<div class="empty">Could not load — ' + esc(err.message) + '</div>'; }
+    }
+    function renderShared(m) {
+      const detail = String(m.content || '').slice(0, 160);
+      const sub = [prettyLabel(m.kind), m.source, (m.created_at || '').slice(0, 10)].filter(Boolean).join(' · ');
+      return `
+        <div class="row" data-id="${esc(m.id)}">
+          <div>
+            <div class="row-title">${esc(m.title || '(untitled)')}</div>
+            <div class="row-sub">${esc(sub)}${detail ? ' — ' + esc(detail) : ''}</div>
+          </div>
+          <div class="row-actions">
+            <button class="secondary" data-unshare="${esc(m.id)}">Unshare</button>
+          </div>
+        </div>`;
+    }
+    byId('sharedList').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-unshare]');
+      if (!btn) return;
+      withBusy(btn, '…', async () => {
+        try {
+          await api('/memory/' + Number(btn.dataset.unshare) + '/unshare', { method: 'POST' });
+          await loadShared();
+        } catch (err) {
+          btn.closest('.row').querySelector('.row-sub').textContent = 'Failed: ' + err.message;
         }
       });
     });
@@ -256,6 +320,7 @@
 
     loadHold();
     loadStats();
+    loadShared();
     loadConnectors();
     loadStaged();
   </script>

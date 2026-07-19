@@ -42,13 +42,13 @@ def test_loopback_http_carveout_matches_connectors_ics_policy() -> None:
     assert _refused("https://10.0.0.1/cal.ics", **ok)            # https but private
 
 
-def test_allowed_hosts_locks_voice_egress() -> None:
-    hosts = frozenset({"api.deepgram.com", "api.elevenlabs.io"})
+def test_allowed_hosts_locks_egress_to_pinned_hosts() -> None:
+    hosts = frozenset({"api.telegram.org", "api.anthropic.com"})
     ok = dict(require_https=True, allowed_hosts=hosts)
-    assert netguard.assert_allowed("https://api.deepgram.com/v1/listen", **ok)
-    assert netguard.assert_allowed("https://api.elevenlabs.io/v1/text-to-speech/x", **ok)
-    assert _refused("https://evil.example.com/v1/listen", **ok)  # off-allowlist
-    assert _refused("http://api.deepgram.com/v1/listen", **ok)   # not https
+    assert netguard.assert_allowed("https://api.telegram.org/bot1/getUpdates", **ok)
+    assert netguard.assert_allowed("https://api.anthropic.com/v1/messages", **ok)
+    assert _refused("https://evil.example.com/v1/messages", **ok)  # off-allowlist
+    assert _refused("http://api.telegram.org/bot1/getUpdates", **ok)  # not https
 
 
 def test_is_private_host_classifies_addresses() -> None:
