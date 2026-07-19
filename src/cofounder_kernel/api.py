@@ -41,6 +41,7 @@ from .build_service import BuildService
 from .build_store import BuildStore
 from .channel_auth import ChannelAuth, ChannelAuthError, parse_bind_command
 from .openclaw_bridge import InboundMessage, OpenClawBridge, OpenClawBridgeError
+from .telegram_adapter import InboundTelegram, TelegramAdapter, TelegramError
 from .founder import FounderService
 from .strategy_review import StrategyReviewService
 from .handlers import ActionHandlerRegistry
@@ -1867,6 +1868,33 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             "ws_url": cfg.openclaw.ws_url,
             "token_present": bool(os.getenv(cfg.openclaw.token_env, "")),
             "connected": bool(getattr(openclaw_bridge, "_ws", None) is not None),
+        }
+
+    # Direct Telegram Bot API adapter — Zade's own channel transport (no OpenClaw).
+    # Off unless [telegram] enabled + TELEGRAM_BOT_TOKEN is set. Routes inbound
+    # messages through the SAME governed flow, gates replies through the egress
+    # matrix (reply_text:telegram standing grant), and sends via sendMessage.
+    def _route_telegram(inbound: InboundTelegram) -> dict[str, Any]:
+        return handle_channel_message(
+            channel="telegram", external_id=inbound.external_id, text=inbound.text
+        )
+
+    telegram_adapter = TelegramAdapter(cfg, route_message=_route_telegram, db=db)
+    app.state.telegram_adapter = telegram_adapter
+    if run_boot_maintenance and cfg.telegram.enabled:
+        try:
+            telegram_adapter.start()
+            atexit.register(telegram_adapter.stop)
+        except TelegramError:
+            # No token / misconfig must not block startup; /status shows it down.
+            pass
+
+    @app.get("/channels/telegram/status")
+    def telegram_status() -> dict[str, Any]:
+        return {
+            "enabled": cfg.telegram.enabled,
+            "token_present": bool(os.getenv(cfg.telegram.token_env, "")),
+            "running": telegram_adapter.running,
         }
 
     @app.post("/channels/bindings/{binding_id}/hmac")

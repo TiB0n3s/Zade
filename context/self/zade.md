@@ -128,18 +128,18 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `fa6e28c` 2026-07-18 - Merge branch 'main' into codex/token-budgeted-build-delegation
 - `d281196` 2026-07-18 - feat: expose budgeted build sessions
 - `365701e` 2026-07-18 - feat: orchestrate approved hybrid builds
+- `805b4f7` 2026-07-18 - Enable OpenClaw bridge; fix connect enums and subscription
 - `9efb717` 2026-07-18 - feat: add budgeted Anthropic build adapter
 - `075c481` 2026-07-18 - refactor: make coding model provider neutral
 - `27efc28` 2026-07-18 - feat: route build work local first
 - `c46c4eb` 2026-07-18 - feat: enforce atomic cloud budgets
+- `64f1090` 2026-07-18 - Channel transport, ingress hardening, egress ledger
 - `a90fa9d` 2026-07-18 - feat: persist build sessions and leases
 - `e884687` 2026-07-18 - feat: assess build complexity locally
 - `8ab2211` 2026-07-18 - feat: add build session value objects
-- `76c09e1` 2026-07-18 - feat: define build lease policy
-- `5d6684e` 2026-07-18 - chore: ignore local worktrees
-- `341143f` 2026-07-18 - docs: plan token-budgeted build delegation
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -504,6 +504,34 @@ class OpenClawConfig:
 
 
 @dataclass(frozen=True)
+class TelegramConfig:
+    """Direct Telegram Bot API adapter. OFF by default.
+
+    When enabled, a background long-poll loop calls Telegram's ``getUpdates`` for
+    inbound messages, routes each through the SAME governed ``/channels/message``
+    flow (channel auth + capped authority + optional HMAC), and replies via
+    ``sendMessage``. No OpenClaw, no external gateway — Zade is the transport AND
+    the brain, matching its local-first, dependency-light design.
+
+    The bot token is read from ``token_env`` (never stored in config or the DB).
+    Zade's reply is REPLY_TEXT leaving to a cloud channel, so it passes the data-
+    class egress gate: a ``reply_text:telegram`` standing grant is required, and
+    without it the channel is fail-closed (inbound still binds, but no reply
+    leaves). Enabling the adapter is opting into that grant.
+    """
+
+    enabled: bool = False
+    token_env: str = "TELEGRAM_BOT_TOKEN"
+    api_base: str = "https://api.telegram.org"
+    # Long-poll seconds Telegram holds getUpdates open with no messages.
+    poll_timeout_seconds: int = 25
+    # Cap on a single outbound reply; Telegram hard-limits at 4096 chars.
+    max_reply_chars: int = 4000
+    reconnect_min_seconds: float = 1.0
+    reconnect_max_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
 class EgressConfig:
     """Data-class egress gate (see egress.py and EGRESS-DESIGN.md).
 
@@ -545,6 +573,7 @@ class KernelConfig:
     anthropic: AnthropicConfig = AnthropicConfig()
     build: BuildConfig = BuildConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
+    telegram: TelegramConfig = TelegramConfig()
     prompt_profiles: PromptProfileConfig = PromptProfileConfig()
 
 
@@ -770,6 +799,16 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         reconnect_max_seconds=float(openclaw_raw.get("reconnect_max_seconds", 30.0)),
         allow_remote_gateway=_bool(openclaw_raw.get("allow_remote_gateway", False)),
     )
+    telegram_raw = raw.get("telegram", {})
+    telegram = TelegramConfig(
+        enabled=_bool(os.getenv("ZADE_TELEGRAM_ENABLED", telegram_raw.get("enabled", False))),
+        token_env=str(telegram_raw.get("token_env", "TELEGRAM_BOT_TOKEN")).strip() or "TELEGRAM_BOT_TOKEN",
+        api_base=str(telegram_raw.get("api_base", "https://api.telegram.org")).rstrip("/"),
+        poll_timeout_seconds=int(telegram_raw.get("poll_timeout_seconds", 25)),
+        max_reply_chars=int(telegram_raw.get("max_reply_chars", 4000)),
+        reconnect_min_seconds=float(telegram_raw.get("reconnect_min_seconds", 1.0)),
+        reconnect_max_seconds=float(telegram_raw.get("reconnect_max_seconds", 30.0)),
+    )
     prompt_profiles_raw = raw.get("prompt_profiles", {})
     prompt_profiles = PromptProfileConfig(
         default=str(os.getenv("ZADE_PROMPT_PROFILE", prompt_profiles_raw.get("default", "general"))).strip()
@@ -796,6 +835,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         anthropic=anthropic,
         build=build,
         openclaw=openclaw,
+        telegram=telegram,
         prompt_profiles=prompt_profiles,
     )
 

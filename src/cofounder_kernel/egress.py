@@ -106,6 +106,7 @@ VENDORS: dict[str, Vendor] = {
     "elevenlabs": Vendor("elevenlabs", VendorTier.CLOUD_SERVICE, "ElevenLabs TTS"),
     "openai_web_search": Vendor("openai_web_search", VendorTier.CLOUD_SERVICE, "OpenAI web/file search"),
     "openclaw": Vendor("openclaw", VendorTier.CHANNEL, "OpenClaw channel gateway"),
+    "telegram": Vendor("telegram", VendorTier.CHANNEL, "Telegram Bot API (api.telegram.org)"),
 }
 
 
@@ -161,7 +162,14 @@ DEFAULT_MATRIX: dict[DataClass, dict[VendorTier, Disposition]] = {
         # longer resurrect it. Reverting cloud voice is a deliberate two-step:
         # flip this cell back AND re-add the grant.
         VendorTier.CLOUD_SERVICE: Disposition.FORBIDDEN,
-        VendorTier.CHANNEL: Disposition.PER_REQUEST,
+        # STANDING (was PER_REQUEST): a founder-connected, founder-bound channel
+        # (Telegram) is an explicit opt-in — the founder provided the bot token
+        # AND bound their own peer via challenge-response, which is what the
+        # PER_REQUEST caveat waited on (cross-channel founder auth has shipped).
+        # A `reply_text:telegram` standing grant then authorizes replies to the
+        # founder's own chat; without it the channel is fail-closed (no reply
+        # leaves). Per-reply approval would make a chat bot unusable.
+        VendorTier.CHANNEL: Disposition.STANDING,
     },
     DataClass.FOUNDER_AUDIO: {
         VendorTier.LAN: Disposition.PER_REQUEST,

@@ -65,7 +65,10 @@ tts_command = ["C:/tools/piper/piper/piper.exe", "--model", "C:/tools/piper/en_U
 # the egress gate now REFUSES any cloud voice attempt (fail-closed). Re-add them (and set
 # the cloud engines above) to restore cloud voice. Raw founder_state can never be granted
 # here — it is FORBIDDEN in the matrix regardless.
-standing_grants = ["public_derived:public_web"]
+# reply_text:telegram authorizes Zade to reply to the founder's own bound Telegram
+# chat (REPLY_TEXT leaving to api.telegram.org). Without it the Telegram adapter
+# still binds inbound but sends no reply (fail-closed).
+standing_grants = ["public_derived:public_web", "reply_text:telegram"]
 
 [anthropic]
 # Cloud strategic review via Anthropic — the on-switch for the first cloud egress
@@ -76,14 +79,24 @@ standing_grants = ["public_derived:public_web"]
 enabled = true
 
 [openclaw]
-# Channel-gateway bridge. Connects to the LOCAL OpenClaw gateway's WebSocket as
-# an operator client, routes inbound channel messages (Telegram, etc.) through
-# the governed /channels/message flow (channel auth + capped authority + HMAC),
-# and sends Zade's reply back. Enabled 2026-07-18. The gateway token is read from
-# OPENCLAW_GATEWAY_TOKEN (never written here). Loopback-only unless
-# allow_remote_gateway is set. A channel must still be connected on the OpenClaw
-# side (`openclaw channels add --channel telegram --token <bot-token>`) before
-# any real message flows — the bridge is the transport, not the channel account.
-enabled = true
+# Channel-gateway bridge — RETIRED for Telegram (2026-07-18). OpenClaw turned out
+# to be a full assistant that intercepts inbound messages with its own agent
+# (default openai/gpt-5.5) rather than relaying them, so it can't be a dumb pipe
+# for Zade. Disabled in favour of the direct [telegram] adapter below. The bridge
+# code stays committed and dormant in case the hard channels (WhatsApp, iMessage,
+# Signal) ever justify fighting OpenClaw into relay mode. Set enabled = true only
+# then, and re-connect a channel on the OpenClaw side.
+enabled = false
 ws_url = "ws://127.0.0.1:18789"
 token_env = "OPENCLAW_GATEWAY_TOKEN"
+
+[telegram]
+# Direct Telegram Bot API adapter — Zade's own channel transport, no OpenClaw.
+# A background long-poll routes inbound messages through the governed
+# /channels/message flow (channel auth + capped authority + HMAC) and replies via
+# sendMessage. The bot token is read from TELEGRAM_BOT_TOKEN (never written here).
+# Replies are gated by the reply_text:telegram standing grant in [egress] above:
+# without it, inbound still binds but no reply leaves (fail-closed). Enabled
+# 2026-07-18.
+enabled = true
+token_env = "TELEGRAM_BOT_TOKEN"
