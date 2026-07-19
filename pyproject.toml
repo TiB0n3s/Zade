@@ -24,6 +24,9 @@ dev = [
 browser = [
   "playwright>=1.40",
 ]
+review = [
+  "openai>=2.0,<3",
+]
 tray = [
   "pystray>=0.19",
   "Pillow>=10",

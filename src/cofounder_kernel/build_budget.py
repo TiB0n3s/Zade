@@ -120,7 +120,9 @@ class BuildBudgetService:
                 "cloud_turns",
                 "expiration",
             }:
-                lease = self.store.get_active_lease(session_id)
+                lease = self.store.get_active_lease(
+                    session_id, provider=self.pricing.provider
+                )
                 if lease is not None and lease.state in {"active", "warning"}:
                     if exc.field == "expiration":
                         self.store.expire_lease(lease.id)
@@ -182,7 +184,9 @@ class BuildBudgetService:
         return self.store.mark_reservation_uncertain(reservation_id, reason=reason)
 
     def active_lease(self, session_id: int) -> BuildLease:
-        lease = self.store.get_active_lease(session_id)
+        lease = self.store.get_active_lease(
+            session_id, provider=self.pricing.provider
+        )
         if lease is None:
             raise BuildBudgetExceeded("lease", "no approved lease")
         return lease

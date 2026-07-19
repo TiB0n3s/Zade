@@ -129,6 +129,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `0ae740c` 2026-07-19 - feat: add governed GitHub build verification
 - `565c136` 2026-07-19 - feat: add product build verification profiles
 - `9505817` 2026-07-19 - feat: orchestrate durable local-first builds
 - `e16e913` 2026-07-19 - feat: persist durable build orchestration
@@ -140,7 +141,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `d3fe1d9` 2026-07-18 - Add direct Telegram Bot API adapter; retire OpenClaw for channels
 - `fa6e28c` 2026-07-18 - Merge branch 'main' into codex/token-budgeted-build-delegation
 - `d281196` 2026-07-18 - feat: expose budgeted build sessions
-- `365701e` 2026-07-18 - feat: orchestrate approved hybrid builds
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

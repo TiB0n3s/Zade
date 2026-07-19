@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -200,6 +200,10 @@ class KernelDatabase:
             # The base schema is fully idempotent (CREATE TABLE/INDEX IF NOT
             # EXISTS), so new tables always land on upgrade.
             conn.executescript(SCHEMA_SQL)
+            # v31 permits one independent open lease per provider. The former
+            # session-only unique index would make an optional reviewer replace
+            # the Anthropic build lease instead of remaining separately bounded.
+            conn.execute("DROP INDEX IF EXISTS uq_build_leases_open_session")
             # Column-level reconciliation: unlike new tables, a new column on an
             # EXISTING table is NOT applied by CREATE ... IF NOT EXISTS, so we add
             # any missing column explicitly. Register future column additions in
@@ -3445,8 +3449,8 @@ CREATE TABLE IF NOT EXISTS build_leases (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_build_leases_session_version
   ON build_leases (session_id, version);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_build_leases_open_session
-  ON build_leases (session_id)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_build_leases_open_session_provider
+  ON build_leases (session_id, provider)
   WHERE state IN ('active', 'warning', 'paused', 'exhausted');
 
 CREATE TABLE IF NOT EXISTS cloud_usage_events (
@@ -3539,6 +3543,32 @@ CREATE TABLE IF NOT EXISTS build_artifacts (
 
 CREATE INDEX IF NOT EXISTS idx_build_artifacts_session
   ON build_artifacts (session_id, id);
+
+CREATE TABLE IF NOT EXISTS build_calibrations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES build_sessions(id),
+  assessment_id INTEGER NOT NULL REFERENCES build_assessments(id),
+  lease_id INTEGER NOT NULL REFERENCES build_leases(id),
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  predicted_tier TEXT NOT NULL,
+  assessment_score INTEGER NOT NULL,
+  outcome TEXT NOT NULL,
+  actual_input_tokens INTEGER NOT NULL,
+  actual_output_tokens INTEGER NOT NULL,
+  actual_microdollars INTEGER NOT NULL,
+  actual_cloud_turns INTEGER NOT NULL,
+  input_utilization REAL NOT NULL,
+  output_utilization REAL NOT NULL,
+  cost_utilization REAL NOT NULL,
+  turn_utilization REAL NOT NULL,
+  recommendation TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (session_id, provider, lease_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_build_calibrations_provider
+  ON build_calibrations (provider, id);
 
 CREATE TABLE IF NOT EXISTS work_plans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

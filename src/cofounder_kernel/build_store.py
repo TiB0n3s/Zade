@@ -12,6 +12,7 @@ from .build_types import (
     BUILD_PHASES,
     BuildArtifact,
     BuildAssessment,
+    BuildCalibration,
     BuildLease,
     BuildSession,
     BuildTask,
@@ -755,6 +756,7 @@ class BuildStore:
         additional_limits: LeaseLimits,
         *,
         approval_request_id: int,
+        provider: str = "anthropic",
     ) -> BuildLease:
         started = datetime.now(UTC).replace(microsecond=0)
         expires = started + timedelta(seconds=additional_limits.duration_seconds)
@@ -764,10 +766,11 @@ class BuildStore:
                 """
                 SELECT * FROM build_leases
                 WHERE session_id = ?
+                  AND provider = ?
                   AND state IN ('active', 'warning', 'paused', 'exhausted')
                 ORDER BY version DESC LIMIT 1
                 """,
-                (session_id,),
+                (session_id, provider.strip()),
             ).fetchone()
             if current is None:
                 raise ValueError(f"No current build lease for session {session_id}")
@@ -817,15 +820,18 @@ class BuildStore:
             ).fetchone()
         return _lease_from_row(row)
 
-    def get_active_lease(self, session_id: int) -> BuildLease | None:
+    def get_active_lease(
+        self, session_id: int, *, provider: str = "anthropic"
+    ) -> BuildLease | None:
         with self.database.connect() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM build_leases
-                WHERE session_id = ? AND state IN ('active', 'warning', 'paused', 'exhausted')
+                WHERE session_id = ? AND provider = ?
+                  AND state IN ('active', 'warning', 'paused', 'exhausted')
                 ORDER BY version DESC LIMIT 1
                 """,
-                (session_id,),
+                (session_id, provider.strip()),
             ).fetchone()
         return _lease_from_row(row) if row else None
 
@@ -894,10 +900,11 @@ class BuildStore:
             lease_row = connection.execute(
                 """
                 SELECT * FROM build_leases
-                WHERE session_id = ? AND state IN ('active', 'warning', 'paused', 'exhausted')
+                WHERE session_id = ? AND provider = ? AND model = ?
+                  AND state IN ('active', 'warning', 'paused', 'exhausted')
                 ORDER BY version DESC LIMIT 1
                 """,
-                (session_id,),
+                (session_id, pricing.provider, pricing.model),
             ).fetchone()
             if lease_row is None:
                 raise BuildReservationRejected("lease", "no approved lease")
@@ -1222,6 +1229,100 @@ class BuildStore:
             ).fetchone()
         return _lease_from_row(row)
 
+    def create_calibration(
+        self,
+        *,
+        session_id: int,
+        assessment_id: int,
+        lease_id: int,
+        provider: str,
+        model: str,
+        predicted_tier: BuildTier,
+        assessment_score: int,
+        outcome: str,
+        actual_input_tokens: int,
+        actual_output_tokens: int,
+        actual_microdollars: int,
+        actual_cloud_turns: int,
+        input_utilization: float,
+        output_utilization: float,
+        cost_utilization: float,
+        turn_utilization: float,
+        recommendation: str,
+    ) -> BuildCalibration:
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT * FROM build_calibrations
+                WHERE session_id = ? AND provider = ? AND lease_id = ?
+                """,
+                (session_id, provider, lease_id),
+            ).fetchone()
+            if existing is not None:
+                return _calibration_from_row(existing)
+            cursor = connection.execute(
+                """
+                INSERT INTO build_calibrations (
+                  session_id, assessment_id, lease_id, provider, model,
+                  predicted_tier, assessment_score, outcome, actual_input_tokens,
+                  actual_output_tokens, actual_microdollars, actual_cloud_turns,
+                  input_utilization, output_utilization, cost_utilization,
+                  turn_utilization, recommendation, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    assessment_id,
+                    lease_id,
+                    provider,
+                    model,
+                    predicted_tier.value,
+                    assessment_score,
+                    outcome,
+                    actual_input_tokens,
+                    actual_output_tokens,
+                    actual_microdollars,
+                    actual_cloud_turns,
+                    input_utilization,
+                    output_utilization,
+                    cost_utilization,
+                    turn_utilization,
+                    recommendation,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM build_calibrations WHERE id = ?", (int(cursor.lastrowid),)
+            ).fetchone()
+        return _calibration_from_row(row)
+
+    def list_calibrations(
+        self,
+        *,
+        session_id: int | None = None,
+        provider: str | None = None,
+        limit: int = 100,
+    ) -> list[BuildCalibration]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            values.append(session_id)
+        if provider is not None:
+            clauses.append("provider = ?")
+            values.append(provider.strip())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        values.append(max(1, min(int(limit), 1000)))
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM build_calibrations {where} ORDER BY id LIMIT ?",
+                values,
+            ).fetchall()
+        return [_calibration_from_row(row) for row in rows]
+
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -1336,6 +1437,30 @@ def _artifact_from_row(row: sqlite3.Row) -> BuildArtifact:
         kind=str(row["kind"]),
         uri=str(row["uri"]),
         metadata=json.loads(row["metadata_json"]),
+        created_at=str(row["created_at"]),
+    )
+
+
+def _calibration_from_row(row: sqlite3.Row) -> BuildCalibration:
+    return BuildCalibration(
+        id=int(row["id"]),
+        session_id=int(row["session_id"]),
+        assessment_id=int(row["assessment_id"]),
+        lease_id=int(row["lease_id"]),
+        provider=str(row["provider"]),
+        model=str(row["model"]),
+        predicted_tier=BuildTier(str(row["predicted_tier"])),
+        assessment_score=int(row["assessment_score"]),
+        outcome=str(row["outcome"]),
+        actual_input_tokens=int(row["actual_input_tokens"]),
+        actual_output_tokens=int(row["actual_output_tokens"]),
+        actual_microdollars=int(row["actual_microdollars"]),
+        actual_cloud_turns=int(row["actual_cloud_turns"]),
+        input_utilization=float(row["input_utilization"]),
+        output_utilization=float(row["output_utilization"]),
+        cost_utilization=float(row["cost_utilization"]),
+        turn_utilization=float(row["turn_utilization"]),
+        recommendation=str(row["recommendation"]),
         created_at=str(row["created_at"]),
     )
 

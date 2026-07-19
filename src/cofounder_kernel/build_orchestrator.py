@@ -292,7 +292,7 @@ class BuildOrchestrator:
         if requested == "local":
             return RouteDecision("local", ("task_declared_local",))
         if requested == "cloud":
-            lease = self.store.get_active_lease(session.id)
+            lease = self.store.get_active_lease(session.id, provider=provider)
             if lease is None or lease.provider.strip().lower() != provider:
                 return RouteDecision(
                     "founder",
@@ -343,7 +343,8 @@ class BuildOrchestrator:
         if task.kind is BuildTaskKind.CHECKPOINT:
             return {"ok": True, "status": "ok", "checkpoint": task.payload}
         if route.route == "cloud":
-            lease = self.store.get_active_lease(task.session_id)
+            provider = str(task.payload.get("provider") or "anthropic")
+            lease = self.store.get_active_lease(task.session_id, provider=provider)
             if lease is None or self.cloud_executor is None:
                 raise RuntimeError("Cloud task lost its approved lease before execution")
             return self.cloud_executor(task, assessment, lease)

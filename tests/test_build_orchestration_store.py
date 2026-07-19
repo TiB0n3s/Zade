@@ -59,7 +59,7 @@ def test_migration_creates_durable_orchestration_tables(tmp_path: Path) -> None:
             )
         }
 
-    assert SCHEMA_VERSION == 30
+    assert SCHEMA_VERSION == 31
     assert {"build_tasks", "build_task_runs", "build_artifacts"} <= tables
 
 
@@ -262,4 +262,4 @@ def test_migration_keeps_existing_databases_usable(tmp_path: Path) -> None:
     database = KernelDatabase(database_path)
     database.migrate()
 
-    assert database.schema_version() == 30
+    assert database.schema_version() == 31

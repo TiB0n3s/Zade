@@ -98,6 +98,29 @@ class BuildArtifact:
 
 
 @dataclass(frozen=True)
+class BuildCalibration:
+    id: int
+    session_id: int
+    assessment_id: int
+    lease_id: int
+    provider: str
+    model: str
+    predicted_tier: BuildTier
+    assessment_score: int
+    outcome: str
+    actual_input_tokens: int
+    actual_output_tokens: int
+    actual_microdollars: int
+    actual_cloud_turns: int
+    input_utilization: float
+    output_utilization: float
+    cost_utilization: float
+    turn_utilization: float
+    recommendation: str
+    created_at: str
+
+
+@dataclass(frozen=True)
 class LeaseLimits:
     dollar_micro: int
     input_tokens: int

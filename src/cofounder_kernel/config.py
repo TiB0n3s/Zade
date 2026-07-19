@@ -357,6 +357,75 @@ class AnthropicConfig:
 
 
 @dataclass(frozen=True)
+class OpenAIPricingConfig:
+    """Conservative GPT-5.6 Terra pricing snapshot for optional build review."""
+
+    model: str = "gpt-5.6-terra"
+    base_input_per_mtok: Decimal = Decimal("2.5")
+    cache_write_5m_per_mtok: Decimal = Decimal("2.5")
+    cache_write_1h_per_mtok: Decimal = Decimal("2.5")
+    cache_read_per_mtok: Decimal = Decimal("2.5")
+    output_per_mtok: Decimal = Decimal("15")
+    review_after: str = "2026-08-31"
+
+    def __post_init__(self) -> None:
+        if not self.model.strip():
+            raise ValueError("OpenAI review pricing model must not be empty")
+        for field_name in (
+            "base_input_per_mtok",
+            "cache_write_5m_per_mtok",
+            "cache_write_1h_per_mtok",
+            "cache_read_per_mtok",
+            "output_per_mtok",
+        ):
+            try:
+                value = Decimal(str(getattr(self, field_name)))
+            except InvalidOperation as exc:
+                raise ValueError(f"OpenAI review pricing {field_name} must be numeric") from exc
+            if value <= 0:
+                raise ValueError(f"OpenAI review pricing {field_name} must be positive")
+            object.__setattr__(self, field_name, value)
+        try:
+            date.fromisoformat(self.review_after)
+        except ValueError as exc:
+            raise ValueError("OpenAI review pricing review_after must be YYYY-MM-DD") from exc
+
+    def snapshot(self) -> PricingSnapshot:
+        return PricingSnapshot(
+            provider="openai",
+            model=self.model,
+            base_input_per_mtok=self.base_input_per_mtok,
+            cache_write_5m_per_mtok=self.cache_write_5m_per_mtok,
+            cache_write_1h_per_mtok=self.cache_write_1h_per_mtok,
+            cache_read_per_mtok=self.cache_read_per_mtok,
+            output_per_mtok=self.output_per_mtok,
+            review_after=self.review_after,
+        )
+
+
+@dataclass(frozen=True)
+class OpenAIReviewConfig:
+    enabled: bool = False
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-5.6-terra"
+    api_key_env: str = "OPENAI_API_KEY"
+    max_output_tokens: int = 4000
+    timeout_seconds: float = 120.0
+    reasoning_effort: str = "medium"
+    pricing: OpenAIPricingConfig = OpenAIPricingConfig()
+
+    def __post_init__(self) -> None:
+        if not self.model.strip():
+            raise ValueError("OpenAI review model must not be empty")
+        if self.model != self.pricing.model:
+            raise ValueError("OpenAI review model must match its pricing snapshot")
+        if self.max_output_tokens <= 0 or self.timeout_seconds <= 0:
+            raise ValueError("OpenAI review output and timeout limits must be positive")
+        if self.reasoning_effort not in {"none", "low", "medium", "high"}:
+            raise ValueError("OpenAI review reasoning_effort is invalid")
+
+
+@dataclass(frozen=True)
 class BuildTierConfig:
     dollar_micro: int
     input_tokens: int
@@ -567,6 +636,7 @@ class KernelConfig:
     screen: ScreenConfig = ScreenConfig()
     egress: EgressConfig = EgressConfig()
     anthropic: AnthropicConfig = AnthropicConfig()
+    openai_review: OpenAIReviewConfig = OpenAIReviewConfig()
     build: BuildConfig = BuildConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
     telegram: TelegramConfig = TelegramConfig()
@@ -772,6 +842,25 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         max_tokens=int(anthropic_raw.get("max_tokens", 2048)),
         timeout_seconds=float(anthropic_raw.get("timeout_seconds", 120.0)),
     )
+    openai_raw = raw.get("openai_review", {})
+    openai_model = str(openai_raw.get("model", "gpt-5.6-terra")).strip()
+    openai_pricing = _openai_pricing_config(
+        openai_raw.get("pricing", {}), model=openai_model
+    )
+    openai_review = OpenAIReviewConfig(
+        enabled=_bool(
+            os.getenv("ZADE_OPENAI_REVIEW_ENABLED", openai_raw.get("enabled", False))
+        ),
+        base_url=str(
+            openai_raw.get("base_url", "https://api.openai.com/v1")
+        ).rstrip("/"),
+        model=openai_model,
+        api_key_env=str(openai_raw.get("api_key_env", "OPENAI_API_KEY")).strip(),
+        max_output_tokens=int(openai_raw.get("max_output_tokens", 4000)),
+        timeout_seconds=float(openai_raw.get("timeout_seconds", 120.0)),
+        reasoning_effort=str(openai_raw.get("reasoning_effort", "medium")).strip(),
+        pricing=openai_pricing,
+    )
     build_raw = raw.get("build", {})
     tier_raw = build_raw.get("tiers", {})
     build = BuildConfig(
@@ -827,6 +916,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         screen=screen,
         egress=egress,
         anthropic=anthropic,
+        openai_review=openai_review,
         build=build,
         openclaw=openclaw,
         telegram=telegram,
@@ -873,6 +963,31 @@ def _anthropic_pricing_config(raw: dict[str, Any]) -> AnthropicPricingConfig:
         ),
         cache_read_per_mtok=Decimal(str(raw.get("cache_read_per_mtok", default.cache_read_per_mtok))),
         output_per_mtok=Decimal(str(raw.get("output_per_mtok", default.output_per_mtok))),
+        review_after=str(raw.get("review_after", default.review_after)).strip(),
+    )
+
+
+def _openai_pricing_config(
+    raw: dict[str, Any], *, model: str
+) -> OpenAIPricingConfig:
+    default = OpenAIPricingConfig()
+    return OpenAIPricingConfig(
+        model=str(raw.get("model", model or default.model)).strip(),
+        base_input_per_mtok=Decimal(
+            str(raw.get("base_input_per_mtok", default.base_input_per_mtok))
+        ),
+        cache_write_5m_per_mtok=Decimal(
+            str(raw.get("cache_write_5m_per_mtok", default.cache_write_5m_per_mtok))
+        ),
+        cache_write_1h_per_mtok=Decimal(
+            str(raw.get("cache_write_1h_per_mtok", default.cache_write_1h_per_mtok))
+        ),
+        cache_read_per_mtok=Decimal(
+            str(raw.get("cache_read_per_mtok", default.cache_read_per_mtok))
+        ),
+        output_per_mtok=Decimal(
+            str(raw.get("output_per_mtok", default.output_per_mtok))
+        ),
         review_after=str(raw.get("review_after", default.review_after)).strip(),
     )
 

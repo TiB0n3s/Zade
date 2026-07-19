@@ -15,7 +15,12 @@ from cofounder_kernel.build_types import (
     PricingSnapshot,
     UsageReservation,
 )
-from cofounder_kernel.config import AnthropicPricingConfig, BuildConfig, load_config
+from cofounder_kernel.config import (
+    AnthropicPricingConfig,
+    BuildConfig,
+    OpenAIReviewConfig,
+    load_config,
+)
 
 
 def test_default_build_tiers_match_the_approved_envelopes() -> None:
@@ -216,6 +221,47 @@ input_tokens = 100000
 
     with pytest.raises(ValueError, match="monotonic"):
         load_config(config_path)
+
+
+def test_openai_reviewer_is_disabled_and_cost_balanced_by_default() -> None:
+    config = OpenAIReviewConfig()
+
+    assert config.enabled is False
+    assert config.model == "gpt-5.6-terra"
+    assert config.pricing.snapshot().provider == "openai"
+    assert str(config.pricing.base_input_per_mtok) == "2.5"
+    assert str(config.pricing.output_per_mtok) == "15"
+
+
+def test_load_config_reads_openai_review_without_enabling_fallback(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[openai_review]
+enabled = true
+model = "gpt-5.6-luna"
+max_output_tokens = 1200
+reasoning_effort = "low"
+
+[openai_review.pricing]
+model = "gpt-5.6-luna"
+base_input_per_mtok = "1"
+cache_write_5m_per_mtok = "1"
+cache_write_1h_per_mtok = "1"
+cache_read_per_mtok = "1"
+output_per_mtok = "6"
+review_after = "2026-09-30"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.openai_review.enabled is True
+    assert config.openai_review.model == "gpt-5.6-luna"
+    assert config.openai_review.max_output_tokens == 1200
+    assert config.openai_review.reasoning_effort == "low"
+    assert config.ollama.cloud_fallback == "never"
 
 
 @pytest.mark.parametrize(

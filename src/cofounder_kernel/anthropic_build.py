@@ -44,7 +44,9 @@ class AnthropicBuildModelClient:
         self.cache_ttl = cache_ttl
 
     def provider_info(self) -> dict[str, Any]:
-        lease = self.budget.store.get_active_lease(self.session_id)
+        lease = self.budget.store.get_active_lease(
+            self.session_id, provider="anthropic"
+        )
         return {
             "provider": "anthropic",
             "model": lease.model if lease else "",
