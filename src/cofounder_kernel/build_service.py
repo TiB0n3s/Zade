@@ -459,6 +459,11 @@ class BuildService:
             verify_always=task.phase == "implementation",
         )
 
+    def review_context(self, session_id: int) -> str:
+        """Return the same bounded, secret-filtered project context used by cloud builds."""
+        _session, assessment = self._session_assessment(session_id)
+        return _render_context(assessment, self._select_context(assessment))
+
     def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return [self.status(session.id) for session in self.store.list_sessions(limit=limit)]
 

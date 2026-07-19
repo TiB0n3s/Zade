@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 import urllib.parse
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
@@ -232,6 +233,7 @@ class BrowserService:
             "nav_timeout_ms": int(self.config.browser.nav_timeout_seconds * 1000),
             "action_timeout_ms": int(self.config.browser.action_timeout_seconds * 1000),
             "trace_path": str(resolved_trace),
+            "allowed_origin": _origin(normalized[0]["url"]),
         }
         runner = self._runner or run_browser_flow
         flow = runner(normalized, options=options)
@@ -412,6 +414,16 @@ def _execute_flow(steps: list[dict[str, Any]], options: dict[str, Any]) -> dict[
                 f"Failed to launch {browser_name}: {exc}. Run: python -m playwright install {browser_name}"
             ) from exc
         context = browser.new_context()
+        allowed_origin = str(options.get("allowed_origin") or "")
+        if allowed_origin:
+            context.route(
+                "**/*",
+                lambda route: (
+                    route.continue_()
+                    if _request_allowed(route.request.url, allowed_origin)
+                    else route.abort("blockedbyclient")
+                ),
+            )
         trace_path = str(options.get("trace_path") or "").strip()
         if trace_path:
             Path(trace_path).parent.mkdir(parents=True, exist_ok=True)
@@ -443,6 +455,23 @@ def _execute_flow(steps: list[dict[str, Any]], options: dict[str, Any]) -> dict[
         "pages": pages,
         "trace": trace_path,
     }
+
+
+def _origin(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    port = parsed.port
+    default = 443 if parsed.scheme == "https" else 80
+    authority = parsed.hostname or ""
+    if port is not None and port != default:
+        authority = f"{authority}:{port}"
+    return f"{parsed.scheme}://{authority}"
+
+
+def _request_allowed(url: str, allowed_origin: str) -> bool:
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme in {"data", "blob"}:
+        return True
+    return scheme in {"http", "https"} and _origin(url) == allowed_origin
 
 
 def _run_step(page: Any, step: dict[str, Any], *, nav_timeout: int, action_timeout: int) -> dict[str, Any]:

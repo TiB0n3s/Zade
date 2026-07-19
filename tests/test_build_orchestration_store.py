@@ -226,6 +226,27 @@ def test_restart_recovery_requeues_retryable_runs_and_fails_exhausted_runs(
     assert reopened.get_task(exhausted.id).status is BuildTaskStatus.FAILED
 
 
+def test_restart_recovery_never_retries_interrupted_cloud_run(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    session = create_session(store)
+    cloud_task = store.create_task(
+        session.id,
+        phase="architecture",
+        kind=BuildTaskKind.AGENT,
+        title="Paid architecture review",
+        idempotency_key="cloud-review",
+        max_attempts=2,
+    )
+    run = store.claim_task(
+        cloud_task.id, worker_id="old-worker", backend="cloud"
+    )
+
+    recovered = make_store(tmp_path).recover_interrupted_runs()
+
+    assert [item.id for item in recovered] == [run.id]
+    assert make_store(tmp_path).get_task(cloud_task.id).status is BuildTaskStatus.FAILED
+
+
 def test_invalid_dependencies_are_rejected(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     first_session = create_session(store)

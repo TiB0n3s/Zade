@@ -30,11 +30,14 @@ class BuildExecutionManager:
         )
         self._futures: dict[int, Future[dict[str, Any]]] = {}
         self._lock = threading.Lock()
+        self._stopping = threading.Event()
 
     def start(self, session_id: int) -> dict[str, Any]:
         session = self.store.get_session(session_id)
         if session is None:
             raise ValueError(f"Build session not found: {session_id}")
+        if self._stopping.is_set():
+            return {"started": False, "status": "stopped", "session_id": session_id}
         if session.status in {"cancelled", "complete"}:
             return {"started": False, "status": session.status, "session_id": session_id}
         if session.status == "paused":
@@ -108,12 +111,15 @@ class BuildExecutionManager:
         }
 
     def shutdown(self, *, wait: bool = True) -> None:
-        self._executor.shutdown(wait=wait, cancel_futures=False)
+        self._stopping.set()
+        self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def _run_session(self, session_id: int) -> dict[str, Any]:
         worker_id = f"worker-{uuid.uuid4().hex[:12]}"
         last: dict[str, Any] = {"status": "idle", "session_id": session_id}
         for _ in range(self.max_tasks_per_run):
+            if self._stopping.is_set():
+                return {"status": "stopped", "session_id": session_id}
             session = self.store.get_session(session_id)
             if session is None:
                 return {"status": "missing", "session_id": session_id}

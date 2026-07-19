@@ -100,7 +100,7 @@ class ToolchainRegistry:
         return {"detected": detected.id, "profiles": items}
 
     def _python_profile(self, root: Path) -> ToolchainProfile:
-        python = self._tool("python", ("python", "python3", sys.executable))
+        python = self._tool("python", (sys.executable, "python", "python3"))
         probes = (
             ToolchainProbe(
                 id="python",
@@ -204,6 +204,8 @@ class ToolchainRegistry:
         if emulator is None:
             emulator = self._tool("emulator", ("emulator",))
         gradle = self._first_file((root / "android" / "gradlew.bat", root / "android" / "gradlew"))
+        package_config = root / ".dart_tool" / "package_config.json"
+        dependencies_ready = package_config.is_file()
 
         probes = (
             _probe("flutter", flutter, ("--version",), "Flutter is unavailable. Install it at C:\\tools\\flutter or set FLUTTER_HOME."),
@@ -211,23 +213,48 @@ class ToolchainRegistry:
             _probe("gradle-wrapper", gradle, ("--version",), "The workspace Android Gradle wrapper is unavailable."),
             _probe("adb", adb, ("version",), "ADB is unavailable. Set ANDROID_HOME to the Android SDK."),
             _probe("android-emulator", emulator, ("-list-avds",), "The Android emulator CLI is unavailable."),
+            ToolchainProbe(
+                "flutter-dependencies",
+                dependencies_ready,
+                package_config.resolve() if dependencies_ready else None,
+                (),
+                (
+                    "Flutter dependencies are not resolved. Run 'flutter pub get' manually "
+                    "before governed verification."
+                    if not dependencies_ready
+                    else ""
+                ),
+            ),
         )
         commands: list[VerificationCommand] = []
-        if flutter is not None:
+        if flutter is not None and dependencies_ready:
             commands.extend(
                 [
-                    VerificationCommand("flutter-pub-get", (str(flutter), "pub", "get"), timeout_seconds=600),
-                    VerificationCommand("flutter-analyze", (str(flutter), "analyze"), timeout_seconds=1200),
-                    VerificationCommand("flutter-test", (str(flutter), "test"), timeout_seconds=1800),
+                    VerificationCommand(
+                        "flutter-analyze",
+                        (str(flutter), "analyze", "--no-pub"),
+                        timeout_seconds=1200,
+                    ),
+                    VerificationCommand(
+                        "flutter-test",
+                        (str(flutter), "test", "--no-pub"),
+                        timeout_seconds=1800,
+                    ),
                     VerificationCommand(
                         "flutter-apk-debug",
-                        (str(flutter), "build", "apk", "--debug"),
+                        (str(flutter), "build", "apk", "--debug", "--no-pub"),
                         timeout_seconds=3600,
                         artifact_kind="apk",
                     ),
                 ]
             )
-        required_ids = {"flutter", "dart", "gradle-wrapper", "adb"}
+        required_ids = {
+            "flutter",
+            "dart",
+            "gradle-wrapper",
+            "adb",
+            "flutter-dependencies",
+        }
         blockers = tuple(
             probe.blocker for probe in probes if probe.id in required_ids and probe.blocker
         )

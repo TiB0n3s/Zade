@@ -19,6 +19,15 @@ def fake_health(self: OllamaClient) -> dict:
     return {"version": "test"}
 
 
+def test_build_verification_network_boundary_is_same_origin() -> None:
+    allowed = "http://127.0.0.1:3000"
+
+    assert browser_module._request_allowed("http://127.0.0.1:3000/app.js", allowed)
+    assert browser_module._request_allowed("data:text/plain,ok", allowed)
+    assert not browser_module._request_allowed("http://127.0.0.1:3001/app.js", allowed)
+    assert not browser_module._request_allowed("https://example.com/collect", allowed)
+
+
 def _config(tmp_path: Path, *, allow_private: bool = True) -> KernelConfig:
     return KernelConfig(
         app=AppConfig(),
@@ -311,6 +320,7 @@ def test_read_only_build_verification_reuses_browser_execution_boundary(
     assert result["screenshots"] == [str(screenshot.resolve())]
     assert Path(result["trace"]).is_file()
     assert captured["options"]["headless"] is True
+    assert captured["options"]["allowed_origin"] == "http://127.0.0.1:3000"
 
     with pytest.raises(ValueError, match="private/internal"):
         service.run_verification_flow(

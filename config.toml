@@ -89,7 +89,7 @@ enabled = true
 # Zade never pulls an image. Flutter and Android checks use narrow host policies.
 enabled = true
 max_workers = 2
-ios_workflow = "ios.yml"
+ios_workflow = "ios-toolchain-canary.yml"
 
 [openai_review]
 # Optional independent review only. Disabled until the optional SDK and

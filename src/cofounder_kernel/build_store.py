@@ -620,7 +620,8 @@ class BuildStore:
                 )
                 task_status = (
                     BuildTaskStatus.PENDING.value
-                    if int(row["attempt_number"]) < int(row["max_attempts"])
+                    if str(row["backend"]) != "cloud"
+                    and int(row["attempt_number"]) < int(row["max_attempts"])
                     else BuildTaskStatus.FAILED.value
                 )
                 connection.execute(

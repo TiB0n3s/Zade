@@ -118,6 +118,10 @@ def test_context_excludes_secrets_dependencies_and_unrelated_history(
     (tmp_path / "src").mkdir()
     auth = tmp_path / "src" / "auth.py"
     auth.write_text("def callback():\n    return 'ok'\n", encoding="utf-8")
+    leaky = tmp_path / "src" / "settings.py"
+    leaky.write_text(
+        "API_KEY = 'sk-should-never-leave-this-machine'\n", encoding="utf-8"
+    )
     env = tmp_path / ".env"
     env.write_text("SECRET=sentinel\n", encoding="utf-8")
     vendor = tmp_path / "node_modules" / "vendor.js"
@@ -129,7 +133,7 @@ def test_context_excludes_secrets_dependencies_and_unrelated_history(
 
     selected = BuildContextSelector(tmp_path).select(
         task="fix auth callback",
-        candidates=[auth, env, vendor, history],
+        candidates=[auth, leaky, env, vendor, history],
     )
 
     assert selected.paths == ("src/auth.py",)

@@ -445,7 +445,7 @@
       const note = byId('buildNote');
       if (!prompt) { note.textContent = 'Enter a review focus.'; note.className = 'note err'; return; }
       try {
-        const result = await api(`/build/sessions/${currentBuild.session.id}/review/run`, { method: 'POST', body: JSON.stringify({ prompt, context: JSON.stringify({ assessment: currentBuild.assessment, tasks: currentBuild.tasks, artifacts: currentBuild.artifacts }).slice(0, 48000) }) });
+        const result = await api(`/build/sessions/${currentBuild.session.id}/review/run`, { method: 'POST', body: JSON.stringify({ prompt }) });
         const box = byId('buildReviewResult'); box.hidden = false;
         box.textContent = [result.summary, ...(result.findings || []), result.recommendation].filter(Boolean).join('\n\n');
         note.textContent = 'Independent review completed.'; note.className = 'note good';

@@ -405,6 +405,12 @@ def test_openai_review_has_separate_lease_egress_and_calibration(
         json={},
     )
     assert review_prepare.status_code == 200, review_prepare.text
+    oversized = client.post(
+        f"/build/sessions/{session_id}/review/approve",
+        headers=_headers(),
+        json={"typed_confirmation": CONFIRMATION, "tier": "large"},
+    )
+    assert oversized.status_code == 400, oversized.text
     approved = client.post(
         f"/build/sessions/{session_id}/review/approve",
         headers=_headers(),
@@ -416,12 +422,17 @@ def test_openai_review_has_separate_lease_egress_and_calibration(
     reviewed = client.post(
         f"/build/sessions/{session_id}/review/run",
         headers=_headers(),
-        json={"prompt": "Review release correctness", "context": "app.py changed"},
+        json={
+            "prompt": "Review release correctness",
+            "context": "UNTRUSTED_CONTEXT_SENTINEL",
+        },
     )
     assert reviewed.status_code == 200, reviewed.text
     assert reviewed.json()["findings"] == ["Add one boundary test."]
     assert calls[0]["store"] is False
     assert "tools" not in calls[0]
+    assert "UNTRUSTED_CONTEXT_SENTINEL" not in calls[0]["input"]
+    assert "LABEL = 'review me'" in calls[0]["input"]
     assert client.get(f"/build/sessions/{session_id}").json()["lease"] is None
 
     calibrated = client.post(

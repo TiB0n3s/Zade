@@ -92,6 +92,7 @@ class ManagedAgentsReadinessService:
         orchestration_ready: bool,
         verification_ready: bool,
         cancellation_ready: bool,
+        evidence_required: bool = False,
     ) -> dict[str, Any]:
         calibration_count = len(self.store.list_calibrations(limit=1000))
         gates = {
@@ -100,6 +101,31 @@ class ManagedAgentsReadinessService:
             "durable_cancellation": bool(cancellation_ready),
             "minimum_calibrations": calibration_count >= self.minimum_calibrations,
         }
+        evidence: dict[str, int] = {}
+        if evidence_required:
+            with self.store.database.connect() as connection:
+                evidence = {
+                    "completed_local_sessions": int(connection.execute(
+                        "SELECT COUNT(*) FROM build_sessions WHERE status = 'complete'"
+                    ).fetchone()[0]),
+                    "cancelled_tasks": int(connection.execute(
+                        "SELECT COUNT(*) FROM build_tasks WHERE status = 'cancelled'"
+                    ).fetchone()[0]),
+                    "interrupted_runs": int(connection.execute(
+                        "SELECT COUNT(*) FROM build_task_runs WHERE status = 'interrupted'"
+                    ).fetchone()[0]),
+                    "cloud_calibrations": int(connection.execute(
+                        "SELECT COUNT(*) FROM build_calibrations WHERE actual_cloud_turns > 0"
+                    ).fetchone()[0]),
+                }
+            gates.update(
+                {
+                    "completed_local_sessions": evidence["completed_local_sessions"] >= 3,
+                    "verified_cancellation": evidence["cancelled_tasks"] >= 1,
+                    "restart_recovery_exercised": evidence["interrupted_runs"] >= 1,
+                    "cloud_calibrations": evidence["cloud_calibrations"] >= 2,
+                }
+            )
         return {
             "mode": "readiness_only",
             "execution_enabled": False,
@@ -107,6 +133,7 @@ class ManagedAgentsReadinessService:
             "gates": gates,
             "calibration_count": calibration_count,
             "minimum_calibrations": self.minimum_calibrations,
+            "evidence": evidence,
         }
 
 

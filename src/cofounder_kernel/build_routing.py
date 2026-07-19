@@ -117,6 +117,17 @@ _MANIFEST_NAMES = {
 }
 _INSTRUCTION_NAMES = {"agents.md", "claude.md", "contributing.md"}
 _MAX_SOURCE_BYTES = 2_000_000
+_SECRET_CONTENT_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(
+        r"(?i)\b(api[_-]?key|secret|password|passwd|client[_-]?secret|token|bearer)"
+        r"\b\s*[:=]\s*\S{6,}"
+    ),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+)
 
 
 @dataclass(frozen=True)
@@ -304,7 +315,9 @@ class BuildContextSelector:
                 text = data.decode("utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if "\x00" in text:
+            if "\x00" in text or any(
+                pattern.search(text) for pattern in _SECRET_CONTENT_PATTERNS
+            ):
                 continue
             score = self._score_candidate(
                 relative, text, task_lower, terms, changed, failing

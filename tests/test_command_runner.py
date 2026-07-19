@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import sys
 import time
 
@@ -48,6 +49,28 @@ def test_preflight_rejects_unknown_program_and_workspace_escape(tmp_path: Path) 
                 workspace=workspace,
                 profile_id=policy.id,
                 argv=("powershell", "-c", "Write-Host nope"),
+            )
+        )
+
+
+def test_preflight_rejects_relative_symlink_escape(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("print('outside')\n", encoding="utf-8")
+    link = workspace / "linked.py"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this host")
+    runner = _runner(tmp_path, _python_policy())
+
+    with pytest.raises(CommandPolicyError, match="workspace"):
+        runner.preflight(
+            CommandRequest(
+                workspace=workspace,
+                profile_id="test-python",
+                argv=("python", "-c", "print('x')", "linked.py"),
             )
         )
 
@@ -198,6 +221,28 @@ def test_background_command_can_be_cancelled(tmp_path: Path) -> None:
     assert result.ok is False
     assert result.cancelled is True
     assert runner.cancel(running.run_id) is False
+
+
+def test_running_wait_does_not_block_concurrent_cancellation(tmp_path: Path) -> None:
+    runner = _runner(tmp_path, _python_policy())
+    running = runner.start(
+        CommandRequest(
+            workspace=tmp_path,
+            profile_id="test-python",
+            argv=("python", "-c", "import time; time.sleep(30)"),
+            timeout_seconds=5,
+        )
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        waiter = executor.submit(running.wait)
+        time.sleep(0.1)
+        started = time.monotonic()
+        assert running.cancel() is True
+        result = waiter.result(timeout=5)
+
+    assert time.monotonic() - started < 5
+    assert result.cancelled is True
 
 
 def test_auto_backend_selects_docker_only_for_existing_approved_image(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 from cofounder_kernel.toolchain_profiles import ToolchainRegistry
 
@@ -18,6 +19,7 @@ def test_flutter_profile_uses_well_known_windows_tools(tmp_path: Path) -> None:
     (workspace / "pubspec.yaml").write_text("name: app\n", encoding="utf-8")
     (workspace / "lib").mkdir()
     (workspace / "android").mkdir()
+    _touch(workspace / ".dart_tool" / "package_config.json")
     gradle = _touch(workspace / "android" / "gradlew.bat")
 
     flutter = _touch(tmp_path / "flutter" / "bin" / "flutter.bat")
@@ -41,10 +43,9 @@ def test_flutter_profile_uses_well_known_windows_tools(tmp_path: Path) -> None:
     assert probes["adb"].path == adb.resolve()
     assert probes["android-emulator"].path == emulator.resolve()
     assert [command.argv[1:] for command in profile.verification_commands] == [
-        ("pub", "get"),
-        ("analyze",),
-        ("test",),
-        ("build", "apk", "--debug"),
+        ("analyze", "--no-pub"),
+        ("test", "--no-pub"),
+        ("build", "apk", "--debug", "--no-pub"),
     ]
     assert all(command.required for command in profile.verification_commands)
 
@@ -62,6 +63,7 @@ def test_flutter_profile_reports_exact_missing_tool_blockers(tmp_path: Path) -> 
 
     assert any("flutter" in blocker.lower() for blocker in blockers)
     assert any("C:\\tools\\flutter" in blocker for blocker in blockers)
+    assert any("flutter pub get" in blocker for blocker in blockers)
 
 
 def test_node_profile_uses_declared_scripts_without_install_or_npx(tmp_path: Path) -> None:
@@ -101,10 +103,9 @@ def test_python_profile_uses_kernel_interpreter_and_pytest(tmp_path: Path) -> No
     workspace.mkdir()
     (workspace / "pyproject.toml").write_text("[project]\nname='app'\n", encoding="utf-8")
     (workspace / "tests").mkdir()
-    python = _touch(tmp_path / "python" / "python.exe")
     registry = ToolchainRegistry(
         env={},
-        which=lambda name: str(python) if name in {"python", "python3"} else None,
+        which=lambda _name: None,
         include_system_paths=False,
     )
 
@@ -112,7 +113,7 @@ def test_python_profile_uses_kernel_interpreter_and_pytest(tmp_path: Path) -> No
 
     assert profile.id == "python-saas"
     assert profile.verification_commands[0].argv == (
-        str(python.resolve()),
+        str(Path(sys.executable).resolve()),
         "-m",
         "pytest",
         "-q",

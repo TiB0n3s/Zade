@@ -565,6 +565,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     async def lifespan(_app: FastAPI):
         yield
         execution_manager.shutdown(wait=False)
+        command_runner.cancel_all()
 
     app = FastAPI(
         title=f"{cfg.identity.name} Local AI Co-founder Kernel",
@@ -1661,7 +1662,12 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         )
         if approval is None:
             raise HTTPException(status_code=400, detail="No pending OpenAI review lease approval")
-        tier = BuildTier(payload.tier or "small")
+        if payload.tier not in {None, BuildTier.SMALL.value}:
+            raise HTTPException(
+                status_code=400,
+                detail="OpenAI review approval is limited to the displayed Small lease.",
+            )
+        tier = BuildTier.SMALL
         lease = build_store.create_lease(
             session_id,
             tier,
@@ -1706,7 +1712,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             result = openai_review_client(authorize).review(
                 session_id=session_id,
                 prompt=payload.prompt,
-                context=payload.context,
+                context=build_service.review_context(session_id),
                 request_id=payload.request_id,
             )
         except OpenAIReviewUnavailable as exc:
@@ -1751,6 +1757,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             orchestration_ready=True,
             verification_ready=True,
             cancellation_ready=True,
+            evidence_required=True,
         )
 
     # ---- Screen awareness ----

@@ -160,3 +160,34 @@ def test_recover_requeues_interrupted_task_and_restarts_active_session(tmp_path:
     assert outcome["status"] in {"idle", "complete"}
     assert store.get_task(task.id).status is BuildTaskStatus.SUCCEEDED
 
+
+def test_shutdown_prevents_worker_from_starting_another_task(tmp_path: Path) -> None:
+    agent = BlockingAgent()
+    store, session, manager = make_runtime(tmp_path, agent)
+    first = store.create_task(
+        session.id,
+        phase="implementation",
+        kind=BuildTaskKind.AGENT,
+        title="Current task",
+        payload={"route": "local"},
+        idempotency_key="current-task",
+    )
+    second = store.create_task(
+        session.id,
+        phase="verification",
+        kind=BuildTaskKind.AGENT,
+        title="Must not start",
+        payload={"route": "local"},
+        dependencies=(first.id,),
+        idempotency_key="next-task",
+    )
+
+    manager.start(session.id)
+    assert agent.entered.wait(timeout=2)
+    manager.shutdown(wait=False)
+    agent.release.set()
+    outcome = manager.wait(session.id, timeout=5)
+
+    assert outcome["status"] == "stopped"
+    assert store.get_task(first.id).status is BuildTaskStatus.SUCCEEDED
+    assert store.get_task(second.id).status is BuildTaskStatus.PENDING

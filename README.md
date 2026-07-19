@@ -186,7 +186,12 @@ local images `python:3.12-local` and `node:22-local` already exist. Zade never
 pulls images. Without those images, the same narrow policy can use the host
 toolchain. Flutter, Gradle wrapper, ADB, emulator, and Playwright verification
 are host workflows. Playwright build evidence is read-only and permits only
-loopback URLs when private navigation is otherwise disabled.
+loopback URLs when private navigation is otherwise disabled. Flutter packages
+must already be resolved by a founder-run `flutter pub get`; automatic checks
+use `--no-pub` and block when `.dart_tool/package_config.json` is absent.
+Host fallback is argv, path, environment, timeout, and process-tree confinement;
+it is not a separate Windows security principal or a host network sandbox. Use
+the approved local Docker images for untrusted Python or Node verification.
 
 GitHub status and workflow evidence use the installed `gh` CLI. Every workflow
 dispatch or remote cancellation requires a fresh typed external-action

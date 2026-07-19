@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -124,6 +125,7 @@ class _ActiveProcess:
     timed_out: bool = False
     result: CommandResult | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    wait_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class RunningCommand:
@@ -343,6 +345,15 @@ class GovernedCommandRunner:
                 "--rm",
                 "--network",
                 "none",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                "256",
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,size=512m",
                 "--mount",
                 f"type=bind,source={preflight.workspace},target=/workspace",
                 "--workdir",
@@ -364,6 +375,7 @@ class GovernedCommandRunner:
                 text=True,
                 shell=False,
                 creationflags=creationflags,
+                start_new_session=os.name != "nt",
             )
         except Exception:
             stdout_handle.close()
@@ -392,10 +404,14 @@ class GovernedCommandRunner:
         if active is None:
             return False
         with active.lock:
-            if active.result is not None or active.process.poll() is not None:
+            if (
+                active.cancelled
+                or active.result is not None
+                or active.process.poll() is not None
+            ):
                 return False
             active.cancelled = True
-            _terminate_process(active.process)
+        _terminate_process(active.process)
         return True
 
     def cancel_workspace(self, workspace: Path | str) -> int:
@@ -409,6 +425,11 @@ class GovernedCommandRunner:
             ]
         return sum(1 for run_id in run_ids if self.cancel(run_id))
 
+    def cancel_all(self) -> int:
+        with self._lock:
+            run_ids = list(self._active)
+        return sum(1 for run_id in run_ids if self.cancel(run_id))
+
     def _wait(self, run_id: str, *, timeout_seconds: float | None = None) -> CommandResult:
         with self._lock:
             completed = self._completed.get(run_id)
@@ -417,16 +438,18 @@ class GovernedCommandRunner:
             return completed
         if active is None:
             raise KeyError(f"Unknown command run: {run_id}")
-        with active.lock:
-            if active.result is not None:
-                return active.result
+        with active.wait_lock:
+            with active.lock:
+                if active.result is not None:
+                    return active.result
             wait_timeout = (
                 active.preflight.timeout_seconds if timeout_seconds is None else timeout_seconds
             )
             try:
                 active.process.wait(timeout=wait_timeout)
             except subprocess.TimeoutExpired:
-                active.timed_out = True
+                with active.lock:
+                    active.timed_out = True
                 _terminate_process(active.process)
                 active.process.wait(timeout=2)
             active.stdout_handle.close()
@@ -435,21 +458,22 @@ class GovernedCommandRunner:
             _bound_log(active.stderr_log, self.max_log_bytes)
             duration = max(0.0, time.monotonic() - active.started_at)
             returncode = active.process.returncode
-            result = CommandResult(
-                run_id=run_id,
-                ok=(returncode == 0 and not active.cancelled and not active.timed_out),
-                returncode=returncode,
-                backend=active.preflight.backend,
-                redacted_argv=active.preflight.redacted_argv,
-                stdout_tail=_tail(active.stdout_log, self.max_output_chars),
-                stderr_tail=_tail(active.stderr_log, self.max_output_chars),
-                stdout_log=active.stdout_log,
-                stderr_log=active.stderr_log,
-                duration_seconds=duration,
-                timed_out=active.timed_out,
-                cancelled=active.cancelled,
-            )
-            active.result = result
+            with active.lock:
+                result = CommandResult(
+                    run_id=run_id,
+                    ok=(returncode == 0 and not active.cancelled and not active.timed_out),
+                    returncode=returncode,
+                    backend=active.preflight.backend,
+                    redacted_argv=active.preflight.redacted_argv,
+                    stdout_tail=_tail(active.stdout_log, self.max_output_chars),
+                    stderr_tail=_tail(active.stderr_log, self.max_output_chars),
+                    stdout_log=active.stdout_log,
+                    stderr_log=active.stderr_log,
+                    duration_seconds=duration,
+                    timed_out=active.timed_out,
+                    cancelled=active.cancelled,
+                )
+                active.result = result
         with self._lock:
             self._active.pop(run_id, None)
             self._completed[run_id] = result
@@ -563,9 +587,6 @@ def _validate_workspace_path_token(workspace: Path, token: str) -> None:
     if "://" in value or not value:
         return
     candidate = Path(value).expanduser()
-    looks_like_path = candidate.is_absolute() or ".." in candidate.parts
-    if not looks_like_path:
-        return
     resolved = candidate.resolve() if candidate.is_absolute() else (workspace / candidate).resolve()
     try:
         resolved.relative_to(workspace)
@@ -643,12 +664,26 @@ def _docker_image_available(image: str) -> bool:
 def _terminate_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
-    try:
-        process.terminate()
-        process.wait(timeout=1)
-        return
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            process.wait(timeout=1)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            process.wait(timeout=1)
+            return
+        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+            pass
     try:
         process.kill()
     except OSError:

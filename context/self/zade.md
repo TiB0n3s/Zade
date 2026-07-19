@@ -99,12 +99,8 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 | Name | Mode | Source | Summary |
 | --- | --- | --- | --- |
 | AI Brain hot/cold roots | local | `config.paths` | Hot root C:\AI Brain; cold root D:\AI Brain-Cold. |
-| Anthropic build delegation | optional provider lease | `config.anthropic + config.build` | Enabled=True; model=claude-opus-4-8; source-code egress and paid turns require a matching founder-approved lease. |
 | Browser automation | approved external action | `config.browser` | Enabled=True; engine=chromium; headless=False. |
-| Durable product builds | local-first governed execution | `BuildOrchestrator` | Discovery-through-release task graphs, background controls, governed commands, toolchain verification, artifacts, and calibration are persisted locally. |
-| GitHub Actions build evidence | governed external CI | `GitHubCIClient` | Read-only run evidence is available through gh; writes require fresh approval; configured iOS workflow=ios.yml. |
 | Ollama | local | `config.ollama` | Models at http://127.0.0.1:11434; chat=qwen3:14b, reasoning=deepseek-r1:14b. |
-| OpenAI build review | optional advisory provider | `config.openai_review` | Enabled=False; model=gpt-5.6-terra; store=false, no hosted tools, separate provider lease. |
 | Read-only connectors | external-read | `ConnectorService` | IMAP and ICS connector routes are mounted; sync dispatches through registered app handlers. |
 | SQLite memory | local | `config.paths.database_path` | Structured memory, audit, work queue, and registry state at C:\AI Brain\memory-hot\cofounder-kernel\cofounder.sqlite. |
 | Trading-bot bridge | local WSL | `config.trading_bot` | Enabled=True; distro=Ubuntu-TradingBot-C; repo=/home/tradingbot/trading-bot. |
@@ -133,6 +129,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `de459ce` 2026-07-19 - feat: expose durable product build orchestration
 - `8956197` 2026-07-19 - feat: add optional review and build calibration
 - `0ae740c` 2026-07-19 - feat: add governed GitHub build verification
 - `565c136` 2026-07-19 - feat: add product build verification profiles
@@ -144,7 +141,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `3509e5b` 2026-07-19 - Persona primacy: identity leads the prompt; contrarian memo only on explicit request
 - `81c6f73` 2026-07-19 - Make Ollama request timeout configurable; raise default to 600s
 - `d3fe1d9` 2026-07-18 - Add direct Telegram Bot API adapter; retire OpenClaw for channels
-- `fa6e28c` 2026-07-18 - Merge branch 'main' into codex/token-budgeted-build-delegation
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -100,3 +100,19 @@ def test_managed_agents_remains_readiness_only(tmp_path: Path) -> None:
     assert ready["execution_enabled"] is False
     assert ready["mode"] == "readiness_only"
 
+
+def test_managed_agents_strict_readiness_requires_runtime_evidence(tmp_path: Path) -> None:
+    store, _session, _lease = make_store(tmp_path)
+    service = ManagedAgentsReadinessService(store, minimum_calibrations=1)
+
+    status = service.status(
+        orchestration_ready=True,
+        verification_ready=True,
+        cancellation_ready=True,
+        evidence_required=True,
+    )
+
+    assert status["ready_for_consideration"] is False
+    assert status["gates"]["completed_local_sessions"] is False
+    assert status["gates"]["cloud_calibrations"] is False
+    assert status["gates"]["restart_recovery_exercised"] is False
