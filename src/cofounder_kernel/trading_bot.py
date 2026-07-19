@@ -3185,7 +3185,11 @@ def _summarize_diagnostics(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
                 bare_fact = _BARE_FACT_RE.match(line)
                 if bare_fact:
                     fact_key, fact_value = bare_fact.group(1), bare_fact.group(2)
-            if line.startswith("[WARN]") or (
+            if line.startswith("[OK]"):
+                # An explicit all-clear line ("[OK] ... no critical runtime
+                # blockers") is never a concern, whatever words it contains.
+                concerning = False
+            elif line.startswith("[WARN]") or (
                 line.startswith("- ") and current_section in {"warnings", "blockers", "critical blockers"}
             ):
                 concerning = True

@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `0624fb3` 2026-07-19 - fix: ground project status in live registry
 - `a590483` 2026-07-19 - feat: verify repaired project scaffolds locally
 - `3a49fca` 2026-07-19 - fix: scaffold spaced project names safely
 - `ce9ffc0` 2026-07-19 - feat: bootstrap mobile intake projects offline
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `0004b1a` 2026-07-19 - feat: resume project decisions from Telegram
 - `8f47750` 2026-07-19 - feat: notify founders through Telegram
 - `e70745a` 2026-07-19 - feat: confine builds to registered intake projects
-- `8c9dd87` 2026-07-19 - feat: discover and route project intake
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

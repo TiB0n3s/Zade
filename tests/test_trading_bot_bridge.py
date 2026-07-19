@@ -1023,6 +1023,7 @@ HEALTHY_MONITOR_STDOUT = (
     "bar_feed               : running=True bars_received=49939 bars_emitted=49939 errors=0 reconnects=0\n"
     "legacy_auto_buy_cron   : False\n"
     "missing_forward_outcome                0\n"
+    "[OK] paper-live monitor found no critical runtime blockers\n"
 )
 
 
