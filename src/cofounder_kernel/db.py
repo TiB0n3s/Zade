@@ -3427,7 +3427,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_build_leases_session_version
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_build_leases_open_session
   ON build_leases (session_id)
-  WHERE state IN ('active', 'warning', 'paused');
+  WHERE state IN ('active', 'warning', 'paused', 'exhausted');
 
 CREATE TABLE IF NOT EXISTS cloud_usage_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

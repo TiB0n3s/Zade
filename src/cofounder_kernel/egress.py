@@ -45,6 +45,7 @@ research and future cloud lanes follow — see EGRESS-DESIGN.md §6.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
@@ -615,5 +616,85 @@ def authorize_egress(db: Any, policy: EgressPolicy, request: EgressRequest, *, p
         actor="egress", action="egress.decision", target=request.vendor,
         permission_tier="L3_EXTERNAL_ACTION", status=decision.verdict.value,
         details=decision.audit_record(),
+    )
+    return decision
+
+
+def authorize_build_egress(
+    db: Any,
+    policy: EgressPolicy,
+    request: EgressRequest,
+    *,
+    lease: Any,
+    now: datetime | None = None,
+) -> EgressDecision:
+    """Authorize one source-code request from an already approved build lease.
+
+    This path never reads, creates, or consumes the one-shot grant ledger. The
+    lease approval is the project-scoped authorization, while the request id
+    remains unique to one budget reservation and one audit decision.
+    """
+    vendor = policy.vendors.get(request.vendor)
+    invalid_rule = ""
+    invalid_reason = ""
+    if request.data_class is not DataClass.SOURCE_CODE:
+        invalid_rule = "build_lease.data_class"
+        invalid_reason = "Build leases authorize selected source code only."
+    elif request.vendor != str(getattr(lease, "provider", "")):
+        invalid_rule = "build_lease.provider"
+        invalid_reason = "Build lease provider does not match the egress vendor."
+    elif str(getattr(lease, "state", "")) not in {"active", "warning"}:
+        state = str(getattr(lease, "state", "unknown"))
+        invalid_rule = f"build_lease.{state}"
+        invalid_reason = f"Build lease is {state}; source egress is refused."
+    else:
+        current = now or datetime.now(UTC)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        try:
+            expires = datetime.fromisoformat(str(getattr(lease, "expires_at", "")))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=UTC)
+        except ValueError:
+            invalid_rule = "build_lease.expiration_invalid"
+            invalid_reason = "Build lease expiration is invalid."
+        else:
+            if current.astimezone(UTC) >= expires.astimezone(UTC):
+                invalid_rule = "build_lease.expired"
+                invalid_reason = "Build lease has expired; source egress is refused."
+
+    if invalid_rule:
+        decision = EgressDecision(
+            verdict=Verdict.DENY,
+            reason=invalid_reason,
+            matched_rule=invalid_rule,
+            data_class=request.data_class,
+            vendor=request.vendor,
+            vendor_tier=vendor.tier if vendor else None,
+            provider_policy=policy.provider_policy,
+        )
+    else:
+        authorization = EgressAuthorization(
+            request_id=request.request_id,
+            data_class=request.data_class,
+            vendor=request.vendor,
+            granted_by="founder",
+            typed_phrase_ok=True,
+        )
+        decision = policy.decide(request, authorization=authorization)
+    details = decision.audit_record() | {
+        "lease_id": int(getattr(lease, "id", 0) or 0),
+        "session_id": int(getattr(lease, "session_id", 0) or 0),
+        "lease_version": int(getattr(lease, "version", 0) or 0),
+        "usage_request_id": request.request_id,
+        "byte_estimate": max(0, int(request.byte_estimate)),
+    }
+    db.audit(
+        actor="egress",
+        action="egress.build.decision",
+        target=request.vendor,
+        permission_tier="L3_EXTERNAL_ACTION",
+        status=decision.verdict.value,
+        details=details,
     )
     return decision

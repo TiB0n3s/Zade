@@ -31,6 +31,7 @@ from .founder import FounderService
 from .autonomy import WorkQueueService
 
 DELEGATION_RUN_ACTION = "external.delegation.run"
+HYBRID_ASSESS_ACTION = "local.assessment.prepare"
 
 AgentRunner = Callable[..., str]
 
@@ -115,6 +116,7 @@ class DelegationService:
         work_queue: WorkQueueService,
         runner: AgentRunner | None = None,
         coding_agent: Any | None = None,
+        build_service: Any | None = None,
     ):
         self.config = config
         self.db = db
@@ -125,6 +127,7 @@ class DelegationService:
         # when the engine is "native" this is the delegated-build implementation
         # and no external agent process is launched at all.
         self.coding_agent = coding_agent
+        self.build_service = build_service
 
     # ---- registration ----
     def register_into(self, registry: Any) -> list[str]:
@@ -132,10 +135,18 @@ class DelegationService:
             return []
         registry.register(
             DELEGATION_RUN_ACTION,
-            "Invoke a configured external agent (Claude Code/Codex) on a scoped brief and file its artifact (approved external action).",
+            "Run the configured native, hybrid, bridge, or brief-only delegated build flow.",
             self.run_from_work_item,
         )
-        return [DELEGATION_RUN_ACTION]
+        actions = [DELEGATION_RUN_ACTION]
+        if getattr(self.config.delegation, "engine", "native") == "hybrid":
+            registry.register(
+                HYBRID_ASSESS_ACTION,
+                "Assess a build locally and prepare its separate cloud lease approval.",
+                self.run_from_work_item,
+            )
+            actions.append(HYBRID_ASSESS_ACTION)
+        return actions
 
     def status(self) -> dict[str, Any]:
         used = self._invocations_today()
@@ -145,6 +156,7 @@ class DelegationService:
             "enabled": self.config.delegation.enabled,
             "engine": engine,
             "native_agent_available": self.coding_agent is not None,
+            "hybrid_build_available": self.build_service is not None,
             "agent_configured": bool(self.config.delegation.agent_command),
             "agent_command": list(self.config.delegation.agent_command),
             "workspace_root": getattr(self.config.delegation, "workspace_root", ""),
@@ -154,6 +166,7 @@ class DelegationService:
             "auto_invoke": self.config.delegation.auto_invoke,
             "operating_rules": [
                 "Engine 'native' (default): Zade's own coding loop on the LOCAL Ollama model — no external agent process, no cloud.",
+                "Engine 'hybrid': Zade assesses and works locally first; paid Anthropic turns require an approved project lease and hard budget reservation.",
                 "Engine 'bridge': the configured CLI runs as a LOCAL COMPATIBILITY BRIDGE — under a local provider policy its environment is forced to the loopback Ollama Anthropic-compatible API with no inherited keys.",
                 "There is no automatic fallback between engines or to any cloud provider; failures fail closed and are reported.",
                 "Invoking a delegated build is an L3 action. A DIRECT founder command runs at full auto — immediately, including into a named project workspace — up to the daily budget. Autonomous (non-directed) runs auto-invoke only in the default delegation workspace; a workspace-targeted autonomous run always waits for the founder.",
@@ -234,22 +247,35 @@ class DelegationService:
             # founder. A directed command already carries that authorization.
             want_auto = False
 
-        metadata: dict[str, Any] = {"task": task.strip(), "brief": brief, "workspace": workspace}
+        engine = getattr(self.config.delegation, "engine", "native")
+        metadata: dict[str, Any] = {
+            "task": task.strip(),
+            "brief": brief,
+            "workspace": workspace,
+            "acceptance": acceptance.strip(),
+        }
         if directed:
             # Founder-implied approval: the work queue marks the item approved
             # with no typed-phrase request — she already gave the word in chat.
             metadata["founder_command"] = True
+        queue_action = HYBRID_ASSESS_ACTION if engine == "hybrid" else DELEGATION_RUN_ACTION
         result = self.work_queue.enqueue(
             kind="delegation_run",
             title=f"Delegate: {task.strip()[:80]}",
-            detail="Invoke an external agent on a scoped brief.\n\n" + brief,
-            action=DELEGATION_RUN_ACTION,
-            target="external-agent",
-            permission_tier="L3_EXTERNAL_ACTION",
+            detail=(
+                "Assess locally and prepare a budgeted build lease.\n\n"
+                if engine == "hybrid"
+                else "Invoke an external agent on a scoped brief.\n\n"
+            ) + brief,
+            action=queue_action,
+            target="local-build-assessment" if engine == "hybrid" else "external-agent",
+            # Hybrid dispatch only performs local assessment here. The separate
+            # build-lease approval is the L3 gate before source code or spend.
+            permission_tier="L0_READ" if engine == "hybrid" else "L3_EXTERNAL_ACTION",
             priority=60,
             source="founder.delegation" if directed else "delegation",
             metadata=metadata,
-            unique_key=f"{DELEGATION_RUN_ACTION}:{utc_now()}",
+            unique_key=f"{queue_action}:{utc_now()}",
         )
         payload = result.as_dict()
 
@@ -257,7 +283,18 @@ class DelegationService:
         # engine can actually run (native agent wired, or a bridge command
         # configured), and we're under today's cap. Otherwise it stays a gated
         # work item waiting on the founder.
-        engine = getattr(self.config.delegation, "engine", "native")
+        if engine == "hybrid":
+            item = self.db.get_work_item(result.item_id)
+            dispatch = self.run_from_work_item(item) if item is not None else {
+                "status": "flow_error",
+                "ok": False,
+                "error": "Hybrid delegation work item disappeared before assessment.",
+            }
+            return payload | {
+                "auto_invoked": False,
+                "dispatch": dispatch,
+                "reason": "local assessment complete; build lease approval required",
+            }
         engine_ready = (
             (engine == "native" and self.coding_agent is not None)
             or (engine == "bridge" and bool(self.config.delegation.agent_command))
@@ -323,6 +360,59 @@ class DelegationService:
                     "error": problem,
                 }
         engine = getattr(self.config.delegation, "engine", "native")
+
+        if engine == "hybrid":
+            if self.build_service is None:
+                return {
+                    "handler": DELEGATION_RUN_ACTION,
+                    "status": "flow_error",
+                    "ok": False,
+                    "task": task,
+                    "engine": "hybrid",
+                    "error": "Delegation engine is 'hybrid' but no build service is wired in.",
+                }
+            target_workspace = workspace or self._workspace_cwd()
+            if not target_workspace:
+                return {
+                    "handler": HYBRID_ASSESS_ACTION,
+                    "status": "flow_error",
+                    "ok": False,
+                    "task": task,
+                    "engine": "hybrid",
+                    "error": "Hybrid delegation requires a target workspace or delegation.workspace_root.",
+                }
+            existing_session = metadata.get("build_session_id")
+            prepared = (
+                self.build_service.status(int(existing_session))
+                if existing_session
+                else self.build_service.prepare(
+                    task=task,
+                    acceptance=str(metadata.get("acceptance") or ""),
+                    workspace=target_workspace,
+                    work_item_id=item.id,
+                )
+            )
+            session_id = int(prepared["session"]["id"])
+            self.db.update_work_item_proposal(
+                item.id,
+                metadata={"build_session_id": session_id},
+                status="approval_required",
+                result={
+                    "build_session_id": session_id,
+                    "approval_request_id": prepared.get("approval_request_id"),
+                },
+                error="",
+            )
+            return {
+                "handler": HYBRID_ASSESS_ACTION,
+                "status": "approval_required",
+                "ok": False,
+                "task": task,
+                "engine": "hybrid",
+                "build_session": prepared["session"],
+                "assessment": prepared["assessment"],
+                "approval_request_id": prepared.get("approval_request_id"),
+            }
 
         # Engine: native — Zade's own coding loop on the local Ollama model.
         # There is deliberately NO fallback from native to bridge or to any

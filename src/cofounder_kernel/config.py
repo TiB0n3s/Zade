@@ -318,6 +318,8 @@ class DelegationConfig:
     #   bridge  — launch agent_command as a LOCAL COMPATIBILITY BRIDGE: under a
     #             local provider policy its subprocess env is sanitized to the
     #             loopback Ollama Anthropic-compatible API (never a cloud key).
+    #   hybrid  — assess locally, require a project-scoped paid lease, and route
+    #             each step local-first through the governed build lifecycle.
     #   brief   — prepare-not-send: package the brief only.
     # There is NO automatic fallback between engines.
     engine: str = "native"
@@ -769,8 +771,10 @@ def ensure_local_paths(config: KernelConfig) -> None:
 
 def _delegation_engine(value: object) -> str:
     engine = str(value or "").strip().lower() or "native"
-    if engine not in {"native", "bridge", "brief"}:
-        raise ValueError(f"Invalid delegation engine {engine!r}: must be native, bridge, or brief.")
+    if engine not in {"native", "hybrid", "bridge", "brief"}:
+        raise ValueError(
+            f"Invalid delegation engine {engine!r}: must be native, hybrid, bridge, or brief."
+        )
     return engine
 
 

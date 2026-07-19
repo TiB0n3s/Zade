@@ -51,6 +51,49 @@ def test_bridge_engine_without_command_cannot_invoke(tmp_path: Path, monkeypatch
     assert "engine cannot run" in result["reason"]
 
 
+def test_hybrid_engine_prepares_local_assessment_without_work_item_approval(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    workspace = tmp_path / "hybrid-workspace"
+    workspace.mkdir()
+    app = create_app(_config(tmp_path, engine="hybrid", workspace_root=str(workspace)))
+
+    class FakeBuildService:
+        def __init__(self):
+            self.calls = []
+
+        def prepare(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "session": {"id": 12, "phase": "approval"},
+                "assessment": {"recommended_tier": "small"},
+                "approval_request_id": 34,
+            }
+
+        def status(self, _session_id):
+            raise AssertionError("new item should prepare, not resume")
+
+    fake = FakeBuildService()
+    app.state.delegation.build_service = fake
+    client = TestClient(app)
+
+    result = client.post(
+        "/delegation/run",
+        json={"task": "build a small app", "acceptance": "tests pass"},
+    ).json()
+
+    assert result["auto_invoked"] is False
+    assert result["dispatch"]["engine"] == "hybrid"
+    assert result["dispatch"]["status"] == "approval_required"
+    assert fake.calls[0]["workspace"] == str(workspace)
+    approvals = app.state.db.list_approval_requests(status="pending", limit=100)
+    assert not any(
+        item.source_type == "work_item" and item.source_id == result["item_id"]
+        for item in approvals
+    )
+
+
 def test_brief_engine_prepares_not_sends(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     monkeypatch.setattr(OllamaClient, "embed", fake_embed)

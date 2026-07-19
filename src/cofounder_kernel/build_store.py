@@ -125,6 +125,17 @@ class BuildStore:
             ).fetchone()
         return _session_from_row(row) if row else None
 
+    def get_session_for_work_item(self, work_item_id: int) -> BuildSession | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM build_sessions
+                WHERE work_item_id = ? ORDER BY id DESC LIMIT 1
+                """,
+                (work_item_id,),
+            ).fetchone()
+        return _session_from_row(row) if row else None
+
     def list_sessions(self, *, limit: int = 50) -> list[BuildSession]:
         with self.database.connect() as connection:
             rows = connection.execute(
@@ -209,12 +220,81 @@ class BuildStore:
             ).fetchone()
         return _lease_from_row(row) if row else None
 
+    def upgrade_lease(
+        self,
+        session_id: int,
+        tier: BuildTier,
+        additional_limits: LeaseLimits,
+        *,
+        approval_request_id: int,
+    ) -> BuildLease:
+        started = datetime.now(UTC).replace(microsecond=0)
+        expires = started + timedelta(seconds=additional_limits.duration_seconds)
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                """
+                SELECT * FROM build_leases
+                WHERE session_id = ?
+                  AND state IN ('active', 'warning', 'paused', 'exhausted')
+                ORDER BY version DESC LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError(f"No current build lease for session {session_id}")
+            current_limits = LeaseLimits(**json.loads(current["limits_json"]))
+            cumulative = LeaseLimits(
+                dollar_micro=current_limits.dollar_micro + additional_limits.dollar_micro,
+                input_tokens=current_limits.input_tokens + additional_limits.input_tokens,
+                output_tokens=current_limits.output_tokens + additional_limits.output_tokens,
+                cloud_turns=current_limits.cloud_turns + additional_limits.cloud_turns,
+                duration_seconds=additional_limits.duration_seconds,
+            )
+            connection.execute(
+                "UPDATE build_leases SET state = 'superseded' WHERE id = ?",
+                (int(current["id"]),),
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO build_leases (
+                  session_id, version, tier, provider, model, limits_json, state,
+                  approval_request_id, actual_input_tokens, actual_output_tokens,
+                  actual_microdollars, reserved_input_tokens, reserved_output_tokens,
+                  reserved_microdollars, cloud_turns, started_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    int(current["version"]) + 1,
+                    tier.value,
+                    str(current["provider"]),
+                    str(current["model"]),
+                    _dumps(asdict(cumulative)),
+                    approval_request_id,
+                    int(current["actual_input_tokens"]),
+                    int(current["actual_output_tokens"]),
+                    int(current["actual_microdollars"]),
+                    int(current["reserved_input_tokens"]),
+                    int(current["reserved_output_tokens"]),
+                    int(current["reserved_microdollars"]),
+                    int(current["cloud_turns"]),
+                    started.isoformat(),
+                    expires.isoformat(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM build_leases WHERE id = ?", (int(cursor.lastrowid),)
+            ).fetchone()
+        return _lease_from_row(row)
+
     def get_active_lease(self, session_id: int) -> BuildLease | None:
         with self.database.connect() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM build_leases
-                WHERE session_id = ? AND state IN ('active', 'warning', 'paused')
+                WHERE session_id = ? AND state IN ('active', 'warning', 'paused', 'exhausted')
                 ORDER BY version DESC LIMIT 1
                 """,
                 (session_id,),
@@ -226,6 +306,20 @@ class BuildStore:
             rows = connection.execute(
                 "SELECT * FROM cloud_usage_events WHERE lease_id = ? ORDER BY id",
                 (lease_id,),
+            ).fetchall()
+        return [_usage_from_row(row) for row in rows]
+
+    def list_session_usage(self, session_id: int) -> list[CloudUsageEvent]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT usage.*
+                FROM cloud_usage_events AS usage
+                JOIN build_leases AS lease ON lease.id = usage.lease_id
+                WHERE lease.session_id = ?
+                ORDER BY usage.id
+                """,
+                (session_id,),
             ).fetchall()
         return [_usage_from_row(row) for row in rows]
 
@@ -272,7 +366,7 @@ class BuildStore:
             lease_row = connection.execute(
                 """
                 SELECT * FROM build_leases
-                WHERE session_id = ? AND state IN ('active', 'warning', 'paused')
+                WHERE session_id = ? AND state IN ('active', 'warning', 'paused', 'exhausted')
                 ORDER BY version DESC LIMIT 1
                 """,
                 (session_id,),
@@ -560,7 +654,7 @@ class BuildStore:
             cursor = connection.execute(
                 """
                 UPDATE build_leases SET state = 'expired'
-                WHERE id = ? AND state IN ('active', 'warning', 'paused')
+                WHERE id = ? AND state IN ('active', 'warning', 'paused', 'exhausted')
                 """,
                 (lease_id,),
             )
@@ -570,6 +664,31 @@ class BuildStore:
                 ).fetchone()
                 if row is None:
                     raise ValueError(f"Build lease not found: {lease_id}")
+            row = connection.execute(
+                "SELECT * FROM build_leases WHERE id = ?", (lease_id,)
+            ).fetchone()
+        return _lease_from_row(row)
+
+    def exhaust_lease(self, lease_id: int) -> BuildLease:
+        return self.set_lease_state(lease_id, "exhausted")
+
+    def set_lease_state(self, lease_id: int, state: str) -> BuildLease:
+        if state not in {
+            "active",
+            "warning",
+            "paused",
+            "exhausted",
+            "expired",
+            "denied",
+            "superseded",
+        }:
+            raise ValueError(f"Invalid build lease state: {state}")
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE build_leases SET state = ? WHERE id = ?", (state, lease_id)
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Build lease not found: {lease_id}")
             row = connection.execute(
                 "SELECT * FROM build_leases WHERE id = ?", (lease_id,)
             ).fetchone()

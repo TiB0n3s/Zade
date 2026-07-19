@@ -104,6 +104,7 @@ def test_reservation_refuses_before_send_when_any_limit_would_be_exceeded(
 
     lease = store.get_active_lease(session_id)
     assert lease is not None
+    assert lease.state == "exhausted"
     assert store.list_usage(lease.id) == []
 
 

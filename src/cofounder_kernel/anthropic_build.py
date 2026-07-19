@@ -84,9 +84,11 @@ class AnthropicBuildModelClient:
 
         system, converted_messages = _convert_messages(messages, cache_ttl=self.cache_ttl)
         converted_tools = _convert_tools(tools or (), cache_ttl=self.cache_ttl)
+        request_id = f"build-{self.session_id}-{uuid.uuid4().hex}"
         egress_summary = {
             "session_id": self.session_id,
             "lease_id": lease.id,
+            "usage_request_id": request_id,
             "provider": lease.provider,
             "model": lease.model,
             "message_count": len(converted_messages),
@@ -111,7 +113,6 @@ class AnthropicBuildModelClient:
         cache_mode = "write_1h" if self.cache_ttl == "1h" and (
             system or converted_tools
         ) else "write_5m" if system or converted_tools else "none"
-        request_id = f"build-{self.session_id}-{uuid.uuid4().hex}"
         try:
             reservation = self.budget.reserve(
                 session_id=self.session_id,

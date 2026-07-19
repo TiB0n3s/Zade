@@ -125,7 +125,7 @@ class BuildBudgetService:
                     if exc.field == "expiration":
                         self.store.expire_lease(lease.id)
                     else:
-                        self.store.pause_lease(lease.id)
+                        self.store.exhaust_lease(lease.id)
             raise BuildBudgetExceeded(exc.field, exc.detail) from exc
 
     def settle(

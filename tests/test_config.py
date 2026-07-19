@@ -50,3 +50,12 @@ default = "build"
     assert config.ollama.think_for_role("general") is False
     assert config.ollama.think_for_role("reasoning") is True
     assert config.prompt_profiles.default == "build"
+
+
+def test_load_config_accepts_hybrid_delegation_engine(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[delegation]\nengine = "hybrid"\n', encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.delegation.engine == "hybrid"

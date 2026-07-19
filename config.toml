@@ -25,13 +25,11 @@ provider_policy = "local_preferred"
 coding_agent_model = "qwen3:14b"
 
 [delegation]
-# Delegated build work runs on the NATIVE local coding agent by default:
-# Zade's own tool loop on the local Ollama model ([ollama] coding_agent_model).
-# No external agent process, no cloud. Set engine = "bridge" to run the CLI
-# below instead — under a local provider policy it launches with a sanitized
-# environment pointed at the loopback Ollama Anthropic-compatible API
-# (ANTHROPIC_BASE_URL=http://127.0.0.1:11434, AUTH_TOKEN=ollama, no API key).
-engine = "native"
+# Hybrid builds assess and work locally first. Any Anthropic source-code turn
+# requires a project-scoped, expiring lease approved with the typed phrase and
+# is constrained by the configured token/dollar/turn ceilings. There is no paid
+# retry, provider fallback, standing source-code grant, or automatic tier raise.
+engine = "hybrid"
 # Local compatibility bridge CLI (used only when engine = "bridge").
 # Full path: Windows CreateProcess can't resolve the bare npm "claude" shim.
 agent_command = ["C:\\Users\\TiBon\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe", "-p", "--permission-mode", "acceptEdits"]

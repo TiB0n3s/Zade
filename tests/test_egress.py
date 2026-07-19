@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from cofounder_kernel.db import KernelDatabase
+from cofounder_kernel.build_types import BuildLease, BuildTier, LeaseLimits
 from cofounder_kernel.egress import (
     DataClass,
     Disposition,
@@ -20,6 +21,7 @@ from cofounder_kernel.egress import (
     active_grant_for,
     approve_egress_grant,
     authorize_egress,
+    authorize_build_egress,
     consume_grant,
     deny_egress_grant,
     list_pending_grants,
@@ -37,6 +39,29 @@ def _db(tmp_path) -> KernelDatabase:
     db = KernelDatabase(tmp_path / "kernel.sqlite")
     db.migrate()
     return db
+
+
+def _build_lease(*, state: str = "active") -> BuildLease:
+    return BuildLease(
+        id=9,
+        session_id=4,
+        version=1,
+        tier=BuildTier.SMALL,
+        provider="anthropic",
+        model="claude-opus-4-8",
+        limits=LeaseLimits(1_000_000, 120_000, 16_000, 6, 7200),
+        state=state,
+        approval_request_id=8,
+        actual_input_tokens=0,
+        actual_output_tokens=0,
+        actual_microdollars=0,
+        reserved_input_tokens=0,
+        reserved_output_tokens=0,
+        reserved_microdollars=0,
+        cloud_turns=0,
+        started_at="2026-07-18T12:00:00+00:00",
+        expires_at="2099-07-18T14:00:00+00:00",
+    )
 
 
 # ---- Invariant 1: local-only is inert-by-default --------------------------
@@ -96,6 +121,47 @@ def test_per_request_cell_allows_with_matching_founder_authorization() -> None:
     decision = gate.decide(req, auth)
     assert decision.verdict is Verdict.ALLOW
     assert decision.matched_rule == "matrix.per_request_granted"
+
+
+def test_build_lease_authorizes_exact_source_request_without_one_shot_grant(
+    tmp_path,
+) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    request = EgressRequest(
+        request_id="usage-1",
+        data_class=DataClass.SOURCE_CODE,
+        vendor="anthropic",
+        purpose="approved build turn",
+        byte_estimate=1200,
+    )
+
+    decision = authorize_build_egress(db, gate, request, lease=_build_lease())
+
+    assert decision.verdict is Verdict.ALLOW
+    assert list_pending_grants(db) == []
+    audit = db.recent_audit_events(5)[0]
+    assert audit["action"] == "egress.build.decision"
+    assert audit["details"]["lease_id"] == 9
+    assert audit["details"]["session_id"] == 4
+    assert audit["details"]["usage_request_id"] == "usage-1"
+
+
+def test_paused_build_lease_cannot_authorize_source_egress(tmp_path) -> None:
+    db = _db(tmp_path)
+    gate = EgressPolicy(provider_policy="local_preferred")
+    request = EgressRequest(
+        request_id="usage-1",
+        data_class=DataClass.SOURCE_CODE,
+        vendor="anthropic",
+    )
+
+    decision = authorize_build_egress(
+        db, gate, request, lease=_build_lease(state="paused")
+    )
+
+    assert decision.verdict is Verdict.DENY
+    assert decision.matched_rule == "build_lease.paused"
 
 
 def test_raw_founder_state_is_forbidden_to_cloud_even_with_authorization() -> None:

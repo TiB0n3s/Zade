@@ -41,10 +41,11 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 | `dev.git.commit` | dev | yes | Stage and commit local changes in the workspace (refuses the default branch by default). |
 | `external.browser.run` | external | yes | Run an approved headed browser flow (navigate/read/links/fill/click/press/screenshot). |
 | `external.connector.sync` | external | yes | Read-only sync of an approved external connector into staged candidate items. |
-| `external.delegation.run` | external | yes | Invoke a configured external agent (Claude Code/Codex) on a scoped brief and file its artifact (approved external action). |
+| `external.delegation.run` | external | yes | Run the configured native, hybrid, bridge, or brief-only delegated build flow. |
 | `external.dt_recommendation.ingest` | external | yes | Append an observe-only Zade/DT advisory recommendation to the trading-bot dt_recommendations lane. |
 | `external.dt_trigger.propose` | external | yes | Record an approved dt_trigger proposal locally without running the trading bot. |
 | `external.research.run` | external | yes | Fetch approved web sources for a research topic and file them as graded evidence (approved external action). |
+| `local.assessment.prepare` | local | yes | Assess a build locally and prepare its separate cloud lease approval. |
 | `local.audit.record` | local | yes | Write an audit event using work-item metadata. |
 | `local.browser.open` | local | yes | Prepare or open a browser target after approval. |
 | `local.file.write` | local | yes | Write or append a file under configured local memory/data roots. |
@@ -126,18 +127,18 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
-- `598c262` 2026-07-18 - Co-founder kernel update
-- `88bf8b9` 2026-07-18 - Update config.toml
-- `3416570` 2026-07-18 - Voice
-- `b8c3527` 2026-07-17 - API integration and logic
-- `a1f8bcb` 2026-07-17 - Channel auth design
-- `fd1a81a` 2026-07-17 - Channel auth
-- `1b7618e` 2026-07-17 - Research traversal
-- `0939b96` 2026-07-17 - Anthropic API integration
-- `1325e70` 2026-07-17 - Egress Design
-- `634ea24` 2026-07-17 - Kernel MCP and runtime
-- `02b0b81` 2026-07-17 - MCP and Agent Surface
-- `e8762dd` 2026-07-17 - MCP Surface
+- `9efb717` 2026-07-18 - feat: add budgeted Anthropic build adapter
+- `075c481` 2026-07-18 - refactor: make coding model provider neutral
+- `27efc28` 2026-07-18 - feat: route build work local first
+- `c46c4eb` 2026-07-18 - feat: enforce atomic cloud budgets
+- `a90fa9d` 2026-07-18 - feat: persist build sessions and leases
+- `e884687` 2026-07-18 - feat: assess build complexity locally
+- `8ab2211` 2026-07-18 - feat: add build session value objects
+- `76c09e1` 2026-07-18 - feat: define build lease policy
+- `5d6684e` 2026-07-18 - chore: ignore local worktrees
+- `341143f` 2026-07-18 - docs: plan token-budgeted build delegation
+- `b9a03eb` 2026-07-18 - docs: design token-budgeted build delegation
+- `d90b5b5` 2026-07-18 - Skills integrations
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
