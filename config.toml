@@ -47,6 +47,13 @@ workspace_root = "C:\\Users\\TiBon\\ZadeWorkspace"
 timeout_seconds = 1800
 max_output_chars = 40000
 
+[project_intake]
+# Vault-native project discovery and governed mobile scaffolding. Only direct
+# children of C:\AI Brain\project-intake that contain .git or project.md qualify.
+enabled = true
+scaffold_on_intake = true
+watcher_debounce_seconds = 3
+
 [voice]
 # Local speech engines: whisper.cpp (STT) + piper (TTS), run as argv command
 # templates WITHOUT a shell — nothing leaves the machine for voice. STT

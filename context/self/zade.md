@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `58bdd1b` 2026-07-19 - feat: add safe initial project migration
 - `a245fe6` 2026-07-19 - feat: watch the project intake vault
 - `8ef1694` 2026-07-19 - docs: plan project intake autopilot
 - `e15c5f2` 2026-07-19 - docs: reset Dark Index intake design
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `623ddac` 2026-07-19 - feat: verify Android install and launch locally
 - `0bfc54b` 2026-07-19 - feat: retry interrupted local build tasks
 - `14066c5` 2026-07-19 - fix: feed verifier evidence into local retries
-- `6ed15f7` 2026-07-19 - fix: keep planning phases command free
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

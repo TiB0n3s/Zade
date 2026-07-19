@@ -49,8 +49,19 @@ class PathConfig:
         return self.hot_root / "inbox"
 
     @property
+    def project_intake_dir(self) -> Path:
+        return self.hot_root / "project-intake"
+
+    @property
     def cold_raw_ingest_dir(self) -> Path:
         return self.cold_root / "raw-ingest"
+
+
+@dataclass(frozen=True)
+class ProjectIntakeConfig:
+    enabled: bool = False
+    scaffold_on_intake: bool = False
+    watcher_debounce_seconds: int = 3
 
 
 @dataclass(frozen=True)
@@ -656,6 +667,7 @@ class KernelConfig:
     build: BuildConfig = BuildConfig()
     openclaw: OpenClawConfig = OpenClawConfig()
     telegram: TelegramConfig = TelegramConfig()
+    project_intake: ProjectIntakeConfig = ProjectIntakeConfig()
     prompt_profiles: PromptProfileConfig = PromptProfileConfig()
 
 
@@ -696,6 +708,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
     ollama_raw = raw.get("ollama", {})
     security_raw = raw.get("security", {})
     skills_raw = raw.get("skills", {})
+    project_intake_raw = raw.get("project_intake", {})
 
     app = AppConfig(
         host=os.getenv("COFOUNDER_HOST", app_raw.get("host", "127.0.0.1")),
@@ -912,6 +925,26 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         brief_enabled=_bool(telegram_raw.get("brief_enabled", False)),
         brief_time=_hhmm(str(telegram_raw.get("brief_time", "07:30"))),
     )
+    project_intake = ProjectIntakeConfig(
+        enabled=_bool(
+            os.getenv("ZADE_PROJECT_INTAKE_ENABLED", project_intake_raw.get("enabled", False))
+        ),
+        scaffold_on_intake=_bool(
+            os.getenv(
+                "ZADE_PROJECT_INTAKE_SCAFFOLD_ON_INTAKE",
+                project_intake_raw.get("scaffold_on_intake", False),
+            )
+        ),
+        watcher_debounce_seconds=max(
+            0,
+            int(
+                os.getenv(
+                    "ZADE_PROJECT_INTAKE_WATCHER_DEBOUNCE_SECONDS",
+                    project_intake_raw.get("watcher_debounce_seconds", 3),
+                )
+            ),
+        ),
+    )
     prompt_profiles_raw = raw.get("prompt_profiles", {})
     prompt_profiles = PromptProfileConfig(
         default=str(os.getenv("ZADE_PROMPT_PROFILE", prompt_profiles_raw.get("default", "general"))).strip()
@@ -940,6 +973,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         build=build,
         openclaw=openclaw,
         telegram=telegram,
+        project_intake=project_intake,
         prompt_profiles=prompt_profiles,
     )
 
@@ -948,6 +982,7 @@ def ensure_local_paths(config: KernelConfig) -> None:
     config.paths.data_dir.mkdir(parents=True, exist_ok=True)
     config.paths.blob_dir.mkdir(parents=True, exist_ok=True)
     config.paths.inbox_dir.mkdir(parents=True, exist_ok=True)
+    config.paths.project_intake_dir.mkdir(parents=True, exist_ok=True)
     config.paths.cold_raw_ingest_dir.mkdir(parents=True, exist_ok=True)
 
 

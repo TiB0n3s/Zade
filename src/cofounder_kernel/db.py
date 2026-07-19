@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -61,6 +61,13 @@ def _normalize_workspace_path(raw: str) -> str:
     if not cleaned:
         return ""
     return os.path.normpath(cleaned).casefold()
+
+
+def _canonical_project_path(raw: str) -> str:
+    cleaned = (raw or "").strip().strip("\"'")
+    if not cleaned:
+        raise ValueError("Project canonical path must not be empty.")
+    return str(Path(cleaned).expanduser().resolve(strict=False))
 
 
 def _redact_secrets(value: Any) -> Any:
@@ -226,6 +233,130 @@ class KernelDatabase:
         with self.connect() as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
         return int(row[0]) if row else 0
+
+    # ---- project intake ----------------------------------------------------
+
+    def upsert_project(
+        self,
+        *,
+        canonical_path: str,
+        name: str,
+        product_type: str,
+        distribution_targets: list[str],
+        lifecycle_state: str,
+        repo_fingerprint: str,
+        metadata: dict[str, Any] | None = None,
+        active_build_session_id: int | None = None,
+        last_scanned_at: str | None = None,
+    ) -> int:
+        canonical = _canonical_project_path(canonical_path)
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO projects (
+                  created_at, updated_at, canonical_path, name, product_type,
+                  distribution_targets_json, repo_fingerprint, lifecycle_state,
+                  active_build_session_id, last_scanned_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(canonical_path) DO UPDATE SET
+                  updated_at = excluded.updated_at,
+                  name = excluded.name,
+                  product_type = excluded.product_type,
+                  distribution_targets_json = excluded.distribution_targets_json,
+                  repo_fingerprint = excluded.repo_fingerprint,
+                  lifecycle_state = excluded.lifecycle_state,
+                  active_build_session_id = COALESCE(
+                    excluded.active_build_session_id, projects.active_build_session_id
+                  ),
+                  last_scanned_at = excluded.last_scanned_at,
+                  metadata_json = excluded.metadata_json
+                """,
+                (
+                    now,
+                    now,
+                    canonical,
+                    name,
+                    product_type,
+                    json.dumps([str(item) for item in distribution_targets], sort_keys=True),
+                    repo_fingerprint,
+                    lifecycle_state,
+                    active_build_session_id,
+                    last_scanned_at or now,
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM projects WHERE canonical_path = ?", (canonical,)
+            ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Project upsert did not return a record for {canonical}")
+        return int(row["id"])
+
+    def get_project(self, project_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        return _project_row_to_dict(row) if row else None
+
+    def list_projects(
+        self, *, lifecycle_state: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            if lifecycle_state is None:
+                rows = conn.execute(
+                    "SELECT * FROM projects ORDER BY name COLLATE NOCASE, id LIMIT ?", (limit,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM projects WHERE lifecycle_state = ? "
+                    "ORDER BY name COLLATE NOCASE, id LIMIT ?",
+                    (lifecycle_state, limit),
+                ).fetchall()
+        return [_project_row_to_dict(row) for row in rows]
+
+    def find_project_by_path(self, canonical_path: str) -> dict[str, Any] | None:
+        canonical = _canonical_project_path(canonical_path)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM projects WHERE canonical_path = ?", (canonical,)
+            ).fetchone()
+        return _project_row_to_dict(row) if row else None
+
+    def append_project_event(
+        self,
+        project_id: int,
+        *,
+        event_type: str,
+        detail: str = "",
+        build_session_id: int | None = None,
+        work_item_id: int | None = None,
+        approval_request_id: int | None = None,
+        notification_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO project_events (
+                  created_at, project_id, event_type, detail, build_session_id,
+                  work_item_id, approval_request_id, notification_id, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utc_now(),
+                    project_id,
+                    event_type,
+                    detail,
+                    build_session_id,
+                    work_item_id,
+                    approval_request_id,
+                    notification_id,
+                    json.dumps(metadata or {}, sort_keys=True),
+                ),
+            )
+            return int(cur.lastrowid or 0)
 
     # ---- work plans (the work ledger) ---------------------------------------
     # Steps live as ROWS, not prose: chat threads accumulate synthetic,
@@ -2025,6 +2156,27 @@ def _memory_from_row(row: sqlite3.Row) -> MemoryRecord:
     )
 
 
+def _project_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+        "canonical_path": str(row["canonical_path"]),
+        "name": str(row["name"]),
+        "product_type": str(row["product_type"]),
+        "distribution_targets": json.loads(row["distribution_targets_json"] or "[]"),
+        "repo_fingerprint": str(row["repo_fingerprint"]),
+        "lifecycle_state": str(row["lifecycle_state"]),
+        "active_build_session_id": (
+            int(row["active_build_session_id"])
+            if row["active_build_session_id"] is not None
+            else None
+        ),
+        "last_scanned_at": str(row["last_scanned_at"]) if row["last_scanned_at"] else None,
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+    }
+
+
 def _memory_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": int(row["id"]),
@@ -3391,6 +3543,40 @@ CREATE TABLE IF NOT EXISTS action_handler_access (
   enabled INTEGER NOT NULL DEFAULT 1,
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS projects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  canonical_path TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  name TEXT NOT NULL,
+  product_type TEXT NOT NULL,
+  distribution_targets_json TEXT NOT NULL DEFAULT '[]',
+  repo_fingerprint TEXT NOT NULL DEFAULT '',
+  lifecycle_state TEXT NOT NULL DEFAULT 'discovered',
+  active_build_session_id INTEGER REFERENCES build_sessions(id),
+  last_scanned_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_lifecycle
+  ON projects (lifecycle_state, name);
+
+CREATE TABLE IF NOT EXISTS project_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  event_type TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  build_session_id INTEGER REFERENCES build_sessions(id),
+  work_item_id INTEGER REFERENCES work_items(id),
+  approval_request_id INTEGER REFERENCES approval_requests(id),
+  notification_id INTEGER REFERENCES notifications(id),
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_events_project
+  ON project_events (project_id, id);
 
 CREATE TABLE IF NOT EXISTS build_assessments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
