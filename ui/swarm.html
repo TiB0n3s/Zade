@@ -146,6 +146,7 @@
             <input class="wide" id="buildAuditNote" placeholder="Audit note for a lower tier">
             <div class="row wide">
               <button id="buildApproveBtn" class="ok">Approve lease</button>
+              <button id="buildLeaseRequestBtn" class="secondary">Request new lease</button>
               <button id="buildDenyBtn" class="bad">Deny</button>
               <button id="buildRunBtn" class="secondary">Run next</button>
               <button id="buildStartBtn">Start</button>
@@ -331,10 +332,11 @@
       byId('buildTier').value = tier;
       const pendingInitial = Boolean(build.approval_request_id) && !lease;
       const pendingUpgrade = Boolean(build.upgrade_request_id);
+      const terminal = ['complete', 'cancelled', 'quarantined'].includes(session.status) || session.phase === 'complete';
       byId('buildApproveBtn').hidden = !(pendingInitial || pendingUpgrade);
       byId('buildApproveBtn').textContent = pendingUpgrade ? 'Approve upgrade' : 'Approve lease';
+      byId('buildLeaseRequestBtn').hidden = terminal || Boolean(lease) || pendingInitial || pendingUpgrade;
       byId('buildDenyBtn').hidden = !pendingInitial;
-      const terminal = ['complete', 'cancelled', 'quarantined'].includes(session.status) || session.phase === 'complete';
       const workerRunning = build.worker && build.worker.worker_status === 'running';
       byId('buildRunBtn').hidden = terminal || session.status === 'paused' || workerRunning;
       byId('buildStartBtn').hidden = terminal || session.status === 'paused' || workerRunning;
@@ -430,6 +432,15 @@
         await loadBuild(currentBuild.session.id);
         note.textContent = 'Build session quarantined and active leases paused.';
         note.className = 'note good';
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+    async function requestBuildLease() {
+      if (!currentBuild) return;
+      const note = byId('buildNote'); note.textContent = ''; note.className = 'note';
+      try {
+        currentBuild = await api(`/build/sessions/${currentBuild.session.id}/lease/request`, { method: 'POST', body: '{}' });
+        note.textContent = 'Fresh lease approval requested.'; note.className = 'note good';
+        renderBuild(currentBuild);
       } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
     }
     async function retryBuildTask(taskId) {
@@ -540,6 +551,7 @@
     byId('delBriefBtn').addEventListener('click', () => withBusy(byId('delBriefBtn'), '…', previewBrief));
     byId('delRunBtn').addEventListener('click', () => withBusy(byId('delRunBtn'), 'Delegating…', delegate));
     byId('buildApproveBtn').addEventListener('click', () => withBusy(byId('buildApproveBtn'), 'Approving…', approveBuild));
+    byId('buildLeaseRequestBtn').addEventListener('click', () => withBusy(byId('buildLeaseRequestBtn'), 'Requesting…', requestBuildLease));
     byId('buildDenyBtn').addEventListener('click', () => withBusy(byId('buildDenyBtn'), 'Denying…', denyBuild));
     byId('buildRunBtn').addEventListener('click', () => withBusy(byId('buildRunBtn'), 'Running…', resumeBuild));
     byId('buildStartBtn').addEventListener('click', () => withBusy(byId('buildStartBtn'), 'Starting…', () => controlBuild('start')));

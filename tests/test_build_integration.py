@@ -273,6 +273,30 @@ def test_build_session_routes_approve_local_work_and_report_remaining_budget(
     assert listed["sessions"][0]["session"]["id"] == session_id
 
 
+def test_expired_build_lease_can_request_fresh_approval(build_client) -> None:
+    client, app, workspace = build_client
+    prepared = _assess(client, workspace)
+    session_id = prepared["session"]["id"]
+    approved = client.post(
+        f"/build/sessions/{session_id}/approve",
+        headers=_headers(),
+        json={"typed_confirmation": CONFIRMATION},
+    ).json()
+    app.state.build_store.expire_lease(approved["lease"]["id"])
+
+    unauthorized = client.post(f"/build/sessions/{session_id}/lease/request")
+    response = client.post(
+        f"/build/sessions/{session_id}/lease/request", headers=_headers()
+    )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["lease"] is None
+    assert body["approval_created"] is True
+    assert body["approval_request_id"] != prepared["approval_request_id"]
+
+
 def test_generic_approval_endpoint_routes_build_lease_to_build_service(
     build_client,
 ) -> None:

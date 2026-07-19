@@ -12,6 +12,7 @@ from cofounder_kernel.build_orchestrator import BuildOrchestrator, BuildPlanner
 from cofounder_kernel.build_routing import BuildRouter
 from cofounder_kernel.build_service import BuildService
 from cofounder_kernel.build_store import BuildStore
+from cofounder_kernel.build_types import BuildTier
 from cofounder_kernel.config import (
     AnthropicConfig,
     AppConfig,
@@ -174,6 +175,58 @@ def test_approve_mints_lease_then_local_route_spends_zero(tmp_path: Path) -> Non
     assert approved["usage"]["actual_microdollars"] == 0
     assert len(local.calls) == 1
     assert cloud.calls == []
+
+
+def test_expired_lease_requires_a_fresh_approval_request(tmp_path: Path) -> None:
+    service, database, _local, _cloud = make_service(tmp_path)
+    prepared = service.prepare(
+        task="Review one disposable project", workspace=tmp_path / "workspace"
+    )
+    session_id = prepared["session"]["id"]
+    original_approval_id = prepared["approval_request_id"]
+    assessment_tier = BuildTier(prepared["assessment"]["recommended_tier"])
+    lease = service.store.create_lease(
+        session_id,
+        assessment_tier,
+        service.config.build.limits(assessment_tier),
+        provider="anthropic",
+        model=service.config.build.anthropic_pricing.model,
+        approval_request_id=original_approval_id,
+    )
+    database.resolve_approval_request(
+        original_approval_id, status="approved", resolved_by="founder"
+    )
+    service.store.expire_lease(lease.id)
+
+    renewed = service.request_lease(session_id)
+
+    assert renewed["approval_created"] is True
+    assert renewed["approval_request_id"] != original_approval_id
+    assert renewed["lease"] is None
+    pending = database.get_approval_request(renewed["approval_request_id"])
+    assert pending is not None
+    assert pending.status == "pending"
+    assert pending.requested_by == "build.lease.renewal"
+
+
+def test_current_lease_cannot_request_another_approval(tmp_path: Path) -> None:
+    service, database, _local, _cloud = make_service(tmp_path)
+    prepared = service.prepare(task="Build the app", workspace=tmp_path / "workspace")
+    tier = BuildTier(prepared["assessment"]["recommended_tier"])
+    service.store.create_lease(
+        prepared["session"]["id"],
+        tier,
+        service.config.build.limits(tier),
+        provider="anthropic",
+        model=service.config.build.anthropic_pricing.model,
+        approval_request_id=prepared["approval_request_id"],
+    )
+    database.resolve_approval_request(
+        prepared["approval_request_id"], status="approved", resolved_by="founder"
+    )
+
+    with pytest.raises(ValueError, match="already has a current lease"):
+        service.request_lease(prepared["session"]["id"])
 
 
 def test_durable_service_can_run_local_phases_before_cloud_approval(tmp_path: Path) -> None:

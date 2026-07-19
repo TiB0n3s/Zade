@@ -97,43 +97,73 @@ class BuildService:
             self.orchestrator.ensure_plan(session.id)
         stored_assessment = self.store.get_assessment(session.assessment_id)
         assert stored_assessment is not None
-        limits = self.config.build.limits(stored_assessment.recommended_tier)
-        approval, _created = self.db.ensure_approval_request(
+        approval, _created = self._ensure_lease_approval(
+            session.id, stored_assessment, requested_by="build.assessment"
+        )
+        payload = self.status(session.id)
+        payload["approval_request_id"] = approval.id
+        return payload
+
+    def request_lease(self, session_id: int) -> dict[str, Any]:
+        session, assessment = self._session_assessment(session_id)
+        if session.status in {"complete", "cancelled", "quarantined"}:
+            raise ValueError(
+                f"Cannot request a build lease for {session.status} session {session_id}"
+            )
+        if self.store.get_active_lease(session_id) is not None:
+            raise ValueError(f"Build session {session_id} already has a current lease")
+        approval, created = self._ensure_lease_approval(
+            session_id, assessment, requested_by="build.lease.renewal"
+        )
+        return self.status(session_id) | {
+            "approval_request_id": approval.id,
+            "approval_created": created,
+        }
+
+    def _ensure_lease_approval(
+        self,
+        session_id: int,
+        assessment: BuildAssessment,
+        *,
+        requested_by: str,
+    ) -> tuple[Any, bool]:
+        limits = self.config.build.limits(assessment.recommended_tier)
+        return self.db.ensure_approval_request(
             source_type=BUILD_LEASE_SOURCE,
-            source_id=session.id,
+            source_id=session_id,
             title=(
-                f"Approve {stored_assessment.recommended_tier.value} Anthropic build lease"
+                f"Approve {assessment.recommended_tier.value} Anthropic build lease"
             ),
             detail=(
-                f"Workspace: {stored_assessment.workspace}\n"
-                f"Goal: {stored_assessment.task}\n"
+                f"Workspace: {assessment.workspace}\n"
+                f"Goal: {assessment.task}\n"
                 f"Expires after {limits.duration_seconds} seconds. Local work remains default."
             ),
             action="build.lease.approve",
-            target=stored_assessment.workspace,
+            target=assessment.workspace,
             permission_tier="L3_EXTERNAL_ACTION",
             authority_decision="approval_required",
             authority={
                 "reason": "Source-code egress and paid inference require founder approval.",
                 "requires_typed_phrase": True,
             },
-            requested_by="build.assessment",
+            requested_by=requested_by,
             metadata={
-                "session_id": session.id,
-                "workspace": stored_assessment.workspace,
-                "repo_fingerprint": stored_assessment.repo_fingerprint,
+                "session_id": session_id,
+                "workspace": assessment.workspace,
+                "repo_fingerprint": assessment.repo_fingerprint,
                 "provider": "anthropic",
                 "model": self.config.build.anthropic_pricing.model,
-                "recommended_tier": stored_assessment.recommended_tier.value,
+                "recommended_tier": assessment.recommended_tier.value,
                 "limits": asdict(limits),
-                "score": stored_assessment.final_score,
-                "confidence": stored_assessment.confidence,
-                "dimensions": stored_assessment.dimensions,
-                "floor_rules": list(stored_assessment.floor_rules),
+                "score": assessment.final_score,
+                "confidence": assessment.confidence,
+                "dimensions": assessment.dimensions,
+                "floor_rules": list(assessment.floor_rules),
                 "evidence": {
-                    "file_count": stored_assessment.evidence.get("file_count", 0),
-                    "frameworks": stored_assessment.evidence.get("frameworks", []),
-                    "truncated": stored_assessment.evidence.get("truncated", False),
+                    "file_count": assessment.evidence.get("file_count", 0),
+                    "frameworks": assessment.evidence.get("frameworks", []),
+                    "truncated": assessment.evidence.get("truncated", False),
                 },
                 "permitted_data_classes": [DataClass.SOURCE_CODE.value],
                 "local_first_rules": [
@@ -144,9 +174,6 @@ class BuildService:
                 ],
             },
         )
-        payload = self.status(session.id)
-        payload["approval_request_id"] = approval.id
-        return payload
 
     def approve(
         self,

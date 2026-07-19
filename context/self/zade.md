@@ -133,6 +133,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `0c46772` 2026-07-19 - fix: omit deprecated Anthropic sampling params
 - `623ddac` 2026-07-19 - feat: verify Android install and launch locally
 - `0bfc54b` 2026-07-19 - feat: retry interrupted local build tasks
 - `14066c5` 2026-07-19 - fix: feed verifier evidence into local retries
@@ -144,7 +145,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `49900e9` 2026-07-19 - feat: governed design-update endpoint for experiments
 - `a3768ed` 2026-07-19 - feat: enable isolated build runners and shared lease approval
 - `429bd1d` 2026-07-19 - Docs: purge stale cloud-voice instructions; sync egress design + channel_auth docstring with shipped reality
-- `839fee9` 2026-07-19 - Merge branch 'main' into codex/durable-build-orchestration
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

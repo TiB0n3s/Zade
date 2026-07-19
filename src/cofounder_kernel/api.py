@@ -1479,6 +1479,14 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         _raise_build_provider_error(result)
         return result
 
+    @app.post("/build/sessions/{session_id}/lease/request")
+    def build_session_lease_request(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            return build_service.request_lease(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/build/sessions/{session_id}/deny")
     def build_session_deny(
         session_id: int, payload: BuildLeaseDenyRequest | None = None
