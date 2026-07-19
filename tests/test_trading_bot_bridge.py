@@ -1005,3 +1005,143 @@ def test_trading_bot_activity_snapshot_failure_reports_error_not_fabrication(tmp
     # The failure is surfaced (so the prompt renders "unavailable -- do not fabricate"),
     # never silently swallowed into empty-but-ok data.
     assert snap["errors"]
+
+
+HEALTHY_MONITOR_STDOUT = (
+    "========================================================================\n"
+    "  Authority Health\n"
+    "========================================================================\n"
+    "report_version             : authority_health_v1\n"
+    "authority_clean            : True\n"
+    "latest_manifest_errors   : 0\n"
+    "launcher_errors   : 0\n"
+    "live_trading_enabled   : False\n"
+    "auto_buy_live_buys     : False\n"
+    "status_stale_startup   : False\n"
+    "halted                 : False\n"
+    "signal_loop            : running=True bars_seen=49939 evaluated=46926 approved=8295 submitted=12 errors=0\n"
+    "bar_feed               : running=True bars_received=49939 bars_emitted=49939 errors=0 reconnects=0\n"
+    "legacy_auto_buy_cron   : False\n"
+    "missing_forward_outcome                0\n"
+)
+
+
+def test_summarize_diagnostics_does_not_flag_healthy_value_lines() -> None:
+    from cofounder_kernel.trading_bot import _summarize_diagnostics
+
+    summary = _summarize_diagnostics(
+        [{"command": "authority-health", "ok": True, "stdout": HEALTHY_MONITOR_STDOUT, "stderr": ""}]
+    )
+
+    # Every one of these lines used to be a substring-match false positive
+    # ("error", "false", "stale", "disabled" appearing in a healthy readout).
+    assert summary["concerns"] == []
+
+
+def test_summarize_diagnostics_still_flags_genuinely_alarming_values() -> None:
+    from cofounder_kernel.trading_bot import _summarize_diagnostics
+
+    stdout = (
+        "recent_manifest_errors   : 193\n"
+        "clean_for_authority_review      : False\n"
+        "ok                       : False\n"
+        "halted                 : True\n"
+        "signal_loop            : running=False bars_seen=10 errors=3\n"
+        "[WARN] no recommendations recorded for this date\n"
+        "- wealth_engine_recent_errors_present\n"
+    )
+    summary = _summarize_diagnostics(
+        [{"command": "authority-health", "ok": False, "stdout": stdout, "stderr": ""}]
+    )
+
+    flagged = {item["line"] for item in summary["concerns"]}
+    assert "recent_manifest_errors   : 193" in flagged
+    assert "clean_for_authority_review      : False" in flagged
+    assert "ok                       : False" in flagged
+    assert "halted                 : True" in flagged
+    assert "signal_loop            : running=False bars_seen=10 errors=3" in flagged
+    assert "[WARN] no recommendations recorded for this date" in flagged
+    assert "- wealth_engine_recent_errors_present" in flagged
+
+
+def test_daily_sections_route_diagnostic_concerns_out_of_blocked() -> None:
+    from cofounder_kernel.trading_bot import _daily_snapshot_sections
+
+    summary = {"concerns": [{"command": "authority-health", "line": "recent_manifest_errors   : 193"}]}
+    snapshot = {
+        "tables": {
+            "auto_buy_candidates": {
+                "rows": [
+                    {"symbol": "AAPL", "decision": "rejected", "rejection_reason": "risk_block"},
+                ]
+            }
+        }
+    }
+
+    sections = _daily_snapshot_sections(snapshot, summary)
+
+    # BLOCKED holds only the real rejected trade row; the diagnostic concern
+    # lands in its own section instead of masquerading as a blocker.
+    assert [item["kind"] for item in sections["blocked"]] == ["sqlite_row"]
+    assert [item["kind"] for item in sections["concerns"]] == ["diagnostic_concern"]
+
+
+def test_daily_brief_weekend_is_labeled_and_not_alarmed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def fake_run(self: TradingBotBridge, script: str, *, timeout: float | None = None) -> dict:
+        if "dt-recommendation" in script:
+            return {
+                "ok": False,
+                "exit_code": 1,
+                "stdout": "recommendations         : 0\n[WARN] no recommendations recorded for this date\n",
+                "stderr": "",
+            }
+        return {"ok": True, "exit_code": 0, "stdout": HEALTHY_MONITOR_STDOUT, "stderr": ""}
+
+    def fake_query(self: TradingBotBridge, **kwargs) -> dict:
+        return {
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "truncated": False,
+            "runtime_effect": "read_only_sqlite_no_trade_authority",
+        }
+
+    monkeypatch.setattr(TradingBotBridge, "_run_repo_shell", fake_run)
+    monkeypatch.setattr(TradingBotBridge, "run_sqlite_query", fake_query)
+    client = TestClient(create_app(_config(tmp_path)))
+
+    response = client.post(
+        "/trading-bot/daily-brief",
+        json={
+            "target_date": "2026-07-18",  # a Saturday
+            "snapshot_tables": ["auto_buy_candidates"],
+            "include_ops_checks": ["authority-health", "dt-recommendations"],
+            "create_judgments": False,
+            "score_outcomes": False,
+        },
+    )
+
+    assert response.status_code == 200
+    brief = response.json()["brief"]
+    assert brief["non_trading_day"] is True
+    assert brief["counts"]["blocked"] == 0
+    assert brief["counts"]["concerns"] == 0
+    # The date-scoped emptiness warning is downgraded to expected noise.
+    noise_reasons = [item["reason"] for item in brief["sections"]["noise"]]
+    assert any("Expected on a non-trading day" in reason for reason in noise_reasons)
+    assert "Market calendar: non-trading day" in brief["text"]
+    assert brief["highest_value_lesson"].startswith("Non-trading day")
+
+
+def test_daily_brief_weekday_empty_evidence_keeps_concern_sensitivity() -> None:
+    from cofounder_kernel.trading_bot import _daily_snapshot_sections
+
+    summary = {"concerns": [{"command": "dt-recommendations", "line": "[WARN] no recommendations recorded for this date"}]}
+
+    sections = _daily_snapshot_sections({}, summary, non_trading_day=False)
+
+    # On a trading day the same warning stays a visible concern.
+    assert [item["reason"] for item in sections["concerns"]] == ["[WARN] no recommendations recorded for this date"]
+    assert sections["noise"] == []

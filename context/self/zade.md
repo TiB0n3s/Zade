@@ -133,6 +133,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `92cd8bb` 2026-07-19 - docs: design project intake autopilot
 - `8741571` 2026-07-19 - fix: auto-resolve cleared integrity warnings in run_integrity_check
 - `4f197bb` 2026-07-19 - feat: require fresh approval for renewed build leases
 - `0c46772` 2026-07-19 - fix: omit deprecated Anthropic sampling params
@@ -144,7 +145,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `50f9405` 2026-07-19 - fix: verify Flutter implementation phases locally
 - `a027968` 2026-07-19 - Merge branch 'codex/build-runtime-enablement'
 - `10a1f38` 2026-07-19 - feat: harden durable build phase gates
-- `49900e9` 2026-07-19 - feat: governed design-update endpoint for experiments
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

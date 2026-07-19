@@ -123,17 +123,36 @@ _SYMBOL_STOPWORDS = {
     "WARN",
     "WSL",
 }
+# Free-text concern markers. Applied ONLY to lines that do not parse as a
+# "key : value" (or "key value") diagnostic fact -- fact lines are judged by
+# their VALUE in _fact_is_concerning, so healthy readouts such as
+# "latest_manifest_errors : 0" or "halted : False" are never flagged for
+# merely containing an alarm word.
 _CONCERN_MARKERS = (
     "[WARN]",
     "blocker",
     "missing",
     "stale",
     "error",
-    "false",
     "disabled",
     "no recommendations",
     "no shadow prediction rows",
-    "clean_for_authority_review      : False",
+)
+# Key substrings where a truthy / positive value is alarming.
+_ALARM_KEY_TOKENS = ("error", "missing", "stale", "blocker", "halted", "disabled")
+# Exact keys where a falsey value is alarming.
+_ALARM_WHEN_FALSE_KEYS = {"ok", "authority_clean", "clean_for_authority_review", "env_file_loaded", "running"}
+_FALSEY_VALUES = {"false", "no", "0", "off"}
+_CLEAN_TEXT_VALUES = {"", "-", "false", "no", "off", "none", "ok", "n/a"}
+# "key    value" fact lines emitted without a colon (e.g. "missing_forward_outcome  0").
+_BARE_FACT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s+(\S+)$")
+_EMBEDDED_PAIR_RE = re.compile(r"([a-z0-9_]+)=([^\s]+)")
+# Date-scoped emptiness warnings that are the expected state on a weekend.
+_EXPECTED_EMPTY_NON_TRADING_MARKERS = (
+    "for this date",
+    "no recommendations recorded",
+    "no shadow prediction rows",
+    "no job_runs rows",
 )
 _POSITIVE_SYMBOL_MARKERS = (
     "approved",
@@ -1526,19 +1545,22 @@ class TradingBotBridge:
         )
         summary = _merge_sqlite_snapshot(summary, sqlite_snapshot)
         symbol_targets = _normalize_symbols(requested_symbols or summary.get("symbols") or [])
-        sections = _daily_snapshot_sections(sqlite_snapshot, summary)
+        non_trading_day = _is_non_trading_day(target_date)
+        sections = _daily_snapshot_sections(sqlite_snapshot, summary, non_trading_day=non_trading_day)
         brief_text = _daily_brief_text(
             target_date=target_date,
             summary=summary,
             sections=sections,
             symbol_targets=symbol_targets,
+            non_trading_day=non_trading_day,
         )
         brief = {
             "title": f"Zade trading intelligence brief {target_date}",
             "text": brief_text,
             "sections": sections,
             "counts": _daily_section_counts(sections),
-            "highest_value_lesson": _daily_highest_value_lesson(summary=summary, sections=sections),
+            "non_trading_day": non_trading_day,
+            "highest_value_lesson": _daily_highest_value_lesson(sections=sections, non_trading_day=non_trading_day),
         }
         evidence_record: dict[str, Any] = {}
         if store_evidence:
@@ -3091,6 +3113,46 @@ def _validate_cli_optional_value(value: str | None, label: str) -> str:
     return text
 
 
+def _is_non_trading_day(target_date: str) -> bool:
+    """Weekend detection only. US market holidays are not modeled: a holiday
+    still reads as a quiet trading day and keeps full concern sensitivity."""
+    return date.fromisoformat(target_date).weekday() >= 5
+
+
+def _alarm_positive(value_l: str) -> bool:
+    """True when a value on an alarm-keyed fact actually signals trouble:
+    a truthy boolean, a positive number, or unexplained free text."""
+    if value_l in {"true", "yes", "on"}:
+        return True
+    match = re.match(r"^-?\d+(?:\.\d+)?", value_l)
+    if match:
+        try:
+            return float(match.group(0)) > 0
+        except ValueError:
+            return False
+    return value_l not in _CLEAN_TEXT_VALUES
+
+
+def _fact_is_concerning(key: str, value: str) -> bool:
+    key_l = key.strip().lower()
+    value_l = value.strip().lower()
+    pairs = _EMBEDDED_PAIR_RE.findall(value_l)
+    if pairs:
+        # Status line like "signal_loop : running=True bars_seen=49939 errors=0" --
+        # judge each embedded pair; the outer key carries no signal of its own.
+        for pair_key, pair_value in pairs:
+            if pair_key in _ALARM_WHEN_FALSE_KEYS and pair_value in _FALSEY_VALUES:
+                return True
+            if any(token in pair_key for token in _ALARM_KEY_TOKENS) and _alarm_positive(pair_value):
+                return True
+        return False
+    if key_l in _ALARM_WHEN_FALSE_KEYS or key_l.endswith("_ok") or key_l.endswith("_clean"):
+        return value_l in _FALSEY_VALUES
+    if any(token in key_l for token in _ALARM_KEY_TOKENS):
+        return _alarm_positive(value_l)
+    return False
+
+
 def _summarize_diagnostics(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
     facts: list[dict[str, Any]] = []
     concerns: list[dict[str, Any]] = []
@@ -3110,6 +3172,7 @@ def _summarize_diagnostics(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
             lower = line.lower()
             if ":" not in line and not line.startswith("- ") and not line.startswith("["):
                 current_section = lower.strip()
+            fact_key = fact_value = None
             if ":" in line and len(line) <= 240:
                 key, value = line.split(":", 1)
                 key = key.strip()
@@ -3117,11 +3180,22 @@ def _summarize_diagnostics(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
                 facts.append({"command": command, "key": key, "value": value})
                 if key == "report_version":
                     report_versions[command] = value
-            if (
-                line.startswith("[WARN]")
-                or any(marker.lower() in lower for marker in _CONCERN_MARKERS)
-                or (line.startswith("- ") and current_section in {"warnings", "blockers", "critical blockers"})
+                fact_key, fact_value = key, value
+            else:
+                bare_fact = _BARE_FACT_RE.match(line)
+                if bare_fact:
+                    fact_key, fact_value = bare_fact.group(1), bare_fact.group(2)
+            if line.startswith("[WARN]") or (
+                line.startswith("- ") and current_section in {"warnings", "blockers", "critical blockers"}
             ):
+                concerning = True
+            elif fact_key is not None:
+                # Fact lines are judged by value, not by alarm words in the key:
+                # "latest_manifest_errors : 0" and "halted : False" are healthy.
+                concerning = _fact_is_concerning(fact_key, fact_value or "")
+            else:
+                concerning = any(marker.lower() in lower for marker in _CONCERN_MARKERS)
+            if concerning:
                 concerns.append({"command": command, "line": line})
             for match in _DIAGNOSTIC_SYMBOL_RE.findall(line):
                 symbol = match.upper()
@@ -3768,15 +3842,26 @@ def _dt_trigger_proposal_markdown(*, proposal: dict[str, Any], work_item: WorkIt
     )
 
 
-def _daily_snapshot_sections(snapshot: dict[str, Any], summary: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    sections: dict[str, list[dict[str, Any]]] = {"strong": [], "watch": [], "blocked": [], "noise": []}
+def _daily_snapshot_sections(
+    snapshot: dict[str, Any],
+    summary: dict[str, Any],
+    *,
+    non_trading_day: bool = False,
+) -> dict[str, list[dict[str, Any]]]:
+    # BLOCKED is reserved for real rejected/blocked trade rows; diagnostic
+    # concerns get their own section so the brief's lesson stops crying wolf.
+    sections: dict[str, list[dict[str, Any]]] = {"strong": [], "watch": [], "blocked": [], "concerns": [], "noise": []}
     for concern in list(summary.get("concerns") or [])[:20]:
-        sections["blocked"].append(
+        line = str(concern.get("line") or "")
+        expected_empty = non_trading_day and any(
+            marker in line.lower() for marker in _EXPECTED_EMPTY_NON_TRADING_MARKERS
+        )
+        sections["noise" if expected_empty else "concerns"].append(
             {
                 "kind": "diagnostic_concern",
                 "source": concern.get("command"),
                 "symbol": "",
-                "reason": str(concern.get("line") or ""),
+                "reason": f"Expected on a non-trading day: {line}" if expected_empty else line,
             }
         )
     for table_name, result in (snapshot.get("tables") or {}).items():
@@ -3879,6 +3964,7 @@ def _daily_brief_text(
     summary: dict[str, Any],
     sections: dict[str, list[dict[str, Any]]],
     symbol_targets: list[str],
+    non_trading_day: bool = False,
 ) -> str:
     counts = _daily_section_counts(sections)
     lines = [
@@ -3887,10 +3973,13 @@ def _daily_brief_text(
         "Authority: full intelligence access. No broker, order, sizing, gate, execution, account-risk, or runtime mutation.",
         f"Commands: {', '.join(summary.get('commands') or [])}.",
         f"Symbols: {', '.join(symbol_targets) if symbol_targets else 'none discovered'}.",
-        f"Counts: strong={counts['strong']} watch={counts['watch']} blocked={counts['blocked']} noise={counts['noise']}.",
-        "",
+        f"Counts: strong={counts['strong']} watch={counts['watch']} blocked={counts['blocked']} "
+        f"concerns={counts.get('concerns', 0)} noise={counts['noise']}.",
     ]
-    for section_name in ("strong", "watch", "blocked", "noise"):
+    if non_trading_day:
+        lines.append("Market calendar: non-trading day (weekend); empty date-scoped evidence is expected.")
+    lines.append("")
+    for section_name in ("strong", "watch", "blocked", "concerns", "noise"):
         lines.append(section_name.upper())
         items = sections.get(section_name) or []
         if not items:
@@ -3898,7 +3987,7 @@ def _daily_brief_text(
         else:
             lines.extend(_format_daily_section_item(item) for item in items[:12])
         lines.append("")
-    lesson = _daily_highest_value_lesson(summary=summary, sections=sections)
+    lesson = _daily_highest_value_lesson(sections=sections, non_trading_day=non_trading_day)
     lines.append(f"Highest-value lesson: {lesson}")
     return "\n".join(lines).strip()
 
@@ -3910,15 +3999,21 @@ def _format_daily_section_item(item: dict[str, Any]) -> str:
     return f"- {symbol} [{source}] {reason}"
 
 
-def _daily_highest_value_lesson(*, summary: dict[str, Any], sections: dict[str, list[dict[str, Any]]]) -> str:
+def _daily_highest_value_lesson(
+    *,
+    sections: dict[str, list[dict[str, Any]]],
+    non_trading_day: bool = False,
+) -> str:
     if sections.get("blocked"):
         return "Resolve the strongest blocker before treating any candidate as approval-worthy."
     if sections.get("strong"):
         return "Compare strong rows against realized outcomes before increasing future conviction."
-    if summary.get("concerns"):
+    if sections.get("concerns"):
         return "Diagnostics contain concerns; preserve abstention until the concern is explained."
     if sections.get("watch"):
         return "Watch rows need outcome evidence before they become recommendations."
+    if non_trading_day:
+        return "Non-trading day: empty date-scoped evidence is expected; no action is required."
     return "No actionable evidence surfaced; improve intake coverage before adding judgment."
 
 
