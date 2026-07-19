@@ -69,7 +69,7 @@ class AnthropicBuildModelClient:
         tools: Sequence[Mapping[str, Any]] | None = None,
         format: str | Mapping[str, Any] | None = None,
     ) -> GenerateResult:
-        del think
+        del think, temperature
         if format is not None:
             raise CodingModelError("Anthropic build turns do not accept Ollama format schemas")
         if num_predict <= 0:
@@ -128,8 +128,6 @@ class AnthropicBuildModelClient:
 
         stream_request = dict(count_request)
         stream_request["max_tokens"] = num_predict
-        if temperature is not None:
-            stream_request["temperature"] = temperature
         try:
             stream_manager = self.sdk_client.messages.stream(**stream_request)
         except Exception as exc:  # noqa: BLE001 - no request context was entered

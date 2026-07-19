@@ -208,6 +208,24 @@ def test_chat_caches_stable_system_and_tool_prefix(tmp_path: Path) -> None:
     assert [call[0] for call in fake.messages.calls] == ["count", "stream"]
 
 
+def test_chat_never_sends_sampling_parameters(tmp_path: Path) -> None:
+    adapter, fake, _budget, _store, _session_id = make_adapter(
+        tmp_path, with_lease=True
+    )
+
+    adapter.chat(
+        messages=MESSAGES,
+        tools=TOOLS,
+        num_predict=512,
+        temperature=0.1,
+    )
+
+    sent = fake.messages.last_request
+    assert "temperature" not in sent
+    assert "top_p" not in sent
+    assert "top_k" not in sent
+
+
 def test_usage_categories_settle_exactly_and_tool_calls_are_normalized(
     tmp_path: Path,
 ) -> None:
