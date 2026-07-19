@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
 
-from cofounder_kernel.build_types import BuildTier, LeaseLimits
+from cofounder_kernel.build_types import (
+    BuildAssessment,
+    BuildLease,
+    BuildSession,
+    BuildTier,
+    CloudUsageEvent,
+    LeaseLimits,
+    PricingSnapshot,
+    UsageReservation,
+)
 from cofounder_kernel.config import AnthropicPricingConfig, BuildConfig, load_config
 
 
@@ -32,6 +42,104 @@ def test_default_build_tiers_match_the_approved_envelopes() -> None:
         cloud_turns=32,
         duration_seconds=8 * 60 * 60,
     )
+
+
+def test_build_domain_records_are_immutable() -> None:
+    assessment = BuildAssessment(
+        id=None,
+        task="Build an app",
+        acceptance="Tests pass",
+        workspace="C:/workspace",
+        repo_fingerprint="abc",
+        deterministic_score=20,
+        local_adjustment=5,
+        final_score=25,
+        confidence=0.9,
+        recommended_tier=BuildTier.SMALL,
+        dimensions={"product_surfaces": 5},
+        floor_rules=("none",),
+        evidence={"files": 4},
+        unknowns=(),
+        local_work=("inventory",),
+        cloud_reasons=(),
+        created_at="2026-07-18T00:00:00Z",
+    )
+    session = BuildSession(
+        id=1,
+        assessment_id=2,
+        work_item_id=None,
+        workspace=assessment.workspace,
+        repo_fingerprint=assessment.repo_fingerprint,
+        phase="approval",
+        status="pending",
+        checkpoint={},
+        created_at=assessment.created_at,
+        updated_at=assessment.created_at,
+    )
+    limits = LeaseLimits(1_000_000, 120_000, 16_000, 6, 7200)
+    lease = BuildLease(
+        id=3,
+        session_id=session.id,
+        version=1,
+        tier=BuildTier.SMALL,
+        provider="anthropic",
+        model="claude-opus-4-8",
+        limits=limits,
+        state="active",
+        approval_request_id=4,
+        actual_input_tokens=0,
+        actual_output_tokens=0,
+        actual_microdollars=0,
+        reserved_input_tokens=0,
+        reserved_output_tokens=0,
+        reserved_microdollars=0,
+        cloud_turns=0,
+        started_at=assessment.created_at,
+        expires_at="2026-07-18T02:00:00Z",
+    )
+    pricing = PricingSnapshot(
+        "anthropic",
+        lease.model,
+        "5",
+        "6.25",
+        "10",
+        "0.5",
+        "25",
+        "2026-08-31",
+    )
+    reservation = UsageReservation(
+        id=5,
+        lease_id=lease.id,
+        request_id="request-1",
+        turn_number=1,
+        input_upper_tokens=1000,
+        max_output_tokens=500,
+        reserved_microdollars=25_000,
+        pricing=pricing,
+        status="reserved",
+        created_at=assessment.created_at,
+    )
+    usage = CloudUsageEvent(
+        id=reservation.id,
+        lease_id=lease.id,
+        request_id=reservation.request_id,
+        turn_number=1,
+        status="settled",
+        input_tokens=800,
+        cache_write_5m_tokens=0,
+        cache_write_1h_tokens=0,
+        cache_read_tokens=0,
+        output_tokens=200,
+        reserved_microdollars=reservation.reserved_microdollars,
+        settled_microdollars=9_000,
+        pricing=pricing,
+        created_at=assessment.created_at,
+        settled_at="2026-07-18T00:01:00Z",
+    )
+
+    assert usage.lease_id == lease.id
+    with pytest.raises(FrozenInstanceError):
+        session.phase = "implementation"  # type: ignore[misc]
 
 
 def test_pricing_snapshot_expires_fail_closed() -> None:
