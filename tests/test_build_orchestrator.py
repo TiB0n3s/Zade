@@ -98,6 +98,21 @@ def test_planner_creates_idempotent_full_lifecycle_graph(tmp_path: Path) -> None
     assert first[4].payload["toolchain_profile"] == "python-saas"
 
 
+def test_flutter_plan_requires_github_ios_workflow_evidence(tmp_path: Path) -> None:
+    workspace = tmp_path / "flutter_app"
+    (workspace / "lib").mkdir(parents=True)
+    (workspace / "pubspec.yaml").write_text("name: demo\n", encoding="utf-8")
+    store = make_store(tmp_path)
+    session = create_session(store, workspace)
+    tasks = BuildPlanner(store=store, toolchains=ToolchainRegistry()).plan(session.id)
+
+    release = next(task for task in tasks if task.phase == "release")
+
+    assert release.kind is BuildTaskKind.GITHUB
+    assert release.payload["operation"] == "verify_workflow"
+    assert release.payload["workflow"] == "ios.yml"
+
+
 def test_local_task_runs_without_any_cloud_lease(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -236,4 +251,3 @@ def test_failed_task_is_recorded_without_raising_from_run_next(tmp_path: Path) -
     assert result["status"] == "failed"
     assert "local model failed" in result["error"]
     assert store.get_task(task.id).status is BuildTaskStatus.FAILED
-

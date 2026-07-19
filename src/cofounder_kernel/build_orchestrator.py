@@ -146,9 +146,22 @@ class BuildPlanner:
             ),
             _TaskSpec(
                 "release",
-                BuildTaskKind.CHECKPOINT,
+                (
+                    BuildTaskKind.GITHUB
+                    if profile_id == "flutter-mobile"
+                    else BuildTaskKind.CHECKPOINT
+                ),
                 "Assemble release evidence and readiness decision",
-                shared | {"route": "local", "operation": "release_checkpoint"},
+                shared
+                | {
+                    "route": "local",
+                    "operation": (
+                        "verify_workflow"
+                        if profile_id == "flutter-mobile"
+                        else "release_checkpoint"
+                    ),
+                    "workflow": "ios.yml" if profile_id == "flutter-mobile" else "",
+                },
             ),
             _TaskSpec(
                 "complete",
