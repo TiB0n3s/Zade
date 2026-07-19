@@ -188,3 +188,17 @@ cache_write_1h_per_mtok = "10"
 cache_read_per_mtok = "0.5"
 output_per_mtok = "25"
 review_after = "2026-08-31"
+
+[telegram]
+# Direct Telegram Bot API adapter — Zade's own channel transport (no OpenClaw).
+# Inbound messages route through the governed /channels/message flow (channel
+# auth + capped authority + HMAC); replies are gated by a reply_text:telegram
+# standing grant in [egress]. The bot token is read from the env var named by
+# token_env, never stored here.
+enabled = false
+token_env = "TELEGRAM_BOT_TOKEN"
+# Proactive morning brief: once per local day at brief_time (HH:MM, 24h local),
+# a founder-dashboard digest is pushed to every bound founder chat through the
+# same standing grant. One attempt per day; failures notify, never retry.
+brief_enabled = false
+brief_time = "07:30"

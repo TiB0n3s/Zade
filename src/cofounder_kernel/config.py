@@ -525,6 +525,12 @@ class TelegramConfig:
     max_reply_chars: int = 4000
     reconnect_min_seconds: float = 1.0
     reconnect_max_seconds: float = 30.0
+    # Proactive morning brief: once per local day at brief_time (HH:MM local),
+    # a founder-dashboard digest is pushed to every bound founder chat. Same
+    # egress lane as replies (reply_text:telegram standing grant) — enabling
+    # this without the grant fail-closes, audited. See heartbeat.py.
+    brief_enabled: bool = False
+    brief_time: str = "07:30"
 
 
 @dataclass(frozen=True)
@@ -802,6 +808,8 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         max_reply_chars=int(telegram_raw.get("max_reply_chars", 4000)),
         reconnect_min_seconds=float(telegram_raw.get("reconnect_min_seconds", 1.0)),
         reconnect_max_seconds=float(telegram_raw.get("reconnect_max_seconds", 30.0)),
+        brief_enabled=_bool(telegram_raw.get("brief_enabled", False)),
+        brief_time=_hhmm(str(telegram_raw.get("brief_time", "07:30"))),
     )
     prompt_profiles_raw = raw.get("prompt_profiles", {})
     prompt_profiles = PromptProfileConfig(
@@ -884,6 +892,20 @@ def _provider_policy(value: object) -> str:
             f"Invalid provider_policy {policy!r}: must be local_only, local_preferred, or cloud_allowed."
         )
     return policy
+
+
+def _hhmm(value: str) -> str:
+    """Validate a local wall-clock time like "07:30". Fail loud on a typo — a
+    silently unparseable brief_time would just never fire."""
+    parts = value.strip().split(":")
+    if len(parts) == 2:
+        try:
+            hour, minute = int(parts[0]), int(parts[1])
+        except ValueError:
+            hour = minute = -1
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+    raise ValueError(f"[telegram] brief_time must be HH:MM (24h), got: {value!r}")
 
 
 def _bool(value: object) -> bool:

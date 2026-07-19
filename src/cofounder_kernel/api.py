@@ -42,7 +42,14 @@ from .build_service import BuildService
 from .build_store import BuildStore
 from .channel_auth import ChannelAuth, ChannelAuthError, parse_bind_command
 from .openclaw_bridge import InboundMessage, OpenClawBridge, OpenClawBridgeError
-from .telegram_adapter import InboundTelegram, TelegramAdapter, TelegramError
+from .heartbeat import KernelHeartbeat
+from .telegram_adapter import (
+    InboundTelegram,
+    TelegramAdapter,
+    TelegramClient,
+    TelegramError,
+    token_from_env,
+)
 from .founder import FounderService
 from .strategy_review import StrategyReviewService
 from .handlers import ActionHandlerRegistry
@@ -514,6 +521,15 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             "security": _security_summary(cfg, local_token),
             "skills": db.skill_summary(),
             "tools": tools.list_tools(),
+            # An enabled channel that is not running is a health problem, not a
+            # footnote — this is what let the Telegram outage go silent.
+            "channels": {
+                "telegram": {
+                    "enabled": cfg.telegram.enabled,
+                    "running": telegram_adapter.running,
+                    "ok": (not cfg.telegram.enabled) or telegram_adapter.running,
+                },
+            },
         }
 
     @app.get("/models")
@@ -1906,13 +1922,55 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             # No token / misconfig must not block startup; /status shows it down.
             pass
 
+    # Kernel heartbeat: enabled-but-down channel alerts, cadence-staleness
+    # alerts, and the scheduled morning brief (see heartbeat.py). The brief
+    # sender reuses the adapter's minimal client; bound founder chats come from
+    # channel_auth (1:1 chat_id == the bound external_id).
+    def _telegram_founder_chats() -> list[int]:
+        chats: list[int] = []
+        for binding in channel_auth.list_bindings():
+            if binding.get("channel") != "telegram":
+                continue
+            try:
+                chats.append(int(binding["external_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return chats
+
+    _tg_token = token_from_env(cfg.telegram.token_env)
+    _tg_client = TelegramClient(cfg.telegram, _tg_token) if _tg_token else None
+    heartbeat = KernelHeartbeat(
+        cfg,
+        db=db,
+        founder=founder,
+        notify=bus,
+        telegram_running=lambda: telegram_adapter.running,
+        telegram_chat_ids=_telegram_founder_chats,
+        send_telegram=_tg_client.send_message if _tg_client else None,
+    )
+    app.state.heartbeat = heartbeat
+    if run_boot_maintenance:
+        heartbeat.start()
+        atexit.register(heartbeat.stop)
+
     @app.get("/channels/telegram/status")
     def telegram_status() -> dict[str, Any]:
         return {
             "enabled": cfg.telegram.enabled,
-            "token_present": bool(os.getenv(cfg.telegram.token_env, "")),
+            "token_present": bool(token_from_env(cfg.telegram.token_env)),
             "running": telegram_adapter.running,
+            "brief": {
+                "enabled": cfg.telegram.brief_enabled,
+                "time": cfg.telegram.brief_time,
+                "last": heartbeat.last_brief,
+            },
         }
+
+    @app.post("/channels/telegram/brief")
+    def telegram_brief_now() -> dict[str, Any]:
+        """Founder-triggered brief push (bypasses the once-per-day gate, never
+        the egress gate). Mutation-token protected like every other POST."""
+        return {"result": heartbeat.send_now()}
 
     @app.post("/channels/bindings/{binding_id}/hmac")
     def channel_issue_hmac(binding_id: int) -> dict[str, Any]:
