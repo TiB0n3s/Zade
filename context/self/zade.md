@@ -47,7 +47,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 | `external.dt_recommendation.ingest` | external | yes | Append an observe-only Zade/DT advisory recommendation to the trading-bot dt_recommendations lane. |
 | `external.dt_trigger.propose` | external | yes | Record an approved dt_trigger proposal locally without running the trading bot. |
 | `external.research.run` | external | yes | Fetch approved web sources for a research topic and file them as graded evidence (approved external action). |
-| `local.assessment.prepare` | local | yes | Assess a build locally and prepare its separate cloud lease approval. |
 | `local.audit.record` | local | yes | Write an audit event using work-item metadata. |
 | `local.browser.open` | local | yes | Prepare or open a browser target after approval. |
 | `local.file.write` | local | yes | Write or append a file under configured local memory/data roots. |
@@ -133,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `8ef1694` 2026-07-19 - docs: plan project intake autopilot
 - `e15c5f2` 2026-07-19 - docs: reset Dark Index intake design
 - `ca5b6c4` 2026-07-19 - fix: value-aware trading-brief concern detection + weekend awareness
 - `92cd8bb` 2026-07-19 - docs: design project intake autopilot
@@ -144,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `14066c5` 2026-07-19 - fix: feed verifier evidence into local retries
 - `6ed15f7` 2026-07-19 - fix: keep planning phases command free
 - `178c9d4` 2026-07-19 - fix: exclude generated outputs from verifier context
-- `50f9405` 2026-07-19 - fix: verify Flutter implementation phases locally
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
