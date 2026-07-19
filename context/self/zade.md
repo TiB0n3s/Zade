@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `346093e` 2026-07-19 - feat: project-autonomy truth and notification contract
 - `c569377` 2026-07-19 - fix: [OK] all-clear diagnostic lines are never concerns
 - `0624fb3` 2026-07-19 - fix: ground project status in live registry
 - `a590483` 2026-07-19 - feat: verify repaired project scaffolds locally
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `e4cce47` 2026-07-19 - feat: activate inline project intake builds
 - `4d241ce` 2026-07-19 - fix: quarantine duplicate intake sources
 - `0004b1a` 2026-07-19 - feat: resume project decisions from Telegram
-- `8f47750` 2026-07-19 - feat: notify founders through Telegram
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
