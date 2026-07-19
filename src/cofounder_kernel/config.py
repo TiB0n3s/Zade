@@ -3,8 +3,12 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
+
+from .build_types import BuildTier, LeaseLimits, PricingSnapshot
 
 
 DEFAULT_HOT_ROOT = Path(r"C:\AI Brain")
@@ -355,6 +359,123 @@ class AnthropicConfig:
 
 
 @dataclass(frozen=True)
+class BuildTierConfig:
+    dollar_micro: int
+    input_tokens: int
+    output_tokens: int
+    cloud_turns: int
+    duration_seconds: int
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "dollar_micro",
+            "input_tokens",
+            "output_tokens",
+            "cloud_turns",
+            "duration_seconds",
+        ):
+            if int(getattr(self, field_name)) <= 0:
+                raise ValueError(f"build tier {field_name} must be positive")
+
+    def as_limits(self) -> LeaseLimits:
+        return LeaseLimits(
+            dollar_micro=self.dollar_micro,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cloud_turns=self.cloud_turns,
+            duration_seconds=self.duration_seconds,
+        )
+
+
+@dataclass(frozen=True)
+class AnthropicPricingConfig:
+    model: str = "claude-opus-4-8"
+    base_input_per_mtok: Decimal = Decimal("5")
+    cache_write_5m_per_mtok: Decimal = Decimal("6.25")
+    cache_write_1h_per_mtok: Decimal = Decimal("10")
+    cache_read_per_mtok: Decimal = Decimal("0.5")
+    output_per_mtok: Decimal = Decimal("25")
+    review_after: str = "2026-08-31"
+
+    def __post_init__(self) -> None:
+        if not self.model.strip():
+            raise ValueError("build Anthropic pricing model must not be empty")
+        for field_name in (
+            "base_input_per_mtok",
+            "cache_write_5m_per_mtok",
+            "cache_write_1h_per_mtok",
+            "cache_read_per_mtok",
+            "output_per_mtok",
+        ):
+            try:
+                value = Decimal(str(getattr(self, field_name)))
+            except InvalidOperation as exc:
+                raise ValueError(f"build Anthropic pricing {field_name} must be numeric") from exc
+            if value <= 0:
+                raise ValueError(f"build Anthropic pricing {field_name} must be positive")
+            object.__setattr__(self, field_name, value)
+        try:
+            date.fromisoformat(self.review_after)
+        except ValueError as exc:
+            raise ValueError("build Anthropic pricing review_after must be YYYY-MM-DD") from exc
+
+    def is_current(self, *, at: str | None = None) -> bool:
+        if at:
+            checked = date.fromisoformat(at[:10])
+        else:
+            checked = datetime.now(timezone.utc).date()
+        return checked <= date.fromisoformat(self.review_after)
+
+    def snapshot(self) -> PricingSnapshot:
+        return PricingSnapshot(
+            provider="anthropic",
+            model=self.model,
+            base_input_per_mtok=self.base_input_per_mtok,
+            cache_write_5m_per_mtok=self.cache_write_5m_per_mtok,
+            cache_write_1h_per_mtok=self.cache_write_1h_per_mtok,
+            cache_read_per_mtok=self.cache_read_per_mtok,
+            output_per_mtok=self.output_per_mtok,
+            review_after=self.review_after,
+        )
+
+
+@dataclass(frozen=True)
+class BuildConfig:
+    enabled: bool = True
+    warning_percent: int = 80
+    provider_overhead_tokens: int = 1024
+    small: BuildTierConfig = BuildTierConfig(1_000_000, 120_000, 16_000, 6, 7200)
+    medium: BuildTierConfig = BuildTierConfig(3_000_000, 400_000, 40_000, 16, 14400)
+    large: BuildTierConfig = BuildTierConfig(7_000_000, 1_000_000, 80_000, 32, 28800)
+    anthropic_pricing: AnthropicPricingConfig = AnthropicPricingConfig()
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.warning_percent <= 99:
+            raise ValueError("build warning_percent must be between 1 and 99")
+        if self.provider_overhead_tokens < 0:
+            raise ValueError("build provider_overhead_tokens must be non-negative")
+        ordered = (self.small, self.medium, self.large)
+        for field_name in (
+            "dollar_micro",
+            "input_tokens",
+            "output_tokens",
+            "cloud_turns",
+            "duration_seconds",
+        ):
+            values = [int(getattr(tier, field_name)) for tier in ordered]
+            if values != sorted(values):
+                raise ValueError(f"build tier {field_name} values must be monotonic")
+
+    def limits(self, tier: BuildTier | str) -> LeaseLimits:
+        selected = BuildTier(str(tier))
+        return {
+            BuildTier.SMALL: self.small,
+            BuildTier.MEDIUM: self.medium,
+            BuildTier.LARGE: self.large,
+        }[selected].as_limits()
+
+
+@dataclass(frozen=True)
 class EgressConfig:
     """Data-class egress gate (see egress.py and EGRESS-DESIGN.md).
 
@@ -394,6 +515,7 @@ class KernelConfig:
     screen: ScreenConfig = ScreenConfig()
     egress: EgressConfig = EgressConfig()
     anthropic: AnthropicConfig = AnthropicConfig()
+    build: BuildConfig = BuildConfig()
     prompt_profiles: PromptProfileConfig = PromptProfileConfig()
 
 
@@ -598,6 +720,17 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         max_tokens=int(anthropic_raw.get("max_tokens", 2048)),
         timeout_seconds=float(anthropic_raw.get("timeout_seconds", 120.0)),
     )
+    build_raw = raw.get("build", {})
+    tier_raw = build_raw.get("tiers", {})
+    build = BuildConfig(
+        enabled=_bool(os.getenv("ZADE_BUILD_ENABLED", build_raw.get("enabled", True))),
+        warning_percent=int(build_raw.get("warning_percent", 80)),
+        provider_overhead_tokens=int(build_raw.get("provider_overhead_tokens", 1024)),
+        small=_build_tier_config(tier_raw.get("small", {}), BuildConfig().small),
+        medium=_build_tier_config(tier_raw.get("medium", {}), BuildConfig().medium),
+        large=_build_tier_config(tier_raw.get("large", {}), BuildConfig().large),
+        anthropic_pricing=_anthropic_pricing_config(build_raw.get("anthropic_pricing", {})),
+    )
     prompt_profiles_raw = raw.get("prompt_profiles", {})
     prompt_profiles = PromptProfileConfig(
         default=str(os.getenv("ZADE_PROMPT_PROFILE", prompt_profiles_raw.get("default", "general"))).strip()
@@ -622,6 +755,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         screen=screen,
         egress=egress,
         anthropic=anthropic,
+        build=build,
         prompt_profiles=prompt_profiles,
     )
 
@@ -638,6 +772,33 @@ def _delegation_engine(value: object) -> str:
     if engine not in {"native", "bridge", "brief"}:
         raise ValueError(f"Invalid delegation engine {engine!r}: must be native, bridge, or brief.")
     return engine
+
+
+def _build_tier_config(raw: dict[str, Any], default: BuildTierConfig) -> BuildTierConfig:
+    return BuildTierConfig(
+        dollar_micro=int(raw.get("dollar_micro", default.dollar_micro)),
+        input_tokens=int(raw.get("input_tokens", default.input_tokens)),
+        output_tokens=int(raw.get("output_tokens", default.output_tokens)),
+        cloud_turns=int(raw.get("cloud_turns", default.cloud_turns)),
+        duration_seconds=int(raw.get("duration_seconds", default.duration_seconds)),
+    )
+
+
+def _anthropic_pricing_config(raw: dict[str, Any]) -> AnthropicPricingConfig:
+    default = AnthropicPricingConfig()
+    return AnthropicPricingConfig(
+        model=str(raw.get("model", default.model)).strip(),
+        base_input_per_mtok=Decimal(str(raw.get("base_input_per_mtok", default.base_input_per_mtok))),
+        cache_write_5m_per_mtok=Decimal(
+            str(raw.get("cache_write_5m_per_mtok", default.cache_write_5m_per_mtok))
+        ),
+        cache_write_1h_per_mtok=Decimal(
+            str(raw.get("cache_write_1h_per_mtok", default.cache_write_1h_per_mtok))
+        ),
+        cache_read_per_mtok=Decimal(str(raw.get("cache_read_per_mtok", default.cache_read_per_mtok))),
+        output_per_mtok=Decimal(str(raw.get("output_per_mtok", default.output_per_mtok))),
+        review_after=str(raw.get("review_after", default.review_after)).strip(),
+    )
 
 
 def _provider_policy(value: object) -> str:

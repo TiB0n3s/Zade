@@ -150,3 +150,43 @@ daily_budget = 25
 timeout_seconds = 1800
 max_output_chars = 40000
 workspace_root = "C:\\Users\\you\\ZadeWorkspace"
+
+[build]
+# Local-first build sessions assess complexity without cloud use, then ask for
+# one time- and spend-bounded lease before any paid model request. The limits
+# are hard ceilings, not spending targets.
+enabled = true
+warning_percent = 80
+provider_overhead_tokens = 1024
+
+[build.tiers.small]
+dollar_micro = 1000000
+input_tokens = 120000
+output_tokens = 16000
+cloud_turns = 6
+duration_seconds = 7200
+
+[build.tiers.medium]
+dollar_micro = 3000000
+input_tokens = 400000
+output_tokens = 40000
+cloud_turns = 16
+duration_seconds = 14400
+
+[build.tiers.large]
+dollar_micro = 7000000
+input_tokens = 1000000
+output_tokens = 80000
+cloud_turns = 32
+duration_seconds = 28800
+
+[build.anthropic_pricing]
+# Local pricing snapshots fail closed after review_after. Refresh deliberately;
+# Zade never downloads or guesses pricing at runtime.
+model = "claude-opus-4-8"
+base_input_per_mtok = "5"
+cache_write_5m_per_mtok = "6.25"
+cache_write_1h_per_mtok = "10"
+cache_read_per_mtok = "0.5"
+output_per_mtok = "25"
+review_after = "2026-08-31"
