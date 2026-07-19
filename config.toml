@@ -23,6 +23,14 @@ provider_policy = "local_preferred"
 # model that emits NATIVE tool_calls (qwen2.5-coder:14b and deepseek-r1:14b
 # declare "tools" but return JSON-as-text / prose from a live probe).
 coding_agent_model = "qwen3:14b"
+# Read timeout (s) for a generate/chat/embed request. Non-streaming Ollama sends
+# nothing until generation finishes, so this budget must cover a COLD start:
+# loading a ~12GB model into VRAM (or a reload after eviction under
+# OLLAMA_MAX_LOADED_MODELS) plus the generation. 180s (the old hardcoded value)
+# was too tight for a cold load and produced spurious "Ollama request timed out"
+# failures on the first message after idle. Health/version probes fail fast on a
+# separate 15s timeout and are unaffected.
+request_timeout_seconds = 600
 
 [delegation]
 # Hybrid builds assess and work locally first. Any Anthropic source-code turn

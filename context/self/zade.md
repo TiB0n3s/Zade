@@ -128,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `d3fe1d9` 2026-07-18 - Add direct Telegram Bot API adapter; retire OpenClaw for channels
 - `fa6e28c` 2026-07-18 - Merge branch 'main' into codex/token-budgeted-build-delegation
 - `d281196` 2026-07-18 - feat: expose budgeted build sessions
 - `365701e` 2026-07-18 - feat: orchestrate approved hybrid builds
@@ -139,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `64f1090` 2026-07-18 - Channel transport, ingress hardening, egress ledger
 - `a90fa9d` 2026-07-18 - feat: persist build sessions and leases
 - `e884687` 2026-07-18 - feat: assess build complexity locally
-- `8ab2211` 2026-07-18 - feat: add build session value objects
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

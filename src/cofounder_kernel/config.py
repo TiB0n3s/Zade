@@ -73,6 +73,14 @@ class OllamaConfig:
     # the cap bounds worst-case latency.
     tool_loop: bool = True
     tool_loop_max_rounds: int = 3
+    # Read timeout (seconds) for a generate/chat/embed request. Non-streaming
+    # Ollama sends nothing until generation finishes, so this budget must cover
+    # a COLD start too: loading a ~12GB model into VRAM (or reloading after an
+    # eviction under OLLAMA_MAX_LOADED_MODELS) plus the generation itself. 180s
+    # was too tight for a cold load and produced spurious "Ollama request timed
+    # out" failures on the first message after idle. Health/version/tags probes
+    # use a separate short timeout and are unaffected.
+    request_timeout_seconds: float = 600.0
     # Server-side structured output: JSON-contract calls (contrarian critic,
     # role passes, distillation) send their JSON schema as Ollama's `format`
     # field, so the shape is enforced at sampling time instead of resting on
@@ -637,6 +645,9 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         reasoning_model=os.getenv("COFOUNDER_REASONING_MODEL", ollama_raw.get("reasoning_model", "deepseek-r1:14b")),
         coding_model=os.getenv("COFOUNDER_CODING_MODEL", ollama_raw.get("coding_model", "qwen2.5-coder:14b")),
         embedding_model=os.getenv("COFOUNDER_EMBEDDING_MODEL", ollama_raw.get("embedding_model", "nomic-embed-text")),
+        request_timeout_seconds=float(
+            os.getenv("COFOUNDER_OLLAMA_REQUEST_TIMEOUT", ollama_raw.get("request_timeout_seconds", 600.0))
+        ),
         think=_bool(os.getenv("COFOUNDER_THINK", ollama_raw.get("think", False))),
         temperature=float(os.getenv("COFOUNDER_TEMPERATURE", ollama_raw.get("temperature", 0.2))),
         chat_temperature=float(os.getenv("COFOUNDER_CHAT_TEMPERATURE", ollama_raw.get("chat_temperature", 0.65))),

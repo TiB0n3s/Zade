@@ -262,9 +262,18 @@ class OllamaClient:
             self._embed_memo.pop(evicted, None)
         return list(vector)
 
+    # Probes (version/tags/show/health) must fail fast; only the inference
+    # endpoints get the long config timeout that covers a COLD model load
+    # (a ~12GB VRAM load, or a reload after eviction) plus the generation.
+    _PROBE_TIMEOUT = 15.0
+    _INFERENCE_PATHS = frozenset({"/api/generate", "/api/chat", "/api/embed"})
+
+    def _timeout_for(self, path: str) -> float:
+        return self.config.request_timeout_seconds if path in self._INFERENCE_PATHS else self._PROBE_TIMEOUT
+
     def _get_json(self, path: str) -> dict[str, Any]:
         request = urllib.request.Request(f"{self.config.base_url}{path}", method="GET")
-        return self._request_json(request)
+        return self._request_json(request, timeout=self._timeout_for(path))
 
     def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8")
@@ -274,9 +283,9 @@ class OllamaClient:
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        return self._request_json(request)
+        return self._request_json(request, timeout=self._timeout_for(path))
 
-    def _request_json(self, request: urllib.request.Request) -> dict[str, Any]:
+    def _request_json(self, request: urllib.request.Request, *, timeout: float = _PROBE_TIMEOUT) -> dict[str, Any]:
         # Provider policy first: under local_only only loopback is a valid model
         # endpoint, and known cloud provider hosts are refused under any policy.
         # This runs before any bytes leave the process.
@@ -288,7 +297,7 @@ class OllamaClient:
         except netguard.EgressError as exc:
             raise OllamaError(str(exc)) from exc
         try:
-            with urllib.request.urlopen(request, timeout=180) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = ""
