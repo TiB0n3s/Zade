@@ -25,6 +25,8 @@ if (-not $NoStart) {
     Invoke-RestMethod -Uri "$BaseUrl/health" -TimeoutSec 5 | Out-Null
 }
 
+. (Join-Path $PSScriptRoot "zade-token.ps1")
+$Token = Resolve-ZadeToken -BaseUrl $BaseUrl -Token $Token
 $Headers = @{}
 if ($Token) {
     $Headers["X-Zade-Token"] = $Token

@@ -18,6 +18,8 @@ if (-not $NoStart) {
     & $StartScript -NoOpen -TimeoutSec 45 | Write-Output
 }
 
+. (Join-Path $PSScriptRoot "zade-token.ps1")
+$Token = Resolve-ZadeToken -BaseUrl $BaseUrl -Token $Token
 $Headers = @{}
 if ($Token) {
     $Headers["X-Zade-Token"] = $Token
