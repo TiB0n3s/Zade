@@ -129,6 +129,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `1e78147` 2026-07-19 - docs: design durable product build orchestration
 - `80216b5` 2026-07-19 - Voice streaming + cloud-voice teardown; MCP evidence.recent; shareable-memory review UX
 - `3509e5b` 2026-07-19 - Persona primacy: identity leads the prompt; contrarian memo only on explicit request
 - `81c6f73` 2026-07-19 - Make Ollama request timeout configurable; raise default to 600s
@@ -140,7 +141,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `9efb717` 2026-07-18 - feat: add budgeted Anthropic build adapter
 - `075c481` 2026-07-18 - refactor: make coding model provider neutral
 - `27efc28` 2026-07-18 - feat: route build work local first
-- `c46c4eb` 2026-07-18 - feat: enforce atomic cloud budgets
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

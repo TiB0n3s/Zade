@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import KernelConfig
+from .command_runner import CommandPolicyError, CommandRequest
 from .db import KernelDatabase
 from .inventory import ModelInventoryError, ModelInventoryService
 from .model_client import CodingModelClient, CodingModelError
@@ -134,6 +135,7 @@ class CodingAgentService:
         model_client: CodingModelClient | None = None,
         inventory: ModelInventoryService | None = None,
         notifier: Any | None = None,
+        command_runner: Any | None = None,
     ):
         self.config = config
         self.db = db
@@ -144,6 +146,7 @@ class CodingAgentService:
         # Optional NotificationBus: send_progress raises native toasts so the
         # founder sees milestones during long runs without the run ending.
         self.notifier = notifier
+        self.command_runner = command_runner
 
     # ---- public ------------------------------------------------------------
     def available(self) -> bool:
@@ -1159,6 +1162,31 @@ class CodingAgentService:
                     "Use an allowlisted alternative, or skip this step, note the skip in "
                     "your final summary, and continue the task."
                 ),
+            }
+        if self.command_runner is not None:
+            try:
+                outcome = self.command_runner.run(
+                    CommandRequest(
+                        workspace=root,
+                        profile_id="coding-agent",
+                        argv=tuple(argv),
+                        timeout_seconds=COMMAND_TIMEOUT_SECONDS,
+                    )
+                )
+            except (CommandPolicyError, OSError) as exc:
+                return {"ok": False, "error": str(exc)}
+            if outcome.timed_out:
+                return {
+                    "ok": False,
+                    "error": f"command timed out after {COMMAND_TIMEOUT_SECONDS}s",
+                }
+            if outcome.cancelled:
+                return {"ok": False, "error": "command was cancelled"}
+            return {
+                "ok": bool(outcome.ok),
+                "returncode": outcome.returncode,
+                "stdout": outcome.stdout_tail,
+                "stderr": outcome.stderr_tail,
             }
         # Pin Python-family programs to the kernel's own interpreter so the run
         # sees the kernel venv (pytest included) instead of whatever bare

@@ -800,6 +800,50 @@ def test_tool_executions_are_audited(tmp_path: Path, fixture_repo: Path) -> None
     assert events[0]["actor"] == "coding_agent"
 
 
+def test_injected_governed_runner_owns_command_execution(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    class FakeResult:
+        ok = True
+        returncode = 0
+        stdout_tail = "governed output"
+        stderr_tail = ""
+        timed_out = False
+        cancelled = False
+
+    class FakeRunner:
+        def __init__(self):
+            self.requests = []
+
+        def run(self, request):
+            self.requests.append(request)
+            return FakeResult()
+
+    cfg = _config(tmp_path, fixture_repo)
+    runner = FakeRunner()
+    svc = CodingAgentService(
+        config=cfg,
+        db=_db(tmp_path),
+        ollama=ScriptedOllama(cfg.ollama, []),
+        inventory=_StubInventory(),
+        command_runner=runner,
+    )
+
+    result = svc._tool_run_command(
+        fixture_repo, {"argv": ["python", "-m", "pytest", "-q"]}
+    )
+
+    assert result == {
+        "ok": True,
+        "returncode": 0,
+        "stdout": "governed output",
+        "stderr": "",
+    }
+    assert runner.requests[0].workspace == fixture_repo
+    assert runner.requests[0].profile_id == "coding-agent"
+    assert runner.requests[0].argv == ("python", "-m", "pytest", "-q")
+
+
 # ask_founder: the queue-only-when-unsure channel --------------------------------
 
 def test_ask_founder_ends_run_with_needs_decision(tmp_path: Path, fixture_repo: Path) -> None:
