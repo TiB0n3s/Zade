@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -109,6 +111,51 @@ class ProjectIntakeService:
             directed=True,
         )
         return self._record_build_route(project, manifest, result)
+
+    def verify_existing(self, project_id: int) -> dict[str, Any]:
+        """Run fixed local checks without allowing the builder to rewrite the project."""
+        project = self.get(project_id)
+        root = self._validated_project_root(project["canonical_path"])
+        manifest = load_project_manifest(root / "project.md")
+        commands = _existing_scaffold_commands(root)
+        checks = [
+            _run_existing_check(
+                argv,
+                cwd=root,
+                timeout=900,
+                env=_existing_check_environment(),
+            )
+            for argv in commands
+        ]
+        ok = bool(checks) and all(check["ok"] for check in checks)
+        verification = {
+            "ok": ok,
+            "checked_at": utc_now(),
+            "checks": checks,
+            "repo_fingerprint": self._fingerprint(root),
+            "git_snapshot": _git_snapshot(root),
+        }
+        state = "verified" if ok else "blocked"
+        updated = self._set_state(
+            project,
+            manifest,
+            state,
+            {
+                "existing_scaffold_verification": verification,
+                "blocked_reason": None if ok else "existing scaffold verification failed",
+                "decision_id": None if ok else (project.get("metadata") or {}).get("decision_id"),
+                "founder_question": None if ok else (project.get("metadata") or {}).get("founder_question"),
+                "approval_request_id": (
+                    None if ok else (project.get("metadata") or {}).get("approval_request_id")
+                ),
+            },
+        )
+        self.db.append_project_event(
+            project_id,
+            event_type="scaffold_verified" if ok else "scaffold_verification_failed",
+            metadata={"state": state, "checks": len(checks)},
+        )
+        return updated
 
     def resolve_decision(
         self,
@@ -351,6 +398,7 @@ class ProjectIntakeService:
             and registered["lifecycle_state"] == "verified"
             and dispatch.get("ok")
             and not _dispatch_verified(dispatch)
+            and not _existing_verification_current(root, registered.get("metadata") or {})
         ):
             registered = self._set_state(
                 registered,
@@ -502,6 +550,92 @@ def _mobile_tool_path(name: str) -> str | None:
         "dart": Path(r"C:\tools\flutter\bin\dart.bat"),
     }.get(name)
     return str(known) if known is not None and known.is_file() else None
+
+
+def _existing_scaffold_commands(root: Path) -> list[list[str]]:
+    flutter = _mobile_tool_path("flutter")
+    if flutter and (root / "pubspec.yaml").is_file() and (root / "lib" / "main.dart").is_file():
+        return [
+            [flutter, "analyze", "--no-pub"],
+            [flutter, "test", "--no-pub"],
+            [flutter, "build", "apk", "--debug", "--no-pub"],
+        ]
+
+    package_path = root / "package.json"
+    npm = _mobile_tool_path("npm")
+    if not npm or not package_path.is_file():
+        return []
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    scripts = package.get("scripts") if isinstance(package, dict) else {}
+    scripts = scripts if isinstance(scripts, dict) else {}
+    commands: list[list[str]] = []
+    if "typecheck" in scripts:
+        commands.append([npm, "run", "typecheck"])
+    elif "test" in scripts:
+        commands.append([npm, "test", "--", "--runInBand"])
+    gradle = root / "android" / "gradlew.bat"
+    if gradle.is_file():
+        commands.append([str(gradle), "-p", "android", "assembleDebug"])
+    return commands
+
+
+def _run_existing_check(
+    argv: list[str], *, cwd: Path, timeout: int, env: dict[str, str] | None = None
+) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+        return {
+            "argv": argv,
+            "ok": result.returncode == 0,
+            "returncode": result.returncode,
+            "output": output[-4000:],
+        }
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"argv": argv, "ok": False, "returncode": None, "output": str(exc)[:4000]}
+
+
+def _existing_check_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    if not env.get("ANDROID_HOME"):
+        candidate = Path.home() / "AppData" / "Local" / "Android" / "Sdk"
+        if candidate.is_dir():
+            env["ANDROID_HOME"] = str(candidate)
+            env["ANDROID_SDK_ROOT"] = str(candidate)
+    return env
+
+
+def _git_snapshot(root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {"head": "", "status": ""}
+    for key, argv in (
+        ("head", ["git", "rev-parse", "HEAD"]),
+        ("status", ["git", "status", "--porcelain"]),
+    ):
+        result = subprocess.run(
+            argv, cwd=root, capture_output=True, text=True, timeout=30, check=False
+        )
+        if result.returncode == 0:
+            snapshot[key] = result.stdout.strip()
+    return snapshot
+
+
+def _existing_verification_current(root: Path, metadata: dict[str, Any]) -> bool:
+    verification = metadata.get("existing_scaffold_verification")
+    if not isinstance(verification, dict) or verification.get("ok") is not True:
+        return False
+    expected = verification.get("git_snapshot")
+    return isinstance(expected, dict) and expected == _git_snapshot(root)
 
 
 def _flutter_project_name(name: str) -> str:

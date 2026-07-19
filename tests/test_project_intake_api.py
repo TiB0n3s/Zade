@@ -79,3 +79,33 @@ def test_authenticated_telegram_decision_reply_resumes_project(tmp_path: Path, m
     assert result["status"] == "project_decision_resolved"
     assert "Same Ground" in result["reply"]
     assert calls == [(77, "Use SQLite", "founder.telegram")]
+
+
+def test_project_intake_verify_route_uses_non_mutating_scaffold_verifier(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    config = KernelConfig(
+        paths=PathConfig(
+            hot_root=tmp_path / "brain",
+            cold_root=tmp_path / "cold",
+            data_dir=tmp_path / "data",
+        ),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+        project_intake=ProjectIntakeConfig(enabled=True, scaffold_on_intake=True),
+    )
+    app = create_app(config, run_boot_maintenance=False)
+    client = TestClient(app)
+    calls: list[int] = []
+
+    def verify_existing(project_id: int):
+        calls.append(project_id)
+        return {"id": project_id, "name": "Same Ground", "lifecycle_state": "verified"}
+
+    monkeypatch.setattr(app.state.project_intake, "verify_existing", verify_existing)
+
+    response = client.post("/project-intake/projects/7/verify")
+
+    assert response.status_code == 200
+    assert response.json()["project"]["lifecycle_state"] == "verified"
+    assert calls == [7]

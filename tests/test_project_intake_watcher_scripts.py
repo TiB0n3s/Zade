@@ -29,3 +29,15 @@ def test_project_intake_watcher_installer_runs_limited_at_logon() -> None:
     assert "-RunLevel Limited" in script
     assert "-WindowStyle Hidden" in script
     assert "-ErrorAction Stop" in script
+
+
+def test_project_intake_watcher_installer_falls_back_to_per_user_startup() -> None:
+    script = (ROOT / "scripts" / "install-project-intake-watcher-task.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "[Environment]::GetFolderPath('Startup')" in script
+    assert "Zade Project Intake Watcher.lnk" in script
+    assert "Access is denied" in script
+    assert "Start-Process" in script
+    assert "-WindowStyle Hidden" in script

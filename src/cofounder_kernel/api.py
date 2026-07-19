@@ -977,6 +977,13 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/project-intake/projects/{project_id}/verify")
+    def verify_project_intake(project_id: int) -> dict[str, Any]:
+        try:
+            return {"project": project_intake.verify_existing(project_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/project-intake/decisions/{decision_id}/resolve")
     def resolve_project_intake_decision(
         decision_id: int, payload: ApprovalResolveRequest
@@ -4186,6 +4193,7 @@ def _inventory_payload(
             "GET /project-intake/projects",
             "GET /project-intake/projects/{project_id}",
             "POST /project-intake/projects/{project_id}/run",
+            "POST /project-intake/projects/{project_id}/verify",
             "POST /project-intake/decisions/{decision_id}/resolve",
         ],
         "operating_rules": [

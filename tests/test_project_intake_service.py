@@ -206,6 +206,68 @@ def test_failed_kernel_verification_blocks_project_and_notifies(tmp_path: Path) 
     assert bus.calls[0]["topic"] == "project.build_blocked"
 
 
+def test_verify_existing_runs_real_flutter_checks_before_marking_verified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, config, _db = make_service(tmp_path)
+    project_root = config.paths.project_intake_dir / "The Dark Index"
+    (project_root / ".git").mkdir(parents=True)
+    (project_root / "lib").mkdir()
+    (project_root / "project.md").write_text(
+        MOBILE_MANIFEST.replace("Same Ground", "The Dark Index"), encoding="utf-8"
+    )
+    (project_root / "pubspec.yaml").write_text("name: the_dark_index\n", encoding="utf-8")
+    (project_root / "lib" / "main.dart").write_text("void main() {}\n", encoding="utf-8")
+    project = service.scan(auto_run=False)["projects"][0]
+    calls: list[list[str]] = []
+
+    def successful_check(argv, *, cwd, timeout, env=None):
+        calls.append(argv)
+        return {"argv": argv, "ok": True, "returncode": 0, "output": "passed"}
+
+    monkeypatch.setattr(project_intake_module, "_run_existing_check", successful_check)
+
+    verified = service.verify_existing(project["id"])
+
+    assert verified["lifecycle_state"] == "verified"
+    assert [call[1:] for call in calls] == [
+        ["analyze", "--no-pub"],
+        ["test", "--no-pub"],
+        ["build", "apk", "--debug", "--no-pub"],
+    ]
+    assert verified["metadata"]["existing_scaffold_verification"]["ok"] is True
+
+
+def test_verify_existing_keeps_project_blocked_when_a_check_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, config, _db = make_service(tmp_path)
+    project_root = config.paths.project_intake_dir / "Same Ground"
+    (project_root / ".git").mkdir(parents=True)
+    (project_root / "project.md").write_text(MOBILE_MANIFEST, encoding="utf-8")
+    (project_root / "package.json").write_text(
+        '{"scripts":{"typecheck":"tsc --noEmit"}}', encoding="utf-8"
+    )
+    project = service.scan(auto_run=False)["projects"][0]
+
+    monkeypatch.setattr(
+        project_intake_module,
+        "_run_existing_check",
+        lambda argv, **kwargs: {
+            "argv": argv,
+            "ok": False,
+            "returncode": 1,
+            "output": "typecheck failed",
+        },
+    )
+
+    verified = service.verify_existing(project["id"])
+
+    assert verified["lifecycle_state"] == "blocked"
+    assert verified["metadata"]["blocked_reason"] == "existing scaffold verification failed"
+    assert verified["metadata"]["existing_scaffold_verification"]["ok"] is False
+
+
 def test_reconciliation_scan_does_not_restart_a_completed_scaffold(tmp_path: Path) -> None:
     delegation = FakeDelegation()
     service, config, db = make_service(tmp_path, delegation=delegation)
