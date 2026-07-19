@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `a245fe6` 2026-07-19 - feat: watch the project intake vault
 - `8ef1694` 2026-07-19 - docs: plan project intake autopilot
 - `e15c5f2` 2026-07-19 - docs: reset Dark Index intake design
 - `ca5b6c4` 2026-07-19 - fix: value-aware trading-brief concern detection + weekend awareness
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `0bfc54b` 2026-07-19 - feat: retry interrupted local build tasks
 - `14066c5` 2026-07-19 - fix: feed verifier evidence into local retries
 - `6ed15f7` 2026-07-19 - fix: keep planning phases command free
-- `178c9d4` 2026-07-19 - fix: exclude generated outputs from verifier context
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
