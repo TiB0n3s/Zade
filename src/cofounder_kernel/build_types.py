@@ -12,6 +12,91 @@ class BuildTier(StrEnum):
     LARGE = "large"
 
 
+class BuildTaskKind(StrEnum):
+    CHECKPOINT = "checkpoint"
+    AGENT = "agent"
+    COMMAND = "command"
+    VERIFICATION = "verification"
+    GITHUB = "github"
+    REVIEW = "review"
+
+
+class BuildTaskStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+
+
+BUILD_PHASES: tuple[str, ...] = (
+    "assessment",
+    "approval",
+    "discovery",
+    "requirements",
+    "architecture",
+    "planning",
+    "implementation",
+    "verification",
+    "review",
+    "release",
+    "complete",
+)
+
+
+@dataclass(frozen=True)
+class BuildTask:
+    id: int
+    session_id: int
+    phase: str
+    position: int
+    kind: BuildTaskKind
+    title: str
+    payload: dict[str, Any]
+    dependencies: tuple[int, ...]
+    acceptance: dict[str, Any]
+    idempotency_key: str
+    status: BuildTaskStatus
+    max_attempts: int
+    attempt_count: int
+    active_run_id: int | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class BuildTaskRun:
+    id: int
+    task_id: int
+    session_id: int
+    attempt_number: int
+    worker_id: str
+    backend: str
+    command: tuple[str, ...]
+    pid: int | None
+    status: BuildTaskStatus
+    result: dict[str, Any]
+    error: str
+    log_path: str
+    artifact_ids: tuple[int, ...]
+    started_at: str
+    finished_at: str | None
+
+
+@dataclass(frozen=True)
+class BuildArtifact:
+    id: int
+    session_id: int
+    task_id: int | None
+    run_id: int | None
+    kind: str
+    uri: str
+    metadata: dict[str, Any]
+    created_at: str
+
+
 @dataclass(frozen=True)
 class LeaseLimits:
     dollar_micro: int

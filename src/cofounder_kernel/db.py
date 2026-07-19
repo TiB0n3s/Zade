@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -3476,6 +3476,69 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_cloud_usage_request
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cloud_usage_lease_turn
   ON cloud_usage_events (lease_id, turn_number);
+
+CREATE TABLE IF NOT EXISTS build_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES build_sessions(id),
+  phase TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  dependencies_json TEXT NOT NULL DEFAULT '[]',
+  acceptance_json TEXT NOT NULL DEFAULT '{}',
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  max_attempts INTEGER NOT NULL DEFAULT 1,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  active_run_id INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (session_id, position)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_build_tasks_idempotency
+  ON build_tasks (session_id, idempotency_key)
+  WHERE idempotency_key <> '';
+
+CREATE INDEX IF NOT EXISTS idx_build_tasks_session_status
+  ON build_tasks (session_id, status, phase, position);
+
+CREATE TABLE IF NOT EXISTS build_task_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES build_tasks(id),
+  session_id INTEGER NOT NULL REFERENCES build_sessions(id),
+  attempt_number INTEGER NOT NULL,
+  worker_id TEXT NOT NULL,
+  backend TEXT NOT NULL DEFAULT 'host',
+  command_json TEXT NOT NULL DEFAULT '[]',
+  pid INTEGER,
+  status TEXT NOT NULL DEFAULT 'running',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT NOT NULL DEFAULT '',
+  log_path TEXT NOT NULL DEFAULT '',
+  artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  UNIQUE (task_id, attempt_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_build_task_runs_session_status
+  ON build_task_runs (session_id, status, id);
+
+CREATE TABLE IF NOT EXISTS build_artifacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES build_sessions(id),
+  task_id INTEGER REFERENCES build_tasks(id),
+  run_id INTEGER REFERENCES build_task_runs(id),
+  kind TEXT NOT NULL,
+  uri TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_build_artifacts_session
+  ON build_artifacts (session_id, id);
 
 CREATE TABLE IF NOT EXISTS work_plans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

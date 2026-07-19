@@ -47,7 +47,7 @@ def make_store(path: Path) -> BuildStore:
     return BuildStore(database)
 
 
-def test_migration_creates_four_build_tables(tmp_path: Path) -> None:
+def test_migration_creates_build_budget_tables(tmp_path: Path) -> None:
     database = KernelDatabase(tmp_path / "kernel.sqlite")
     database.migrate()
 
@@ -59,7 +59,7 @@ def test_migration_creates_four_build_tables(tmp_path: Path) -> None:
             )
         }
 
-    assert SCHEMA_VERSION == 29
+    assert SCHEMA_VERSION == 30
     assert {
         "build_assessments",
         "build_sessions",
