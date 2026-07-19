@@ -128,6 +128,42 @@ def _collect_integrations(state: Any) -> list[dict[str, str]]:
             "source": "config.research",
             "summary": f"Enabled={cfg.research.enabled}; max URLs/run={cfg.research.max_urls_per_run}.",
         },
+        {
+            "name": "Durable product builds",
+            "mode": "local-first governed execution",
+            "source": "BuildOrchestrator",
+            "summary": (
+                "Discovery-through-release task graphs, background controls, governed commands, "
+                "toolchain verification, artifacts, and calibration are persisted locally."
+            ),
+        },
+        {
+            "name": "Anthropic build delegation",
+            "mode": "optional provider lease",
+            "source": "config.anthropic + config.build",
+            "summary": (
+                f"Enabled={cfg.anthropic.enabled}; model={cfg.build.anthropic_pricing.model}; "
+                "source-code egress and paid turns require a matching founder-approved lease."
+            ),
+        },
+        {
+            "name": "GitHub Actions build evidence",
+            "mode": "governed external CI",
+            "source": "GitHubCIClient",
+            "summary": (
+                f"Read-only run evidence is available through gh; writes require fresh approval; "
+                f"configured iOS workflow={cfg.build.ios_workflow}."
+            ),
+        },
+        {
+            "name": "OpenAI build review",
+            "mode": "optional advisory provider",
+            "source": "config.openai_review",
+            "summary": (
+                f"Enabled={cfg.openai_review.enabled}; model={cfg.openai_review.model}; "
+                "store=false, no hosted tools, separate provider lease."
+            ),
+        },
     ]
     # Voice is local-only (whisper.cpp + piper via [voice] command engines);
     # the cloud speech integrations (Deepgram/ElevenLabs) were removed 2026-07-19.

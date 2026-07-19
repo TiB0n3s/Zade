@@ -25,6 +25,9 @@ _RUN_FIELDS = (
 )
 _TERMINAL_STATUSES = {"completed", "cancelled", "failure", "neutral", "skipped", "stale", "success", "timed_out"}
 _INPUT_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_SENSITIVE_INPUT = re.compile(
+    r"(?:key|token|secret|password|credential)", re.IGNORECASE
+)
 
 
 class GitHubCIError(RuntimeError):
@@ -304,6 +307,10 @@ def _validated_inputs(inputs: Mapping[str, str]) -> dict[str, str]:
         value = str(raw_value)
         if not _INPUT_KEY.fullmatch(key):
             raise ValueError(f"Invalid GitHub workflow input name: {key!r}")
+        if _SENSITIVE_INPUT.search(key):
+            raise ValueError(
+                f"GitHub workflow input {key!r} may not carry credentials"
+            )
         if len(value) > 1000 or "\x00" in value:
             raise ValueError(f"GitHub workflow input {key!r} is invalid or too long")
         clean[key] = value

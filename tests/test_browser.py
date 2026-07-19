@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import cofounder_kernel.browser as browser_module
@@ -292,7 +293,7 @@ def test_read_only_build_verification_reuses_browser_execution_boundary(
         }
 
     service = BrowserService(
-        config=_config(tmp_path, allow_private=True),
+        config=_config(tmp_path, allow_private=False),
         db=None,
         work_queue=None,
         runner=fake_runner,
@@ -310,6 +311,11 @@ def test_read_only_build_verification_reuses_browser_execution_boundary(
     assert result["screenshots"] == [str(screenshot.resolve())]
     assert Path(result["trace"]).is_file()
     assert captured["options"]["headless"] is True
+
+    with pytest.raises(ValueError, match="private/internal"):
+        service.run_verification_flow(
+            steps=[{"type": "navigate", "url": "http://10.0.0.8:3000"}]
+        )
 
 
 def test_build_verification_browser_flow_refuses_interactive_steps(tmp_path: Path) -> None:

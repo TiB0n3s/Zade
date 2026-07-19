@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from cofounder_kernel.config import (
     DelegationConfig,
     KernelConfig,
     OllamaConfig,
+    OpenAIReviewConfig,
     PathConfig,
     SecurityConfig,
 )
@@ -210,12 +212,18 @@ def test_delegation_status_includes_recent_build_summary(build_client) -> None:
     assert status["build"]["active_session_count"] == 1
 
 
-def test_cloud_configuration_failure_returns_503_and_preserves_lease(
+def test_cloud_configuration_failure_returns_503_when_cloud_task_is_reached(
     build_client, monkeypatch
 ) -> None:
     client, app, workspace = build_client
     prepared = _assess(
-        client, workspace, task="Review authentication security before release"
+        client,
+        workspace,
+        task=(
+            "Architect a cross-module SaaS UI, frontend API, backend worker, admin, "
+            "analytics and notifications system with authentication, billing, migration, "
+            "third-party integration, security, tests, and production release"
+        ),
     )
     session_id = prepared["session"]["id"]
 
@@ -229,9 +237,197 @@ def test_cloud_configuration_failure_returns_503_and_preserves_lease(
         json={"typed_confirmation": CONFIRMATION},
     )
 
+    assert response.status_code == 200
+    assert response.json()["run"]["route"] == "local"
+    requirements = client.post(
+        f"/build/sessions/{session_id}/run-next", headers=_headers(), json={}
+    )
+    assert requirements.status_code == 200
+    assert requirements.json()["phase"] == "requirements"
+    response = client.post(
+        f"/build/sessions/{session_id}/run-next", headers=_headers(), json={}
+    )
     assert response.status_code == 503
     assert "unavailable" in response.json()["detail"]
     detail = client.get(f"/build/sessions/{session_id}").json()
     assert detail["lease"]["state"] == "active"
-    assert detail["session"]["phase"] == "planning"
+    assert detail["session"]["phase"] == "requirements"
     assert detail["usage"]["actual_microdollars"] == 0
+
+
+def test_durable_build_api_exposes_local_lifecycle_and_status_surfaces(
+    build_client,
+) -> None:
+    client, _app, workspace = build_client
+    prepared = _assess(client, workspace)
+    session_id = prepared["session"]["id"]
+
+    assert len(prepared["tasks"]) == 9
+    planned = client.post(
+        f"/build/sessions/{session_id}/plan", headers=_headers(), json={}
+    )
+    assert planned.status_code == 200, planned.text
+    assert len(planned.json()["tasks"]) == 9
+    tasks = client.get(f"/build/sessions/{session_id}/tasks")
+    assert tasks.status_code == 200
+    assert tasks.json()["tasks"][0]["phase"] == "discovery"
+
+    run = client.post(
+        f"/build/sessions/{session_id}/run-next", headers=_headers(), json={}
+    )
+    assert run.status_code == 200, run.text
+    assert run.json()["phase"] == "discovery"
+    run_id = run.json()["run_id"]
+    run_detail = client.get(f"/build/runs/{run_id}")
+    assert run_detail.status_code == 200
+    assert run_detail.json()["run"]["status"] == "succeeded"
+
+    paused = client.post(
+        f"/build/sessions/{session_id}/pause", headers=_headers(), json={}
+    )
+    assert paused.json()["status"] == "paused"
+    resumed = client.post(
+        f"/build/sessions/{session_id}/resume", headers=_headers(), json={}
+    )
+    assert resumed.status_code == 200
+
+    toolchains = client.get(
+        "/build/toolchains", params={"workspace": str(workspace)}
+    )
+    assert toolchains.status_code == 200
+    assert toolchains.json()["detected"] == "generic"
+    verification = client.post(
+        f"/build/sessions/{session_id}/verify",
+        headers=_headers(),
+        json={"profile_id": "generic"},
+    )
+    assert verification.status_code == 200, verification.text
+    assert verification.json()["blocked"] is True
+
+    review_status = client.get(f"/build/sessions/{session_id}/review/status")
+    assert review_status.status_code == 200
+    assert review_status.json()["ready"] is False
+    assert client.get("/build/calibration").status_code == 200
+    readiness = client.get("/build/managed-agents/readiness")
+    assert readiness.status_code == 200
+    assert readiness.json()["execution_enabled"] is False
+
+
+def test_durable_build_mutations_require_local_token(build_client) -> None:
+    client, _app, workspace = build_client
+    prepared = _assess(client, workspace)
+    session_id = prepared["session"]["id"]
+
+    for route in (
+        "plan",
+        "run-next",
+        "start",
+        "pause",
+        "resume",
+        "cancel",
+        "verify",
+    ):
+        response = client.post(f"/build/sessions/{session_id}/{route}", json={})
+        assert response.status_code == 401, route
+
+
+def test_swarm_ui_exposes_durable_build_controls() -> None:
+    html = Path("ui/swarm.html").read_text(encoding="utf-8")
+
+    for control_id in (
+        "buildTasks",
+        "buildStartBtn",
+        "buildPauseBtn",
+        "buildResumeBtn",
+        "buildCancelBtn",
+        "buildVerifyBtn",
+        "buildReviewPrepareBtn",
+        "buildReviewRunBtn",
+    ):
+        assert f'id="{control_id}"' in html
+    assert "/run-next" in html
+    assert "/build/toolchains" in html
+
+
+def test_openai_review_has_separate_lease_egress_and_calibration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("LABEL = 'review me'\n", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-key")
+    monkeypatch.setattr(OllamaClient, "chat", _local_assessment)
+    monkeypatch.setattr(CodingAgentService, "run", _local_build)
+    monkeypatch.setattr(
+        "cofounder_kernel.openai_review._openai_sdk_available", lambda: True
+    )
+    calls: list[dict[str, Any]] = []
+
+    class Usage:
+        input_tokens = 100
+        output_tokens = 25
+        input_tokens_details = None
+
+    class Responses:
+        def create(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return type(
+                "Response",
+                (),
+                {
+                    "output_text": json.dumps(
+                        {
+                            "summary": "Review complete.",
+                            "findings": ["Add one boundary test."],
+                            "recommendation": "approve_with_fix",
+                        }
+                    ),
+                    "usage": Usage(),
+                    "_request_id": "req_test",
+                },
+            )()
+
+    monkeypatch.setattr(
+        "cofounder_kernel.openai_review._default_client_factory",
+        lambda **_kwargs: type("Client", (), {"responses": Responses()})(),
+    )
+    config = replace(
+        _config(tmp_path, workspace),
+        openai_review=OpenAIReviewConfig(enabled=True),
+    )
+    client = TestClient(create_app(config, run_boot_maintenance=False))
+    prepared = _assess(client, workspace)
+    session_id = prepared["session"]["id"]
+
+    review_prepare = client.post(
+        f"/build/sessions/{session_id}/review/prepare",
+        headers=_headers(),
+        json={},
+    )
+    assert review_prepare.status_code == 200, review_prepare.text
+    approved = client.post(
+        f"/build/sessions/{session_id}/review/approve",
+        headers=_headers(),
+        json={"typed_confirmation": CONFIRMATION, "tier": "small"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["lease"]["provider"] == "openai"
+
+    reviewed = client.post(
+        f"/build/sessions/{session_id}/review/run",
+        headers=_headers(),
+        json={"prompt": "Review release correctness", "context": "app.py changed"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json()["findings"] == ["Add one boundary test."]
+    assert calls[0]["store"] is False
+    assert "tools" not in calls[0]
+    assert client.get(f"/build/sessions/{session_id}").json()["lease"] is None
+
+    calibrated = client.post(
+        f"/build/sessions/{session_id}/calibration",
+        headers=_headers(),
+        json={"provider": "openai", "outcome": "success"},
+    )
+    assert calibrated.status_code == 200, calibrated.text
+    assert calibrated.json()["calibration"]["actual_input_tokens"] == 100

@@ -35,9 +35,16 @@ class _TaskSpec:
 class BuildPlanner:
     """Materialize one deterministic, idempotent lifecycle graph per session."""
 
-    def __init__(self, *, store: BuildStore, toolchains: ToolchainRegistry):
+    def __init__(
+        self,
+        *,
+        store: BuildStore,
+        toolchains: ToolchainRegistry,
+        ios_workflow: str = "ios.yml",
+    ):
         self.store = store
         self.toolchains = toolchains
+        self.ios_workflow = ios_workflow.strip() or "ios.yml"
 
     def plan(self, session_id: int, *, profile_id: str | None = None) -> list[BuildTask]:
         session = self.store.get_session(session_id)
@@ -53,7 +60,9 @@ class BuildPlanner:
         )
         previous: BuildTask | None = None
         planned: list[BuildTask] = []
-        for spec in self._specs(assessment, profile.id):
+        for spec in self._specs(
+            assessment, profile.id, ios_workflow=self.ios_workflow
+        ):
             task = self.store.create_task(
                 session_id,
                 phase=spec.phase,
@@ -70,7 +79,12 @@ class BuildPlanner:
         return planned
 
     @staticmethod
-    def _specs(assessment: BuildAssessment, profile_id: str) -> tuple[_TaskSpec, ...]:
+    def _specs(
+        assessment: BuildAssessment,
+        profile_id: str,
+        *,
+        ios_workflow: str = "ios.yml",
+    ) -> tuple[_TaskSpec, ...]:
         shared = {
             "objective": assessment.task,
             "acceptance": assessment.acceptance,
@@ -160,7 +174,7 @@ class BuildPlanner:
                         if profile_id == "flutter-mobile"
                         else "release_checkpoint"
                     ),
-                    "workflow": "ios.yml" if profile_id == "flutter-mobile" else "",
+                    "workflow": ios_workflow if profile_id == "flutter-mobile" else "",
                 },
             ),
             _TaskSpec(
@@ -232,7 +246,12 @@ class BuildOrchestrator:
         try:
             result = self._dispatch(task, assessment, route)
         except Exception as exc:
-            result = {"ok": False, "status": "executor_error", "error": str(exc)}
+            result = {
+                "ok": False,
+                "status": "executor_error",
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+            }
         current_session = self.store.get_session(session_id)
         cancelled = current_session is not None and current_session.status in {
             "cancelling",
@@ -261,6 +280,10 @@ class BuildOrchestrator:
                     "last_task_id": task.id,
                     "last_run_id": finished.id,
                     "last_route": route.route,
+                    "route_history": [
+                        *list(session.checkpoint.get("route_history") or []),
+                        route.route,
+                    ][-100:],
                 },
             )
         updated_session = self.store.get_session(session_id)

@@ -256,6 +256,8 @@ class BuildService:
             resolved_by=resolved_by,
             resolution_note=note.strip() or "build lease denied",
         )
+        if self.store.list_tasks(session_id):
+            self.store.cancel_session(session_id)
         self.store.checkpoint(
             session.id,
             phase="complete",
@@ -431,6 +433,31 @@ class BuildService:
             session = self.store.cancel_session(session_id)
             return {"status": session.status, "session_id": session_id}
         return self.execution_manager.cancel(session_id)
+
+    def execute_cloud_task(
+        self,
+        task: Any,
+        assessment: BuildAssessment,
+        lease: BuildLease,
+    ) -> dict[str, Any]:
+        if self.cloud_coding_agent_factory is None:
+            raise ValueError("Anthropic cloud build execution is not configured")
+        if lease.provider != "anthropic":
+            raise ValueError(f"Unsupported cloud coding provider: {lease.provider}")
+        selected = self._select_context(assessment)
+        authorize = self._egress_authorizer(lease, selected)
+        cloud_agent = self.cloud_coding_agent_factory(task.session_id, authorize)
+        instructions = str(task.payload.get("instructions") or "").strip()
+        return cloud_agent.run(
+            task=(
+                f"{task.title}\n\nProduct objective: {assessment.task}"
+                + (f"\n\nTask instructions: {instructions}" if instructions else "")
+            ),
+            workspace=assessment.workspace,
+            context=_render_context(assessment, selected),
+            model=lease.model,
+            verify_always=task.phase == "implementation",
+        )
 
     def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return [self.status(session.id) for session in self.store.list_sessions(limit=limit)]

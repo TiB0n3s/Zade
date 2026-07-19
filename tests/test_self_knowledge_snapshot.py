@@ -30,6 +30,12 @@ def test_collect_snapshots_reads_runtime_app_state(tmp_path: Path) -> None:
     assert {"Ollama", "SQLite memory", "AI Brain hot/cold roots", "Read-only connectors"}.issubset(
         integration_names
     )
+    assert {
+        "Durable product builds",
+        "Anthropic build delegation",
+        "GitHub Actions build evidence",
+        "OpenAI build review",
+    }.issubset(integration_names)
     assert snapshots["voice-loop"]["stt"]["engine"] == "command"
     assert snapshots["voice-loop"]["tts"]["engine"] == "command"
     # Cloud speech integrations are gone: voice is local-only.

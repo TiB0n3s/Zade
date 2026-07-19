@@ -29,6 +29,14 @@ hybrid build leases:
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,cloud]"
 ```
 
+Install all optional product-build adapters (Anthropic, Playwright, and the
+disabled-by-default OpenAI reviewer) with:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,cloud,browser,review]"
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
 Then open:
 
 ```text
@@ -157,6 +165,40 @@ retry against a paid model, fall back to another provider, or enlarge the lease.
 Anthropic-compatible API. Claude Code is not required for native or hybrid
 execution.
 
+## Durable Product Builds
+
+Hybrid sessions now persist a dependency-ordered lifecycle from discovery,
+requirements, architecture, and planning through implementation, verification,
+review, release evidence, and completion. Local tasks can run before any cloud
+lease exists. Sessions support synchronous `run-next`, bounded background
+workers, pause, resume, cancellation, interrupted-run recovery, artifacts, and
+advisory estimate calibration.
+
+Commands are generated from Python SaaS, Node SaaS, Flutter mobile, or generic
+profiles. They use argv execution without a shell, resolve only approved
+executables and argument shapes, remain inside the assessed workspace, strip
+credential environment variables, cap time/output/log storage, and can be
+cancelled. Package installation, arbitrary Python payloads, `npx`, deployment,
+signing, and store submission are not available through this runner.
+
+Python and Node checks prefer Docker with network disabled only when the exact
+local images `python:3.12-local` and `node:22-local` already exist. Zade never
+pulls images. Without those images, the same narrow policy can use the host
+toolchain. Flutter, Gradle wrapper, ADB, emulator, and Playwright verification
+are host workflows. Playwright build evidence is read-only and permits only
+loopback URLs when private navigation is otherwise disabled.
+
+GitHub status and workflow evidence use the installed `gh` CLI. Every workflow
+dispatch or remote cancellation requires a fresh typed external-action
+authorization. The configured iOS workflow supplies hosted Xcode evidence; it
+does not grant release authority.
+
+OpenAI review is optional and independent of Anthropic. It is disabled by
+default, uses the Responses API with `store=false` and no hosted tools, and
+requires the optional SDK, `OPENAI_API_KEY`, current pricing, and its own Small
+lease. No provider can become another provider's fallback. Anthropic Managed
+Agents remain readiness-only and have no execution path.
+
 Cloud speech engines (`[voice]` Deepgram/ElevenLabs) and approved web-research
 fetches are external **data** tools under their own permission gates; they are
 not model inference and no llm policy authorizes them to carry prompts or
@@ -263,6 +305,28 @@ GET  /build/sessions/{session_id}
 POST /build/sessions/{session_id}/approve
 POST /build/sessions/{session_id}/deny
 POST /build/sessions/{session_id}/run
+POST /build/sessions/{session_id}/plan
+GET  /build/sessions/{session_id}/tasks
+POST /build/sessions/{session_id}/tasks
+POST /build/sessions/{session_id}/run-next
+POST /build/sessions/{session_id}/start
+POST /build/sessions/{session_id}/pause
+POST /build/sessions/{session_id}/resume
+POST /build/sessions/{session_id}/cancel
+GET  /build/runs/{run_id}
+POST /build/runs/{run_id}/cancel
+GET  /build/toolchains
+POST /build/sessions/{session_id}/verify
+GET  /build/sessions/{session_id}/github/status
+GET  /build/sessions/{session_id}/github/runs
+POST /build/sessions/{session_id}/github/dispatch
+GET  /build/sessions/{session_id}/review/status
+POST /build/sessions/{session_id}/review/prepare
+POST /build/sessions/{session_id}/review/approve
+POST /build/sessions/{session_id}/review/run
+GET  /build/calibration
+POST /build/sessions/{session_id}/calibration
+GET  /build/managed-agents/readiness
 GET  /trading-bot/status
 GET  /trading-bot/safe-ops-checks
 GET  /trading-bot/deep-thought-replacement

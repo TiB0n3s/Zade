@@ -12,6 +12,7 @@ from cofounder_kernel.command_runner import (
     CommandPolicyError,
     CommandRequest,
     GovernedCommandRunner,
+    coding_agent_command_policies,
 )
 
 
@@ -258,5 +259,44 @@ def test_request_timeout_cannot_exceed_policy_ceiling(tmp_path: Path) -> None:
                 profile_id=policy.id,
                 argv=("python", "-c", "print('ok')"),
                 timeout_seconds=6,
+            )
+        )
+
+
+def test_coding_agent_policies_allow_checks_but_not_install_or_payloads(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    policies = coding_agent_command_policies()
+    runner = GovernedCommandRunner(
+        policies=policies,
+        artifact_root=tmp_path / "artifacts",
+        docker_probe=lambda _image: False,
+    )
+
+    allowed = runner.preflight(
+        CommandRequest(
+            workspace=workspace,
+            profile_id="coding-agent:python",
+            argv=(sys.executable, "-m", "pytest", "-q"),
+        )
+    )
+    assert allowed.backend == "host"
+
+    with pytest.raises(CommandPolicyError, match="shape"):
+        runner.preflight(
+            CommandRequest(
+                workspace=workspace,
+                profile_id="coding-agent:python",
+                argv=(sys.executable, "-m", "pip", "install", "requests"),
+            )
+        )
+    with pytest.raises(CommandPolicyError, match="shape"):
+        runner.preflight(
+            CommandRequest(
+                workspace=workspace,
+                profile_id="coding-agent:python",
+                argv=(sys.executable, "-c", "print('no')"),
             )
         )

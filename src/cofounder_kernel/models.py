@@ -405,6 +405,57 @@ class BuildLeaseDenyRequest(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
+class BuildPlanRequest(BaseModel):
+    profile_id: str | None = Field(
+        default=None,
+        pattern="^(generic|python-saas|node-saas|flutter-mobile)$",
+    )
+
+
+class BuildTaskCreateRequest(BaseModel):
+    phase: str = Field(
+        pattern="^(discovery|requirements|architecture|planning|implementation|verification|review|release)$"
+    )
+    kind: str = Field(pattern="^(checkpoint|agent|review)$")
+    title: str = Field(min_length=1, max_length=300)
+    instructions: str = Field(default="", max_length=8000)
+    dependencies: list[int] = Field(default_factory=list, max_length=50)
+    acceptance: str = Field(default="", max_length=4000)
+    idempotency_key: str = Field(default="", max_length=200)
+    max_attempts: int = Field(default=1, ge=1, le=3)
+
+
+class BuildVerifyRequest(BaseModel):
+    profile_id: str | None = Field(
+        default=None,
+        pattern="^(generic|python-saas|node-saas|flutter-mobile)$",
+    )
+    browser_url: str = Field(default="", max_length=2000)
+    android_device: str = Field(default="", max_length=200)
+
+
+class GitHubWorkflowDispatchRequest(BaseModel):
+    workflow: str = Field(min_length=1, max_length=300)
+    ref: str = Field(default="", max_length=300)
+    inputs: dict[str, str] = Field(default_factory=dict)
+    typed_confirmation: str = Field(min_length=1, max_length=200)
+
+
+class GitHubRunCancelRequest(BaseModel):
+    typed_confirmation: str = Field(min_length=1, max_length=200)
+
+
+class OpenAIReviewRunRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=8000)
+    context: str = Field(default="", max_length=48000)
+    request_id: str = Field(default="", max_length=200)
+
+
+class BuildCalibrationRequest(BaseModel):
+    provider: str = Field(pattern="^(anthropic|openai)$")
+    outcome: str = Field(min_length=1, max_length=120)
+
+
 class ScreenCaptureRequest(BaseModel):
     snapshot: bool = False
 

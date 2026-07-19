@@ -28,7 +28,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import KernelConfig
-from .command_runner import CommandPolicyError, CommandRequest
+from .command_runner import (
+    CommandPolicyError,
+    CommandRequest,
+    normalize_coding_agent_command,
+)
 from .db import KernelDatabase
 from .inventory import ModelInventoryError, ModelInventoryService
 from .model_client import CodingModelClient, CodingModelError
@@ -65,7 +69,7 @@ MAX_VERIFY_TARGETS = 40
 # run tests and inspect a Python or Node workspace. npx stays OFF the list —
 # it executes arbitrary packages by design. Everything else is refused at the
 # execution boundary regardless of what the prompt or model claims.
-COMMAND_ALLOWLIST = ("python", "python3", "py", "pytest", "pip", "uv", "git", "npm", "node")
+COMMAND_ALLOWLIST = ("python", "python3", "py", "pytest", "uv", "git", "npm", "node")
 
 _INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md", "Claude.md", "claude.md", "README.md")
 _MAX_INSTRUCTION_CHARS = 4000
@@ -730,10 +734,8 @@ class CodingAgentService:
                 "Tool mechanics that matter: replace_in_file old_text must be one CONTIGUOUS "
                 "region copied exactly from a read_file result — to remove several separated "
                 "lines, make one replace call per line. A failed edit is not done: re-read the "
-                "file and retry differently. To delete a file, use run_command with python, e.g. "
-                '["python", "-c", "import os; os.remove(\'path/to/file\')"]. If a path is '
-                "blocked because a stray file sits where a directory should be, remove that file "
-                "the same way and continue."
+                "file and retry differently. Use delete_file only for a workspace file that the "
+                "task genuinely removes; directory deletion is not available."
             ),
             (
                 "When you are done, reply with plain text and no tool calls. Lead with the "
@@ -890,6 +892,19 @@ class CodingAgentService:
                     "required": ["path", "content"],
                 },
                 handler=lambda args: self._tool_write_file(root, args),
+                writes=True,
+            )
+        )
+        add(
+            AgentTool(
+                name="delete_file",
+                description="Delete one file inside the workspace. Directories are refused.",
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+                handler=lambda args: self._tool_delete_file(root, args),
                 writes=True,
             )
         )
@@ -1147,16 +1162,24 @@ class CodingAgentService:
         rel = str(path.relative_to(root)).replace("\\", "/")
         return {"ok": True, "path": rel, "_changed_file": True}
 
+    def _tool_delete_file(self, root: Path, args: dict[str, Any]) -> dict[str, Any]:
+        path = self._resolve_in_workspace(root, str(args.get("path") or ""))
+        if not path.is_file() and not path.is_symlink():
+            return {"ok": False, "error": f"not a file: {args.get('path')}"}
+        rel = str(path.relative_to(root)).replace("\\", "/")
+        path.unlink()
+        return {"ok": True, "path": rel, "deleted": True, "_changed_file": True}
+
     def _tool_run_command(self, root: Path, args: dict[str, Any]) -> dict[str, Any]:
         argv = args.get("argv")
         if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
             return {"ok": False, "error": "argv must be a non-empty array of strings"}
-        program = Path(argv[0]).name.lower()
-        program = program[:-4] if program.endswith(".exe") else program
-        if program not in COMMAND_ALLOWLIST:
+        try:
+            profile_id, resolved = normalize_coding_agent_command(tuple(argv))
+        except CommandPolicyError as exc:
             return {
                 "ok": False,
-                "error": f"program {argv[0]!r} is not allowlisted. Allowed: {', '.join(COMMAND_ALLOWLIST)}",
+                "error": str(exc),
                 "note": (
                     "This boundary is fixed for this run — do NOT ask the founder about it. "
                     "Use an allowlisted alternative, or skip this step, note the skip in "
@@ -1168,8 +1191,8 @@ class CodingAgentService:
                 outcome = self.command_runner.run(
                     CommandRequest(
                         workspace=root,
-                        profile_id="coding-agent",
-                        argv=tuple(argv),
+                        profile_id=profile_id,
+                        argv=resolved,
                         timeout_seconds=COMMAND_TIMEOUT_SECONDS,
                     )
                 )
@@ -1191,22 +1214,9 @@ class CodingAgentService:
         # Pin Python-family programs to the kernel's own interpreter so the run
         # sees the kernel venv (pytest included) instead of whatever bare
         # 'python' resolves to on PATH. git stays git.
-        resolved = list(argv)
-        if program in {"python", "python3", "py"}:
-            resolved[0] = sys.executable
-        elif program == "pytest":
-            resolved = [sys.executable, "-m", "pytest", *argv[1:]]
-        elif program == "pip":
-            resolved = [sys.executable, "-m", "pip", *argv[1:]]
-        elif program in {"npm", "node"}:
-            # On Windows npm ships as a .cmd shim CreateProcess cannot resolve
-            # from a bare name; a PATH lookup keeps this an argv exec (no shell).
-            located = shutil.which(resolved[0])
-            if located:
-                resolved[0] = located
         try:
             completed = subprocess.run(
-                resolved,
+                list(resolved),
                 cwd=str(root),
                 capture_output=True,
                 text=True,

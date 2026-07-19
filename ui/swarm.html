@@ -63,6 +63,13 @@
     .build-controls { display: grid; grid-template-columns: 150px minmax(220px, 1fr); gap: 8px; margin-top: 15px; }
     .build-controls input, .build-controls select { width: 100%; margin: 0; }
     .build-controls .wide { grid-column: 1 / -1; }
+    .build-tasks { border-top: 1px solid var(--z-line); margin-top: 14px; }
+    .build-task { display: grid; grid-template-columns: 94px minmax(180px, 1fr) 88px; gap: 10px; align-items: center; min-height: 42px; border-bottom: 1px solid var(--z-line); font-size: 12px; }
+    .build-task-phase { color: var(--z-faint); text-transform: uppercase; font-size: 10px; }
+    .build-task-title { color: var(--z-ink); overflow-wrap: anywhere; }
+    .build-task-status { text-align: right; color: var(--z-muted); }
+    .build-tools { margin: 10px 0; font-size: 11.5px; color: var(--z-muted); line-height: 1.6; }
+    .review-controls { border-top: 1px solid var(--z-line); margin-top: 18px; padding-top: 14px; }
     @media (max-width: 720px) {
       .page { padding: 30px 22px 72px; }
       .build-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
@@ -70,6 +77,8 @@
       .meter-row span:last-child { grid-column: 2; }
       .build-controls { grid-template-columns: 1fr; }
       .build-controls .wide { grid-column: auto; }
+      .build-task { grid-template-columns: 78px minmax(120px, 1fr); }
+      .build-task-status { grid-column: 2; text-align: left; }
     }
   </style>
   <link rel="stylesheet" href="zade-ui.css">
@@ -125,6 +134,8 @@
         <div class="section" id="buildSection" hidden>
           <div class="field-label">Current build envelope</div>
           <div id="buildSummary"></div>
+          <div class="build-tools" id="buildToolchains"></div>
+          <div class="build-tasks" id="buildTasks"></div>
           <div class="build-controls" id="buildControls">
             <select id="buildTier" aria-label="Build lease tier">
               <option value="small">Small</option>
@@ -136,8 +147,35 @@
             <div class="row wide">
               <button id="buildApproveBtn" class="ok">Approve lease</button>
               <button id="buildDenyBtn" class="bad">Deny</button>
-              <button id="buildRunBtn" class="secondary">Resume</button>
+              <button id="buildRunBtn" class="secondary">Run next</button>
+              <button id="buildStartBtn">Start</button>
+              <button id="buildPauseBtn" class="secondary">Pause</button>
+              <button id="buildResumeBtn" class="secondary">Resume</button>
+              <button id="buildCancelBtn" class="bad">Cancel</button>
             </div>
+            <select id="buildProfile" aria-label="Verification profile">
+              <option value="">Detected profile</option>
+              <option value="python-saas">Python SaaS</option>
+              <option value="node-saas">Node SaaS</option>
+              <option value="flutter-mobile">Flutter mobile</option>
+              <option value="generic">Generic</option>
+            </select>
+            <input id="buildBrowserUrl" placeholder="Local browser URL (optional)">
+            <div class="row wide">
+              <button id="buildVerifyBtn" class="secondary">Verify</button>
+              <button id="buildRefreshBtn" class="secondary">Refresh</button>
+            </div>
+          </div>
+          <div class="review-controls stack">
+            <div class="field-label">Independent review</div>
+            <div class="build-tools" id="buildReviewStatus"></div>
+            <textarea id="buildReviewPrompt" rows="2" placeholder="Review focus"></textarea>
+            <div class="row">
+              <button id="buildReviewPrepareBtn" class="secondary">Prepare OpenAI review</button>
+              <button id="buildReviewApproveBtn" class="ok">Approve review lease</button>
+              <button id="buildReviewRunBtn">Run review</button>
+            </div>
+            <div class="result-box" id="buildReviewResult" hidden></div>
           </div>
           <div class="note" id="buildNote"></div>
         </div>
@@ -219,6 +257,7 @@
         if (recent.length) {
           currentBuild = recent[0];
           renderBuild(currentBuild);
+          Promise.allSettled([loadBuildToolchains(), loadBuildReviewStatus()]);
         } else {
           currentBuild = null;
           byId('buildSection').hidden = true;
@@ -275,6 +314,13 @@
         <div class="build-evidence">${esc(floors)}</div>
         ${meters.map(([label, authorized, remaining, detail]) => `<div class="meter-row"><span>${esc(label)}</span><progress max="100" value="${percentUsed(authorized, remaining)}"></progress><span>${esc(detail)}</span></div>`).join('')}
       `;
+      const tasks = build.tasks || [];
+      byId('buildTasks').innerHTML = tasks.length ? tasks.map((task) => `
+        <div class="build-task">
+          <div class="build-task-phase">${esc(task.phase)}</div>
+          <div class="build-task-title">${esc(task.title)}</div>
+          <div class="build-task-status">${esc(task.status)}</div>
+        </div>`).join('') : '<div class="build-tools">No lifecycle tasks planned.</div>';
       byId('buildSection').hidden = false;
       byId('buildTier').value = tier;
       const pendingInitial = Boolean(build.approval_request_id) && !lease;
@@ -282,12 +328,42 @@
       byId('buildApproveBtn').hidden = !(pendingInitial || pendingUpgrade);
       byId('buildApproveBtn').textContent = pendingUpgrade ? 'Approve upgrade' : 'Approve lease';
       byId('buildDenyBtn').hidden = !pendingInitial;
-      byId('buildRunBtn').hidden = !lease || session.phase === 'complete';
+      const terminal = ['complete', 'cancelled'].includes(session.status) || session.phase === 'complete';
+      const workerRunning = build.worker && build.worker.worker_status === 'running';
+      byId('buildRunBtn').hidden = terminal || session.status === 'paused' || workerRunning;
+      byId('buildStartBtn').hidden = terminal || session.status === 'paused' || workerRunning;
+      byId('buildPauseBtn').hidden = session.status !== 'active';
+      byId('buildResumeBtn').hidden = session.status !== 'paused';
+      byId('buildCancelBtn').hidden = terminal;
     }
     async function loadBuild(sessionId) {
       currentBuild = await api(`/build/sessions/${sessionId}`);
       renderBuild(currentBuild);
+      await Promise.allSettled([loadBuildToolchains(), loadBuildReviewStatus()]);
       return currentBuild;
+    }
+    async function loadBuildToolchains() {
+      if (!currentBuild) return;
+      try {
+        const data = await api('/build/toolchains?workspace=' + encodeURIComponent(currentBuild.session.workspace));
+        const detected = (data.profiles || []).find((profile) => profile.detected);
+        byId('buildToolchains').textContent = detected
+          ? `${detected.label}: ${detected.ready ? 'ready' : (detected.blockers || []).join(' · ')}`
+          : 'Toolchain profile unavailable.';
+      } catch (err) { byId('buildToolchains').textContent = 'Toolchain inventory unavailable.'; }
+    }
+    async function loadBuildReviewStatus() {
+      if (!currentBuild) return;
+      try {
+        const data = await api(`/build/sessions/${currentBuild.session.id}/review/status`);
+        const blockers = data.blockers || [];
+        byId('buildReviewStatus').textContent = data.lease
+          ? `${data.model} · ${data.lease.state} ${data.lease.tier} lease`
+          : blockers.length ? blockers.join(' · ') : `${data.model} · ready for lease approval`;
+        byId('buildReviewApproveBtn').hidden = Boolean(data.lease) || blockers.length > 0;
+        byId('buildReviewRunBtn').hidden = !data.lease;
+        byId('buildReviewPrepareBtn').hidden = Boolean(data.lease) || blockers.length > 0;
+      } catch (err) { byId('buildReviewStatus').textContent = 'Review status unavailable.'; }
     }
     async function approveBuild() {
       if (!currentBuild) return;
@@ -316,10 +392,63 @@
       if (!currentBuild) return;
       const note = byId('buildNote'); note.textContent = ''; note.className = 'note';
       try {
-        await api(`/build/sessions/${currentBuild.session.id}/run`, { method: 'POST', body: '{}' });
+        await api(`/build/sessions/${currentBuild.session.id}/run-next`, { method: 'POST', body: '{}' });
         await loadBuild(currentBuild.session.id);
         note.textContent = 'Build checkpoint updated.'; note.className = 'note good';
         await loadDelStatus();
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+    async function controlBuild(action) {
+      if (!currentBuild) return;
+      const note = byId('buildNote'); note.textContent = ''; note.className = 'note';
+      try {
+        await api(`/build/sessions/${currentBuild.session.id}/${action}`, { method: 'POST', body: '{}' });
+        await loadBuild(currentBuild.session.id);
+        note.textContent = `Build ${action} recorded.`; note.className = 'note good';
+        if (action === 'start' || action === 'resume') setTimeout(() => loadBuild(currentBuild.session.id), 900);
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+    async function verifyBuild() {
+      if (!currentBuild) return;
+      const note = byId('buildNote'); note.textContent = ''; note.className = 'note';
+      const body = { browser_url: byId('buildBrowserUrl').value.trim() };
+      if (byId('buildProfile').value) body.profile_id = byId('buildProfile').value;
+      try {
+        const result = await api(`/build/sessions/${currentBuild.session.id}/verify`, { method: 'POST', body: JSON.stringify(body) });
+        await loadBuild(currentBuild.session.id);
+        note.textContent = result.ok ? 'Verification passed.' : `Verification ${result.blocked ? 'blocked' : 'failed'}.`;
+        note.className = result.ok ? 'note good' : 'note err';
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+    async function prepareReview() {
+      if (!currentBuild) return;
+      const note = byId('buildNote');
+      try {
+        await api(`/build/sessions/${currentBuild.session.id}/review/prepare`, { method: 'POST', body: '{}' });
+        await loadBuildReviewStatus();
+        note.textContent = 'OpenAI review approval prepared.'; note.className = 'note good';
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+    async function approveReview() {
+      if (!currentBuild) return;
+      const note = byId('buildNote');
+      try {
+        await api(`/build/sessions/${currentBuild.session.id}/review/approve`, { method: 'POST', body: JSON.stringify({ typed_confirmation: byId('buildPhrase').value, tier: 'small' }) });
+        byId('buildPhrase').value = '';
+        await loadBuildReviewStatus();
+        note.textContent = 'OpenAI review lease approved.'; note.className = 'note good';
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+    async function runReview() {
+      if (!currentBuild) return;
+      const prompt = byId('buildReviewPrompt').value.trim();
+      const note = byId('buildNote');
+      if (!prompt) { note.textContent = 'Enter a review focus.'; note.className = 'note err'; return; }
+      try {
+        const result = await api(`/build/sessions/${currentBuild.session.id}/review/run`, { method: 'POST', body: JSON.stringify({ prompt, context: JSON.stringify({ assessment: currentBuild.assessment, tasks: currentBuild.tasks, artifacts: currentBuild.artifacts }).slice(0, 48000) }) });
+        const box = byId('buildReviewResult'); box.hidden = false;
+        box.textContent = [result.summary, ...(result.findings || []), result.recommendation].filter(Boolean).join('\n\n');
+        note.textContent = 'Independent review completed.'; note.className = 'note good';
       } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
     }
     async function previewBrief() {
@@ -376,6 +505,15 @@
     byId('buildApproveBtn').addEventListener('click', () => withBusy(byId('buildApproveBtn'), 'Approving…', approveBuild));
     byId('buildDenyBtn').addEventListener('click', () => withBusy(byId('buildDenyBtn'), 'Denying…', denyBuild));
     byId('buildRunBtn').addEventListener('click', () => withBusy(byId('buildRunBtn'), 'Running…', resumeBuild));
+    byId('buildStartBtn').addEventListener('click', () => withBusy(byId('buildStartBtn'), 'Starting…', () => controlBuild('start')));
+    byId('buildPauseBtn').addEventListener('click', () => withBusy(byId('buildPauseBtn'), 'Pausing…', () => controlBuild('pause')));
+    byId('buildResumeBtn').addEventListener('click', () => withBusy(byId('buildResumeBtn'), 'Resuming…', () => controlBuild('resume')));
+    byId('buildCancelBtn').addEventListener('click', () => withBusy(byId('buildCancelBtn'), 'Cancelling…', () => controlBuild('cancel')));
+    byId('buildVerifyBtn').addEventListener('click', () => withBusy(byId('buildVerifyBtn'), 'Verifying…', verifyBuild));
+    byId('buildRefreshBtn').addEventListener('click', () => loadBuild(currentBuild.session.id));
+    byId('buildReviewPrepareBtn').addEventListener('click', () => withBusy(byId('buildReviewPrepareBtn'), 'Preparing…', prepareReview));
+    byId('buildReviewApproveBtn').addEventListener('click', () => withBusy(byId('buildReviewApproveBtn'), 'Approving…', approveReview));
+    byId('buildReviewRunBtn').addEventListener('click', () => withBusy(byId('buildReviewRunBtn'), 'Reviewing…', runReview));
 
     loadRoles();
     activate(location.hash.replace('#', ''));

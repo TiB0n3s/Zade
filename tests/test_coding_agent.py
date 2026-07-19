@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
@@ -703,15 +704,19 @@ def test_no_verify_always_keeps_review_runs_check_free(
 
 
 def test_workspace_diff_catches_command_created_files(tmp_path: Path) -> None:
-    """Live gap: npm installs and python one-liners mutate the workspace
+    """Live gap: approved commands can mutate the workspace
     invisibly to write-tool tracking ("Changed 1 file(s)" undercounts). The
     kernel's before/after snapshot reports the REAL change set."""
     ws = tmp_path / "bare-ws"
     ws.mkdir(parents=True)
+    (ws / "test_make.py").write_text(
+        "from pathlib import Path\n\ndef test_make():\n    Path('made_by_command.txt').write_text('x')\n",
+        encoding="utf-8",
+    )
     script = [
         {"tool_calls": [_call(
             "run_command",
-            argv=["python", "-c", "open('made_by_command.txt', 'w').write('x')"],
+            argv=["python", "-m", "pytest", "test_make.py", "-q"],
         )]},
         {"content": "Created the file via command."},
     ]
@@ -729,10 +734,14 @@ def test_workspace_diff_catches_command_deleted_files(tmp_path: Path) -> None:
     ws = tmp_path / "bare-ws"
     ws.mkdir(parents=True)
     (ws / "stray.txt").write_text("junk", encoding="utf-8")
+    (ws / "test_delete.py").write_text(
+        "from pathlib import Path\n\ndef test_delete():\n    Path('stray.txt').unlink(missing_ok=True)\n",
+        encoding="utf-8",
+    )
     script = [
         {"tool_calls": [_call(
             "run_command",
-            argv=["python", "-c", "import os; os.remove('stray.txt')"],
+            argv=["python", "-m", "pytest", "test_delete.py", "-q"],
         )]},
         {"content": "Deleted the stray file."},
     ]
@@ -840,8 +849,33 @@ def test_injected_governed_runner_owns_command_execution(
         "stderr": "",
     }
     assert runner.requests[0].workspace == fixture_repo
-    assert runner.requests[0].profile_id == "coding-agent"
-    assert runner.requests[0].argv == ("python", "-m", "pytest", "-q")
+    assert runner.requests[0].profile_id == "coding-agent:python"
+    assert runner.requests[0].argv[0] == sys.executable
+    assert runner.requests[0].argv[1:] == ("-m", "pytest", "-q")
+
+
+def test_coding_agent_refuses_package_install_and_python_payloads(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    cfg = _config(tmp_path, fixture_repo)
+    svc = CodingAgentService(
+        config=cfg,
+        db=_db(tmp_path),
+        ollama=ScriptedOllama(cfg.ollama, []),
+        inventory=_StubInventory(),
+    )
+
+    pip_result = svc._tool_run_command(
+        fixture_repo, {"argv": ["pip", "install", "requests"]}
+    )
+    payload_result = svc._tool_run_command(
+        fixture_repo, {"argv": ["python", "-c", "print('unbounded')"]}
+    )
+
+    assert pip_result["ok"] is False
+    assert "allowlisted" in pip_result["error"]
+    assert payload_result["ok"] is False
+    assert "approved test and verification shapes" in payload_result["error"]
 
 
 # ask_founder: the queue-only-when-unsure channel --------------------------------

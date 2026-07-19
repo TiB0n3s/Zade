@@ -156,6 +156,9 @@ workspace_root = "C:\\Users\\you\\ZadeWorkspace"
 enabled = true
 warning_percent = 80
 provider_overhead_tokens = 1024
+max_workers = 2
+# GitHub Actions workflow used as the Xcode/iOS release-evidence lane.
+ios_workflow = "ios.yml"
 
 [build.tiers.small]
 dollar_micro = 1000000
@@ -187,4 +190,25 @@ cache_write_5m_per_mtok = "6.25"
 cache_write_1h_per_mtok = "10"
 cache_read_per_mtok = "0.5"
 output_per_mtok = "25"
+review_after = "2026-08-31"
+
+[openai_review]
+# Optional independent advisory review. No fallback, no tools, store=false.
+# Requires the "review" package extra, OPENAI_API_KEY, current pricing, and a
+# separate typed provider lease. Keep disabled unless deliberately configured.
+enabled = false
+base_url = "https://api.openai.com/v1"
+model = "gpt-5.6-terra"
+api_key_env = "OPENAI_API_KEY"
+max_output_tokens = 4000
+timeout_seconds = 120
+reasoning_effort = "medium"
+
+[openai_review.pricing]
+model = "gpt-5.6-terra"
+base_input_per_mtok = "2.5"
+cache_write_5m_per_mtok = "2.5"
+cache_write_1h_per_mtok = "2.5"
+cache_read_per_mtok = "2.5"
+output_per_mtok = "15"
 review_after = "2026-08-31"

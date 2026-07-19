@@ -82,6 +82,25 @@ standing_grants = ["public_derived:public_web", "reply_text:telegram"]
 # founder_state remains FORBIDDEN by the egress matrix regardless of this flag.
 enabled = true
 
+[build]
+# Durable lifecycle workers. Commands remain profile-generated, argv-only,
+# workspace-confined, credential-stripped, time-bounded, and audited. Python
+# and Node checks use Docker only when the exact pre-approved local image exists;
+# Zade never pulls an image. Flutter and Android checks use narrow host policies.
+enabled = true
+max_workers = 2
+ios_workflow = "ios.yml"
+
+[openai_review]
+# Optional independent review only. Disabled until the optional SDK and
+# OPENAI_API_KEY are installed and a separate typed provider lease is approved.
+# Requests use store=false and no hosted tools; OpenAI is never a fallback.
+enabled = false
+model = "gpt-5.6-terra"
+api_key_env = "OPENAI_API_KEY"
+max_output_tokens = 4000
+reasoning_effort = "medium"
+
 [openclaw]
 # Channel-gateway bridge — RETIRED for Telegram (2026-07-18). OpenClaw turned out
 # to be a full assistant that intercepts inbound messages with its own agent

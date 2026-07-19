@@ -211,3 +211,13 @@ def test_wait_for_run_times_out_without_cancelling_remote_run(tmp_path: Path) ->
         client.wait_for_run(42, timeout_seconds=1, poll_seconds=0.01)
 
     assert all("cancel" not in request.argv for request in runner.requests)
+
+
+def test_workflow_dispatch_refuses_credential_inputs(tmp_path: Path) -> None:
+    client, runner = make_client(tmp_path, [])
+    client.authorize_write = lambda _request: True
+
+    with pytest.raises(ValueError, match="credentials"):
+        client.dispatch_workflow("ios.yml", inputs={"api_token": "secret"})
+
+    assert runner.requests == []

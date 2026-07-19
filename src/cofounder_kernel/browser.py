@@ -213,7 +213,7 @@ class BrowserService:
         """Run a read-only evidence flow locally without an external-action approval."""
         if not self.config.browser.enabled:
             raise ValueError("Browser automation is disabled (browser.enabled = false).")
-        normalized = self._validate_steps(steps)
+        normalized = self._validate_steps(steps, allow_loopback=True)
         if self._is_interactive(normalized):
             raise ValueError("Build verification browser flows must be read-only.")
         default_trace = (
@@ -246,7 +246,9 @@ class BrowserService:
         return flow | {"screenshots": screenshots, "trace": str(resolved_trace)}
 
     # ---- validation ----
-    def _validate_steps(self, steps: Any) -> list[dict[str, Any]]:
+    def _validate_steps(
+        self, steps: Any, *, allow_loopback: bool = False
+    ) -> list[dict[str, Any]]:
         if not isinstance(steps, list) or not steps:
             raise ValueError("Browser flow requires a non-empty list of steps.")
         if len(steps) > self.config.browser.max_steps:
@@ -260,15 +262,30 @@ class BrowserService:
                 raise ValueError(
                     f"Step {index} has unknown type {step_type!r}. Allowed: {', '.join(sorted(STEP_TYPES))}."
                 )
-            normalized.append(self._validate_step(index, step_type, raw))
+            normalized.append(
+                self._validate_step(
+                    index, step_type, raw, allow_loopback=allow_loopback
+                )
+            )
         if normalized[0]["type"] != "navigate":
             raise ValueError("A browser flow must start with a 'navigate' step.")
         return normalized
 
-    def _validate_step(self, index: int, step_type: str, raw: dict[str, Any]) -> dict[str, Any]:
+    def _validate_step(
+        self,
+        index: int,
+        step_type: str,
+        raw: dict[str, Any],
+        *,
+        allow_loopback: bool = False,
+    ) -> dict[str, Any]:
         step: dict[str, Any] = {"type": step_type}
         if step_type == "navigate":
-            step["url"] = self._validate_navigation(str(raw.get("url", "")).strip(), index)
+            step["url"] = self._validate_navigation(
+                str(raw.get("url", "")).strip(),
+                index,
+                allow_loopback=allow_loopback,
+            )
         elif step_type == "wait":
             selector = str(raw.get("selector", "")).strip()
             ms = raw.get("ms")
@@ -313,7 +330,9 @@ class BrowserService:
             step["full_page"] = bool(raw.get("full_page", False))
         return step
 
-    def _validate_navigation(self, url: str, index: int) -> str:
+    def _validate_navigation(
+        self, url: str, index: int, *, allow_loopback: bool = False
+    ) -> str:
         if not url:
             raise ValueError(f"Step {index} 'navigate' needs a url.")
         parsed = urllib.parse.urlparse(url)
@@ -323,7 +342,12 @@ class BrowserService:
             raise ValueError(f"Step {index} navigate url must be http/https, got {scheme or 'none'!r}.")
         if not host:
             raise ValueError(f"Step {index} navigate url has no host.")
-        if not self.config.browser.allow_private_navigation and netguard.is_private_host(host):
+        loopback = host in {"localhost", "127.0.0.1", "::1"}
+        if (
+            not self.config.browser.allow_private_navigation
+            and not (allow_loopback and loopback)
+            and netguard.is_private_host(host)
+        ):
             raise ValueError(
                 f"Step {index} navigate url {host!r} resolves to a private/internal address; "
                 "set browser.allow_private_navigation to permit it."

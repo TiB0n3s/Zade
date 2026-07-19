@@ -66,6 +66,8 @@ class OpenAIReviewClient:
             blockers.append(f"missing_{self.config.api_key_env}")
         if not self.sdk_available():
             blockers.append("openai_sdk_unavailable")
+        if not self.config.pricing.is_current():
+            blockers.append("openai_pricing_review_required")
         try:
             self._validate_host()
         except OpenAIReviewUnavailable as exc:
@@ -170,6 +172,8 @@ class OpenAIReviewClient:
             raise OpenAIReviewUnavailable(
                 "OpenAI review requires the optional OpenAI Python SDK"
             )
+        if not self.config.pricing.is_current():
+            raise OpenAIReviewUnavailable("OpenAI review pricing requires founder review")
 
     def _validate_host(self) -> None:
         parsed = urlparse(self.config.base_url)

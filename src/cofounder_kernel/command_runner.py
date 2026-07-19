@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Callable, Literal, Mapping
@@ -136,6 +137,100 @@ class RunningCommand:
 
     def cancel(self) -> bool:
         return self._runner.cancel(self.run_id)
+
+
+_CODING_COMMAND_PREFIXES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "python": (
+        ("--version",),
+        ("-m", "pytest"),
+        ("-m", "unittest"),
+        ("-m", "py_compile"),
+        ("-m", "compileall"),
+        ("-m", "json.tool"),
+    ),
+    "uv": (("--version",), ("run", "pytest")),
+    "git": (("status",), ("diff",), ("rev-parse",), ("log",)),
+    "npm": (
+        ("--version",),
+        ("test",),
+        ("run", "test"),
+        ("run", "typecheck"),
+        ("run", "lint"),
+        ("run", "build"),
+        ("exec", "--no", "--", "tsc", "--noEmit"),
+    ),
+    "node": (("--version",), ("--test",), ("--check",)),
+}
+
+
+def normalize_coding_agent_command(argv: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+    """Map a coding-agent command to one narrow runner profile and executable."""
+    if not argv or not all(isinstance(item, str) and item for item in argv):
+        raise CommandPolicyError("argv must contain non-empty strings")
+    name = Path(argv[0]).name.casefold()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    tail = tuple(argv[1:])
+    if name in {"python", "python3", "py", "pytest"}:
+        profile = "python"
+        normalized = (
+            (sys.executable, "-m", "pytest", *tail)
+            if name == "pytest"
+            else (sys.executable, *tail)
+        )
+    elif name in {"uv", "git", "npm", "node"}:
+        profile = name
+        located = shutil.which(argv[0]) or shutil.which(name)
+        normalized = (located or argv[0], *tail)
+    else:
+        allowed = ", ".join(sorted(_CODING_COMMAND_PREFIXES))
+        raise CommandPolicyError(
+            f"program {argv[0]!r} is not allowlisted. Allowed: {allowed}"
+        )
+    normalized_tail = tuple(normalized[1:])
+    if not any(
+        normalized_tail[: len(prefix)] == prefix
+        for prefix in _CODING_COMMAND_PREFIXES[profile]
+    ):
+        raise CommandPolicyError(
+            "command is outside the approved test and verification shapes"
+        )
+    return f"coding-agent:{profile}", tuple(str(item) for item in normalized)
+
+
+def coding_agent_command_policies() -> dict[str, CommandPolicy]:
+    """Policies for non-installing coding checks and repository inspection."""
+    programs: dict[str, tuple[str, ...]] = {
+        "python": (sys.executable,),
+        "uv": tuple(filter(None, (shutil.which("uv"), "uv"))),
+        "git": tuple(filter(None, (shutil.which("git"), "git"))),
+        "npm": tuple(filter(None, (shutil.which("npm"), "npm", "npm.cmd"))),
+        "node": tuple(filter(None, (shutil.which("node"), "node"))),
+    }
+    aliases = {
+        "python": ("python", "python3", "py", "python.exe", Path(sys.executable).name),
+        "uv": ("uv", "uv.exe"),
+        "git": ("git", "git.exe"),
+        "npm": ("npm", "npm.cmd"),
+        "node": ("node", "node.exe"),
+    }
+    images = {"python": "python:3.12-local", "npm": "node:22-local", "node": "node:22-local"}
+    return {
+        f"coding-agent:{program}": CommandPolicy(
+            id=f"coding-agent:{program}",
+            executable_candidates=candidates,
+            executable_aliases=aliases[program],
+            allowed_prefixes=_CODING_COMMAND_PREFIXES[program],
+            denied_tokens=("install", "publish", "deploy", "release", "upload"),
+            max_timeout_seconds=420,
+            docker_image=images.get(program),
+            container_executable=("python" if program == "python" else program),
+            host_allowed=True,
+        )
+        for program, candidates in programs.items()
+    }
 
 
 class GovernedCommandRunner:
@@ -302,6 +397,17 @@ class GovernedCommandRunner:
             active.cancelled = True
             _terminate_process(active.process)
         return True
+
+    def cancel_workspace(self, workspace: Path | str) -> int:
+        """Cancel active commands rooted in one workspace."""
+        root = Path(workspace).expanduser().resolve()
+        with self._lock:
+            run_ids = [
+                run_id
+                for run_id, active in self._active.items()
+                if active.preflight.workspace == root
+            ]
+        return sum(1 for run_id in run_ids if self.cancel(run_id))
 
     def _wait(self, run_id: str, *, timeout_seconds: float | None = None) -> CommandResult:
         with self._lock:

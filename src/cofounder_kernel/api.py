@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import atexit
+from contextlib import asynccontextmanager
+from dataclasses import asdict
 import hmac
 import json
 import logging
@@ -9,6 +11,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,10 +39,15 @@ from .anthropic_client import (
     AnthropicPolicyError,
 )
 from .build_assessment import BuildAssessmentService
-from .build_budget import BuildBudgetService
+from .build_budget import BuildBudgetExceeded, BuildBudgetService
+from .build_calibration import BuildCalibrationService, ManagedAgentsReadinessService
+from .build_orchestrator import BuildOrchestrator, BuildPlanner
 from .build_routing import BuildRouter
 from .build_service import BuildService
 from .build_store import BuildStore
+from .build_types import BuildTaskKind, BuildTier
+from .build_verification import BuildVerificationService
+from .build_workers import BuildExecutionManager
 from .channel_auth import ChannelAuth, ChannelAuthError, parse_bind_command
 from .openclaw_bridge import InboundMessage, OpenClawBridge, OpenClawBridgeError
 from .telegram_adapter import InboundTelegram, TelegramAdapter, TelegramError
@@ -51,8 +59,17 @@ from .research import ResearchService
 from .roles import RolePassService
 from .delegation import DelegationService
 from .coding_agent import CodingAgentService
-from .egress import EgressPolicy
+from .command_runner import GovernedCommandRunner, coding_agent_command_policies
+from .egress import (
+    DataClass,
+    EgressPolicy,
+    EgressRequest,
+    authorize_build_egress,
+)
+from .github_ci import GitHubAuthorizationRequest, GitHubCIClient, GitHubCIError
 from .inventory import ModelInventoryService
+from .openai_review import OpenAIReviewClient, OpenAIReviewUnavailable
+from .toolchain_profiles import ToolchainRegistry
 from .screen import ScreenService
 from .models import (
     ActionPlanCreate,
@@ -78,8 +95,15 @@ from .models import (
     BackupRetentionRequest,
     BrowserRunRequest,
     BuildAssessRequest,
+    BuildCalibrationRequest,
     BuildLeaseApproveRequest,
     BuildLeaseDenyRequest,
+    BuildPlanRequest,
+    BuildTaskCreateRequest,
+    BuildVerifyRequest,
+    GitHubRunCancelRequest,
+    GitHubWorkflowDispatchRequest,
+    OpenAIReviewRunRequest,
     ResearchDaydreamRequest,
     ResearchRunRequest,
     RolePassRequest,
@@ -303,8 +327,30 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     # Local model inventory + native coding agent: the default delegated-build
     # engine. Everything model-shaped runs on the loopback Ollama client above.
     inventory = ModelInventoryService(config=cfg, ollama=ollama)
+
+    def command_audit(payload: dict[str, object]) -> None:
+        db.audit(
+            actor="build.command_runner",
+            action=f"build.command.{payload.get('event') or 'event'}",
+            target=str(payload.get("workspace") or ""),
+            permission_tier="L2_FILE_WRITE",
+            status="ok" if payload.get("ok", True) else "failed",
+            details=dict(payload),
+        )
+
+    command_runner = GovernedCommandRunner(
+        policies=coding_agent_command_policies(),
+        artifact_root=cfg.paths.data_dir / "build-command-runs",
+        audit=command_audit,
+    )
+    toolchains = ToolchainRegistry()
     coding_agent = CodingAgentService(
-        config=cfg, db=db, ollama=ollama, inventory=inventory, notifier=bus
+        config=cfg,
+        db=db,
+        ollama=ollama,
+        inventory=inventory,
+        notifier=bus,
+        command_runner=command_runner,
     )
     build_store = BuildStore(db)
     build_budget = BuildBudgetService(
@@ -340,6 +386,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             model_client=model_client,
             inventory=inventory,
             notifier=bus,
+            command_runner=command_runner,
         )
 
     build_service = BuildService(
@@ -354,6 +401,108 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         egress_policy=EgressPolicy.from_config(cfg),
         typed_confirmation_phrase=authority.summary()["typed_confirmation_phrase"],
     )
+
+    def browser_capture(*, url: str, workspace: Path) -> dict[str, Any]:
+        del workspace
+        evidence_dir = (
+            cfg.paths.hot_root
+            / "Zade"
+            / "build-browser-evidence"
+            / uuid4().hex
+        )
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        return browser.run_verification_flow(
+            steps=[
+                {"type": "navigate", "url": url},
+                {"type": "read", "selector": "body"},
+                {
+                    "type": "screenshot",
+                    "path": str(evidence_dir / "page.png"),
+                    "full_page": True,
+                },
+            ],
+            trace_path=str(evidence_dir / "trace.zip"),
+        )
+
+    verification = BuildVerificationService(
+        toolchains=toolchains,
+        runner=command_runner,
+        store=build_store,
+        browser_capture=browser_capture,
+    )
+
+    def verification_executor(task: Any, assessment: Any) -> dict[str, Any]:
+        current = build_store.get_task(task.id)
+        report = verification.verify(
+            assessment.workspace,
+            session_id=task.session_id,
+            task_id=task.id,
+            run_id=current.active_run_id if current else None,
+            profile_id=str(task.payload.get("toolchain_profile") or "") or None,
+            browser_url=str(task.payload.get("browser_url") or ""),
+            android_device=str(task.payload.get("android_device") or ""),
+        )
+        return asdict(report) | {
+            "status": "passed" if report.ok else "blocked" if report.blocked else "failed"
+        }
+
+    def github_ci_factory(
+        workspace: str | Path,
+        authorize_write: Any | None = None,
+    ) -> GitHubCIClient:
+        return GitHubCIClient(
+            runner=command_runner,
+            workspace=workspace,
+            authorize_write=authorize_write,
+        )
+
+    def github_executor(task: Any, assessment: Any) -> dict[str, Any]:
+        return github_ci_factory(assessment.workspace).execute_build_task(task, assessment)
+
+    planner = BuildPlanner(
+        store=build_store,
+        toolchains=toolchains,
+        ios_workflow=cfg.build.ios_workflow,
+    )
+
+    def cancel_build_commands(session_id: int) -> None:
+        session = build_store.get_session(session_id)
+        if session is not None:
+            command_runner.cancel_workspace(session.workspace)
+
+    orchestrator = BuildOrchestrator(
+        store=build_store,
+        planner=planner,
+        router=build_router,
+        local_agent=coding_agent,
+        cloud_executor=build_service.execute_cloud_task,
+        verification_executor=verification_executor,
+        github_executor=github_executor,
+        cancellation_callback=cancel_build_commands,
+    )
+    execution_manager = BuildExecutionManager(
+        store=build_store,
+        orchestrator=orchestrator,
+        max_workers=cfg.build.max_workers,
+    )
+    build_service.configure_orchestration(
+        orchestrator=orchestrator,
+        execution_manager=execution_manager,
+    )
+    openai_budget = BuildBudgetService(
+        build_store,
+        cfg.openai_review.pricing.snapshot(),
+        warning_percent=cfg.build.warning_percent,
+    )
+    calibration = BuildCalibrationService(build_store)
+    managed_agents = ManagedAgentsReadinessService(build_store)
+
+    def openai_review_client(authorize_egress: Any) -> OpenAIReviewClient:
+        return OpenAIReviewClient(
+            config=cfg.openai_review,
+            budget=openai_budget,
+            authorize_egress=authorize_egress,
+        )
     delegation = DelegationService(
         config=cfg,
         db=db,
@@ -407,8 +556,21 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             conversations.sweep_abandoned()
         except Exception:
             pass
+        try:
+            execution_manager.recover()
+        except Exception:
+            log.exception("Durable build recovery failed during startup")
 
-    app = FastAPI(title=f"{cfg.identity.name} Local AI Co-founder Kernel", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        execution_manager.shutdown(wait=False)
+
+    app = FastAPI(
+        title=f"{cfg.identity.name} Local AI Co-founder Kernel",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
     app.mount("/ui", StaticFiles(directory=UI_DIR, html=True), name="ui")
     app.state.config = cfg
     app.state.local_token = local_token
@@ -439,6 +601,16 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     app.state.build_store = build_store
     app.state.build_budget = build_budget
     app.state.build_router = build_router
+    app.state.command_runner = command_runner
+    app.state.toolchains = toolchains
+    app.state.build_verification = verification
+    app.state.build_orchestrator = orchestrator
+    app.state.build_execution_manager = execution_manager
+    app.state.github_ci_factory = github_ci_factory
+    app.state.openai_budget = openai_budget
+    app.state.openai_review_client = openai_review_client
+    app.state.build_calibration = calibration
+    app.state.managed_agents = managed_agents
     app.state.anthropic_build_transport = anthropic_build_transport
     app.state.screen = screen
     app.state.surfacing = surfacing
@@ -1176,6 +1348,53 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         require_build_session(session_id)
         return build_service.status(session_id)
 
+    @app.post("/build/sessions/{session_id}/plan")
+    def build_session_plan(
+        session_id: int, payload: BuildPlanRequest | None = None
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        request = payload or BuildPlanRequest()
+        try:
+            orchestrator.ensure_plan(session_id, profile_id=request.profile_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return build_service.status(session_id)
+
+    @app.get("/build/sessions/{session_id}/tasks")
+    def build_session_tasks(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        status = build_service.status(session_id)
+        return {
+            "session_id": session_id,
+            "tasks": status["tasks"],
+            "runs": status["task_runs"],
+            "artifacts": status["artifacts"],
+        }
+
+    @app.post("/build/sessions/{session_id}/tasks")
+    def build_session_task_create(
+        session_id: int, payload: BuildTaskCreateRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            task = build_store.create_task(
+                session_id,
+                phase=payload.phase,
+                kind=BuildTaskKind(payload.kind),
+                title=payload.title,
+                payload={
+                    "route": "local",
+                    "instructions": payload.instructions,
+                },
+                dependencies=tuple(payload.dependencies),
+                acceptance={"criteria": payload.acceptance},
+                idempotency_key=payload.idempotency_key,
+                max_attempts=payload.max_attempts,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"task": asdict(task)}
+
     @app.post("/build/sessions/{session_id}/approve")
     def build_session_approve(
         session_id: int, payload: BuildLeaseApproveRequest
@@ -1221,6 +1440,318 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         _raise_build_provider_error(result)
         return result
+
+    @app.post("/build/sessions/{session_id}/run-next")
+    def build_session_run_next(session_id: int) -> dict[str, Any]:
+        return build_session_run(session_id)
+
+    @app.post("/build/sessions/{session_id}/start")
+    def build_session_start(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            return build_service.start(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/build/sessions/{session_id}/pause")
+    def build_session_pause(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            return build_service.pause(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/build/sessions/{session_id}/resume")
+    def build_session_resume(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            return build_service.resume(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/build/sessions/{session_id}/cancel")
+    def build_session_cancel(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            return build_service.cancel(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/build/runs/{run_id}")
+    def build_run_status(run_id: int) -> dict[str, Any]:
+        run = build_store.get_task_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Build run not found: {run_id}")
+        return {"run": asdict(run)}
+
+    @app.post("/build/runs/{run_id}/cancel")
+    def build_run_cancel(run_id: int) -> dict[str, Any]:
+        run = build_store.get_task_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Build run not found: {run_id}")
+        try:
+            return build_service.cancel(run.session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/build/toolchains")
+    def build_toolchains(workspace: str) -> dict[str, object]:
+        try:
+            return toolchains.inventory(workspace)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/build/sessions/{session_id}/verify")
+    def build_session_verify(
+        session_id: int, payload: BuildVerifyRequest | None = None
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        request = payload or BuildVerifyRequest()
+        session = build_store.get_session(session_id)
+        assert session is not None
+        try:
+            report = verification.verify(
+                session.workspace,
+                session_id=session_id,
+                profile_id=request.profile_id,
+                browser_url=request.browser_url,
+                android_device=request.android_device,
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return asdict(report)
+
+    def github_authorizer(
+        typed_confirmation: str,
+    ) -> Any:
+        def authorize(request: GitHubAuthorizationRequest) -> bool:
+            allowed = hmac.compare_digest(
+                typed_confirmation.strip(),
+                authority.summary()["typed_confirmation_phrase"],
+            )
+            db.audit(
+                actor="founder",
+                action=f"github.{request.action}",
+                target=request.workspace,
+                permission_tier="L3_EXTERNAL_ACTION",
+                status="approved" if allowed else "denied",
+                details=request.details,
+            )
+            return allowed
+
+        return authorize
+
+    @app.get("/build/sessions/{session_id}/github/status")
+    def build_github_status(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        session = build_store.get_session(session_id)
+        assert session is not None
+        return github_ci_factory(session.workspace).status()
+
+    @app.get("/build/sessions/{session_id}/github/runs")
+    def build_github_runs(
+        session_id: int, workflow: str = "", limit: int = 20
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        if not 1 <= limit <= 20:
+            raise HTTPException(status_code=400, detail="limit must be between 1 and 20")
+        session = build_store.get_session(session_id)
+        assert session is not None
+        try:
+            runs = github_ci_factory(session.workspace).list_runs(
+                workflow=workflow, limit=limit
+            )
+        except GitHubCIError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"runs": [asdict(run) for run in runs]}
+
+    @app.post("/build/sessions/{session_id}/github/dispatch")
+    def build_github_dispatch(
+        session_id: int, payload: GitHubWorkflowDispatchRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        session = build_store.get_session(session_id)
+        assert session is not None
+        client = github_ci_factory(
+            session.workspace,
+            github_authorizer(payload.typed_confirmation),
+        )
+        try:
+            return client.dispatch_workflow(
+                payload.workflow, ref=payload.ref, inputs=payload.inputs
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (GitHubCIError, OSError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/build/sessions/{session_id}/github/runs/{run_id}/cancel")
+    def build_github_run_cancel(
+        session_id: int, run_id: int, payload: GitHubRunCancelRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        session = build_store.get_session(session_id)
+        assert session is not None
+        try:
+            return github_ci_factory(
+                session.workspace,
+                github_authorizer(payload.typed_confirmation),
+            ).cancel_run(run_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (GitHubCIError, OSError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/build/sessions/{session_id}/review/status")
+    def build_review_status(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        status = openai_review_client(lambda _request: False).status()
+        lease = build_store.get_active_lease(session_id, provider="openai")
+        return status | {"lease": asdict(lease) if lease else None}
+
+    @app.post("/build/sessions/{session_id}/review/prepare")
+    def build_review_prepare(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        status = openai_review_client(lambda _request: False).status()
+        if not status["ready"]:
+            raise HTTPException(status_code=503, detail={"blockers": status["blockers"]})
+        existing = build_store.get_active_lease(session_id, provider="openai")
+        if existing is not None:
+            return {"status": "active", "lease": asdict(existing)}
+        session = build_store.get_session(session_id)
+        assert session is not None
+        approval, _created = db.ensure_approval_request(
+            source_type="openai_review_lease",
+            source_id=session_id,
+            title="Approve Small OpenAI build review lease",
+            detail=f"Workspace: {session.workspace}\nModel: {cfg.openai_review.model}",
+            action="build.review.lease.approve",
+            target=session.workspace,
+            permission_tier="L3_EXTERNAL_ACTION",
+            authority_decision="approval_required",
+            authority={"requires_typed_phrase": True},
+            requested_by="build.review",
+            metadata={
+                "provider": "openai",
+                "model": cfg.openai_review.model,
+                "tier": "small",
+                "store": False,
+                "tools": False,
+            },
+        )
+        return {"status": "approval_required", "approval_request_id": approval.id}
+
+    @app.post("/build/sessions/{session_id}/review/approve")
+    def build_review_approve(
+        session_id: int, payload: BuildLeaseApproveRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        if not hmac.compare_digest(
+            payload.typed_confirmation.strip(),
+            authority.summary()["typed_confirmation_phrase"],
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="OpenAI review lease requires the typed confirmation phrase.",
+            )
+        approval = db.get_pending_approval_for_source(
+            source_type="openai_review_lease", source_id=session_id
+        )
+        if approval is None:
+            raise HTTPException(status_code=400, detail="No pending OpenAI review lease approval")
+        tier = BuildTier(payload.tier or "small")
+        lease = build_store.create_lease(
+            session_id,
+            tier,
+            cfg.build.limits(tier),
+            provider="openai",
+            model=cfg.openai_review.model,
+            approval_request_id=approval.id,
+        )
+        db.resolve_approval_request(
+            approval.id,
+            status="approved",
+            resolved_by="founder",
+            resolution_note=payload.audit_note.strip() or "OpenAI review lease approved",
+        )
+        return {"status": "active", "lease": asdict(lease)}
+
+    @app.post("/build/sessions/{session_id}/review/run")
+    def build_review_run(
+        session_id: int, payload: OpenAIReviewRunRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+
+        def authorize(request: Any) -> bool:
+            lease = build_store.get_active_lease(session_id, provider="openai")
+            if lease is None or request.session_id != session_id:
+                return False
+            decision = authorize_build_egress(
+                db,
+                EgressPolicy.from_config(cfg),
+                EgressRequest(
+                    request_id=request.request_id,
+                    data_class=DataClass.SOURCE_CODE,
+                    vendor="openai",
+                    purpose=request.purpose,
+                    byte_estimate=request.byte_estimate,
+                ),
+                lease=lease,
+            )
+            return decision.allowed
+
+        try:
+            result = openai_review_client(authorize).review(
+                session_id=session_id,
+                prompt=payload.prompt,
+                context=payload.context,
+                request_id=payload.request_id,
+            )
+        except OpenAIReviewUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except BuildBudgetExceeded as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return asdict(result)
+
+    @app.get("/build/calibration")
+    def build_calibrations(
+        session_id: int | None = None,
+        provider: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
+        try:
+            records = calibration.list(
+                session_id=session_id, provider=provider, limit=limit
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"calibrations": [asdict(item) for item in records]}
+
+    @app.post("/build/sessions/{session_id}/calibration")
+    def build_calibration_record(
+        session_id: int, payload: BuildCalibrationRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            return {"calibration": asdict(calibration.record(
+                session_id, provider=payload.provider, outcome=payload.outcome
+            ))}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/build/managed-agents/readiness")
+    def build_managed_agents_readiness() -> dict[str, Any]:
+        return managed_agents.status(
+            orchestration_ready=True,
+            verification_ready=True,
+            cancellation_ready=True,
+        )
 
     # ---- Screen awareness ----
     @app.get("/screen/status")
@@ -2941,6 +3472,17 @@ def _raise_build_provider_error(payload: dict[str, Any]) -> None:
         return
     status = str(run.get("status") or "")
     result = run.get("result") if isinstance(run.get("result"), dict) else {}
+    result_status = str(result.get("status") or "")
+    if result_status:
+        status = result_status
+    exception_type = str(result.get("exception_type") or "")
+    if status == "executor_error" and exception_type in {
+        "AnthropicNotConfigured",
+        "AnthropicPolicyError",
+    }:
+        raise HTTPException(status_code=503, detail=str(result.get("error") or status)[:400])
+    if status == "executor_error" and exception_type == "AnthropicError":
+        raise HTTPException(status_code=502, detail=str(result.get("error") or status)[:400])
     if status not in {"model_error", "capability_error"}:
         return
     session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
@@ -3333,6 +3875,29 @@ def _inventory_payload(
             "POST /build/sessions/{session_id}/approve",
             "POST /build/sessions/{session_id}/deny",
             "POST /build/sessions/{session_id}/run",
+            "POST /build/sessions/{session_id}/plan",
+            "GET /build/sessions/{session_id}/tasks",
+            "POST /build/sessions/{session_id}/tasks",
+            "POST /build/sessions/{session_id}/run-next",
+            "POST /build/sessions/{session_id}/start",
+            "POST /build/sessions/{session_id}/pause",
+            "POST /build/sessions/{session_id}/resume",
+            "POST /build/sessions/{session_id}/cancel",
+            "GET /build/runs/{run_id}",
+            "POST /build/runs/{run_id}/cancel",
+            "GET /build/toolchains",
+            "POST /build/sessions/{session_id}/verify",
+            "GET /build/sessions/{session_id}/github/status",
+            "GET /build/sessions/{session_id}/github/runs",
+            "POST /build/sessions/{session_id}/github/dispatch",
+            "POST /build/sessions/{session_id}/github/runs/{run_id}/cancel",
+            "GET /build/sessions/{session_id}/review/status",
+            "POST /build/sessions/{session_id}/review/prepare",
+            "POST /build/sessions/{session_id}/review/approve",
+            "POST /build/sessions/{session_id}/review/run",
+            "GET /build/calibration",
+            "POST /build/sessions/{session_id}/calibration",
+            "GET /build/managed-agents/readiness",
         ],
         "dispatch_action": "external.delegation.run",
         "hybrid_assessment_action": "local.assessment.prepare",
@@ -3347,6 +3912,13 @@ def _inventory_payload(
             "Eligible Anthropic turns require a typed project lease, lease-scoped source-code egress, and a worst-case reservation under token, dollar, turn, and time ceilings.",
             "Cloud failures never retry automatically, fall back to another paid provider, or enlarge the approved lease.",
             "Build checkpoints, immutable usage events, cache categories, route reasons, and upgrade requests survive restart in SQLite.",
+            "Discovery through release is a durable local-first task graph with background start, pause, resume, cancellation, and restart recovery.",
+            "All build commands are argv-only, profile-constrained, workspace-confined, time-bounded, credential-stripped, and audited.",
+            "Python and Node checks prefer exact locally installed Docker images with no network; Flutter, Gradle, ADB, and emulator checks use narrow host policies.",
+            "Playwright captures screenshots and traces from read-only local verification flows; required missing tools block completion.",
+            "GitHub reads use the governed gh client and every workflow dispatch or cancellation requires fresh typed external-action authorization.",
+            "OpenAI is optional, disabled by default, store=false, tool-free, and independently lease-budgeted for advisory review only.",
+            "Managed Agents expose readiness gates only; no managed execution path exists.",
         ],
     }
     inventory["screen_layer"] = {

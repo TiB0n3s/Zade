@@ -402,6 +402,10 @@ class OpenAIPricingConfig:
             review_after=self.review_after,
         )
 
+    def is_current(self, *, at: str | None = None) -> bool:
+        checked = date.fromisoformat(at[:10]) if at else datetime.now(timezone.utc).date()
+        return checked <= date.fromisoformat(self.review_after)
+
 
 @dataclass(frozen=True)
 class OpenAIReviewConfig:
@@ -511,6 +515,8 @@ class BuildConfig:
     enabled: bool = True
     warning_percent: int = 80
     provider_overhead_tokens: int = 1024
+    max_workers: int = 2
+    ios_workflow: str = "ios.yml"
     small: BuildTierConfig = BuildTierConfig(1_000_000, 120_000, 16_000, 6, 7200)
     medium: BuildTierConfig = BuildTierConfig(3_000_000, 400_000, 40_000, 16, 14400)
     large: BuildTierConfig = BuildTierConfig(7_000_000, 1_000_000, 80_000, 32, 28800)
@@ -521,6 +527,10 @@ class BuildConfig:
             raise ValueError("build warning_percent must be between 1 and 99")
         if self.provider_overhead_tokens < 0:
             raise ValueError("build provider_overhead_tokens must be non-negative")
+        if not 1 <= self.max_workers <= 8:
+            raise ValueError("build max_workers must be between 1 and 8")
+        if not self.ios_workflow.strip():
+            raise ValueError("build ios_workflow must not be empty")
         ordered = (self.small, self.medium, self.large)
         for field_name in (
             "dollar_micro",
@@ -867,6 +877,8 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         enabled=_bool(os.getenv("ZADE_BUILD_ENABLED", build_raw.get("enabled", True))),
         warning_percent=int(build_raw.get("warning_percent", 80)),
         provider_overhead_tokens=int(build_raw.get("provider_overhead_tokens", 1024)),
+        max_workers=int(build_raw.get("max_workers", 2)),
+        ios_workflow=str(build_raw.get("ios_workflow", "ios.yml")).strip(),
         small=_build_tier_config(tier_raw.get("small", {}), BuildConfig().small),
         medium=_build_tier_config(tier_raw.get("medium", {}), BuildConfig().medium),
         large=_build_tier_config(tier_raw.get("large", {}), BuildConfig().large),
