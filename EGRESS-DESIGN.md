@@ -36,14 +36,16 @@ Enumerated from the actual `netguard.assert_allowed` call sites, not from memory
 | Lane | Call site | Data leaving | Destination | Current gate |
 |---|---|---|---|---|
 | Model inference | [ollama.py:262](src/cofounder_kernel/ollama.py) | **everything** in the prompt (founder state, code, memory) | loopback Ollama | provider_policy + netguard(private) |
-| Voice STT | [voice.py:265](src/cofounder_kernel/voice.py) | **raw founder audio** | Deepgram (cloud) | netguard(https, host allowlist) + standing engine selection |
-| Voice TTS | [voice.py:281](src/cofounder_kernel/voice.py) | **reply text** | ElevenLabs (cloud) | netguard(https, host allowlist) + standing engine selection |
+| Strategy review | [strategy_review.py](src/cofounder_kernel/strategy_review.py) | **curated founder_brief** | Anthropic (cloud) | per-request typed-phrase grant + netguard(https, host allowlist) |
+| Hybrid build | [anthropic_build.py](src/cofounder_kernel/anthropic_build.py) | leased **source_code** slices | Anthropic (cloud) | approved expiring lease (token/dollar/turn ceilings) |
+| Telegram reply | [telegram_adapter.py](src/cofounder_kernel/telegram_adapter.py) | **reply text** to the bound founder | api.telegram.org | `reply_text:telegram` standing grant + channel auth binding |
+| IMAP OAuth | [msoauth.py](src/cofounder_kernel/msoauth.py) | OAuth handshake (device code / refresh token) | login.microsoftonline.com | netguard(https, host allowlist), founder-initiated enrollment |
 | Research fetch | [research.py:341](src/cofounder_kernel/research.py) | outbound GET (query/URL only) | arbitrary public https | approval + netguard(https) |
 | Connector sync | [connectors.py:531](src/cofounder_kernel/connectors.py) | inbound pull | IMAP/ICS | netguard(https) |
 | SMS notify | [notify.py:263](src/cofounder_kernel/notify.py) | notification text | founder LAN gateway | netguard(private) |
 | Delegation (bridge) | [delegation.py] | build brief + code | subprocess env → **loopback** Ollama | provider policy sanitization |
 
-**The only cloud egress today is the two voice lanes** (Deepgram audio, ElevenLabs reply text). Everything else is loopback / LAN / approval-gated *pull*. Voice is therefore the one existing hole in "nothing leaves the machine" — worth naming plainly (see §7).
+*(2026-07-19 update: this table originally listed two cloud voice lanes — Deepgram audio, ElevenLabs reply text — as the only cloud egress. Those adapters have since been **deleted** and voice is fully local (whisper.cpp + piper); the cloud lanes today are the ones above: Anthropic per-request/leased, Telegram standing-granted reply text, and the Microsoft OAuth handshake for the IMAP connector.)*
 
 ---
 
@@ -53,7 +55,7 @@ Enumerated from the actual `netguard.assert_allowed` call sites, not from memory
 
 Cell dispositions:
 - **FORBIDDEN** — never, regardless of any grant. No authorization can unlock it.
-- **STANDING** — allowed only when a *durable config grant* for that exact `(class, vendor)` is enabled (e.g. selecting the Deepgram voice engine enables `(founder_audio, deepgram)`).
+- **STANDING** — allowed only when a *durable config grant* for that exact `(class, vendor)` is enabled (e.g. the `reply_text:telegram` grant enables governed replies to the founder's bound Telegram chat).
 - **PER_REQUEST** — allowed only with an explicit, founder-issued, single-purpose authorization matched to this request.
 
 This is the matrix as shipped, after the §7 decisions were resolved (see §7 for the rationale on each):
@@ -62,8 +64,8 @@ This is the matrix as shipped, after the §7 decisions were resolved (see §7 fo
 |---|---|---|---|---|---|
 | **public_derived** (research query, public URL) | STANDING | STANDING | PER_REQUEST | PER_REQUEST | PER_REQUEST |
 | **operational** (status text) | STANDING | PER_REQUEST | PER_REQUEST | PER_REQUEST | **PER_REQUEST** ‹#3› |
-| **reply_text** (Zade's answer) | STANDING | **FORBIDDEN** | PER_REQUEST | STANDING *(TTS)* ‹#1› | PER_REQUEST |
-| **founder_audio** (raw mic) | PER_REQUEST | **FORBIDDEN** | PER_REQUEST | STANDING *(STT)* ‹#1› | **FORBIDDEN** |
+| **reply_text** (Zade's answer) | STANDING | **FORBIDDEN** | PER_REQUEST | **FORBIDDEN** ‹#1› | STANDING *(Telegram)* |
+| **founder_audio** (raw mic) | PER_REQUEST | **FORBIDDEN** | PER_REQUEST | **FORBIDDEN** ‹#1› | **FORBIDDEN** |
 | **screen_pixels** (screenshots) | **FORBIDDEN** | **FORBIDDEN** | PER_REQUEST | PER_REQUEST | **FORBIDDEN** |
 | **source_code** (repo, diffs, briefs) | PER_REQUEST | **FORBIDDEN** | PER_REQUEST | **FORBIDDEN** | **FORBIDDEN** |
 | **founder_brief** (curated excerpt for one review) ‹#2› | PER_REQUEST | **FORBIDDEN** | PER_REQUEST | **FORBIDDEN** | **FORBIDDEN** |
@@ -72,7 +74,7 @@ This is the matrix as shipped, after the §7 decisions were resolved (see §7 fo
 
 `‹#n›` marks a cell set by the correspondingly-numbered §7 decision.
 
-Vendor→tier mapping (`egress.VENDORS`): `sms_gateway`→LAN; `public_web`→PUBLIC_WEB; `openai`/`anthropic`/`ollama_cloud`→CLOUD_MODEL; `deepgram`/`elevenlabs`/`openai_web_search`→CLOUD_SERVICE; `openclaw`→CHANNEL; `local_ollama`/`local_files`→LOCAL.
+Vendor→tier mapping (`egress.VENDORS`): `sms_gateway`→LAN; `public_web`→PUBLIC_WEB; `openai`/`anthropic`/`ollama_cloud`→CLOUD_MODEL; `deepgram`/`elevenlabs`/`openai_web_search`→CLOUD_SERVICE (the voice vendors remain in the enum for matrix completeness; their adapters are deleted); `openclaw`/`telegram`→CHANNEL; `local_ollama`/`local_files`→LOCAL.
 
 Notable stances:
 - **Raw `founder_state` NEVER leaves — to anywhere.** The authority policy itself lives in this class; a model must never receive the definition of its own guardrails. Strategic context reaches a cloud model *only* through the separate **`founder_brief`** class (PER_REQUEST, cloud-model-only): a deliberately curated excerpt, never a wholesale export, never cached-by-default. That is the honest resolution of the Anthropic "long-context strategic review" recommendation.
@@ -160,9 +162,11 @@ A new `[egress]` block, loaded like every other section in [config.py](src/cofou
 # EMPTY BY DEFAULT: nothing cloud egresses out of the box. Uncomment a pair to
 # deliberately re-enable it (and raise [ollama] provider_policy off local_only).
 standing_grants = [
-  # "founder_audio:deepgram",   # re-enable cloud STT
-  # "reply_text:elevenlabs",    # re-enable cloud TTS
+  # "public_derived:public_web",  # approved web-research fetches
+  # "reply_text:telegram",        # governed replies to the bound founder chat
 ]
+# (2026-07-19: the former commented voice grants are gone — the cloud voice
+# cells are now FORBIDDEN in the matrix, so no standing grant can enable them.)
 ```
 
 A malformed or unknown grant fails loud at load (`egress.parse_standing_grants`) — a typo must never silently widen egress. `provider_policy` stays in `[ollama]` (it governs model endpoints too); the egress gate *reads* it via `EgressPolicy.from_config`, it does not own it.
@@ -186,7 +190,7 @@ A malformed or unknown grant fails loud at load (`egress.parse_standing_grants`)
 
 ## 7. Decisions (resolved 2026-07-17)
 
-1. **Voice → local.** Cloud voice is off by default. Implemented as: the two voice cells stay STANDING but their standing grants are **disabled by default**, so `EgressPolicy.from_config` refuses cloud STT/TTS under the shipped posture, and the local `command` engine (whisper.cpp / piper) is the intended path. *(Kept as reversible STANDING rather than hard-FORBIDDEN to preserve the Deepgram/ElevenLabs adapter code + its test coverage and leave a one-line re-enable. Hardening to FORBIDDEN + removing the cloud adapters is an available follow-up.)*
+1. **Voice → local.** Cloud voice is off by default. Originally implemented as reversible STANDING cells with their grants disabled, to preserve the Deepgram/ElevenLabs adapters and leave a one-line re-enable. **Update 2026-07-19: the hardening follow-up landed in two stages — 2026-07-17 flipped both voice cells to FORBIDDEN, and 2026-07-19 deleted the cloud adapter code entirely.** A standing grant can no longer resurrect cloud voice; restoring it means flipping the matrix cells back AND rebuilding the adapters, deliberately.
 2. **Raw `founder_state` never leaves; add `founder_brief`.** `founder_state` → FORBIDDEN everywhere (the authority policy is in this class). Strategic context reaches a cloud model only via the new `founder_brief` class (PER_REQUEST, cloud-model-only) — a curated excerpt, never the raw ledger, never the authority policy.
 3. **Channels are outbound-only until auth ships.** `operational → channel` downgraded STANDING → PER_REQUEST; every other channel cell FORBIDDEN. No inbound authority over a channel until **cross-channel founder authentication** is built (a registered per-channel signed token — *not* trusting the sender handle). Logged as a rollout prerequisite.
 4. **Research stays STANDING.** `public_derived → public_web` remains STANDING: research already runs approval-gated at its own layer, the data leaving is only a query/URL, and a second per-request prompt would be friction that erodes the meaning of a grant. Here the gate's job is classification + an audit row, not a second approval.

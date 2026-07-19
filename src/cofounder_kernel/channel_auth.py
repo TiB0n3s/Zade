@@ -25,8 +25,10 @@ Threat model & honest limits
 - **Fail-closed.** An unbound (channel, external_id) authenticates to *nothing*:
   no identity, no authority. It is untrusted input, like a web page.
 
-This is the identity primitive a channel adapter (e.g. OpenClaw) consumes; there
-is no adapter wired yet. Only the code's hash is stored, never the raw code.
+This is the identity primitive channel adapters consume: the direct Telegram
+adapter (telegram_adapter.py) and the dormant OpenClaw bridge both route inbound
+messages through it via the governed channel flow. Only the enrollment code's
+hash is stored, never the raw code.
 """
 from __future__ import annotations
 

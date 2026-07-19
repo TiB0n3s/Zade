@@ -204,10 +204,11 @@ requires the optional SDK, `OPENAI_API_KEY`, current pricing, and its own Small
 lease. No provider can become another provider's fallback. Anthropic Managed
 Agents remain readiness-only and have no execution path.
 
-Cloud speech engines (`[voice]` Deepgram/ElevenLabs) and approved web-research
-fetches are external **data** tools under their own permission gates; they are
-not model inference and no llm policy authorizes them to carry prompts or
-repository content to a cloud model.
+Approved web-research fetches are external **data** tools under their own
+permission gates; they are not model inference and no llm policy authorizes
+them to carry prompts or repository content to a cloud model. Voice is fully
+local (whisper.cpp + piper); the former cloud speech engines
+(Deepgram/ElevenLabs) were removed on 2026-07-19.
 
 ## Prompt Profiles
 
@@ -891,31 +892,23 @@ The voice loop wraps the governed runtime in speech. Voice is an interface, not 
 
 The easiest way to use it is the browser: open `http://127.0.0.1:8787/ui/voice.html` (also linked as **Voice** from the founder dashboard). Click the mic to record a question and hear Zade answer inline; or type text and hear it spoken back. Browser audio needs no file associations — recordings post as base64 with their real mime type, and Zade's reply plays in an `<audio>` element. Every reply also appears as **full text** in an always-visible "Zade says" readout (including the contrarian check), so you never miss anything when audio is off. Uncheck **Play reply audio** to read silently — Zade then skips synthesis entirely, saving latency and TTS quota. For direct API use:
 
-Two engine families per direction:
-
-- **`command`** (local-first default): Whisper-family STT and Piper-family TTS as founder-configured argv arrays run without a shell; text to speak reaches TTS via stdin, never a command line.
-- **`deepgram`** (STT) and **`elevenlabs`** (TTS): the founder's cloud speech APIs. Selecting a cloud engine in `config.toml` is an explicit standing grant — audio and reply text leave the machine. API keys are read from environment variables (`DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`) and are never stored in config files or the database.
+Voice is **local-only**. The single engine family per direction is `command`:
+Whisper-family STT and Piper-family TTS as founder-configured argv arrays run
+without a shell; text to speak reaches TTS via stdin, never a command line. The
+former cloud engines (Deepgram STT / ElevenLabs TTS) were removed on
+2026-07-19 — their adapter code is deleted and their egress-matrix cells are
+FORBIDDEN, so a config still naming one fails closed as unconfigured. Restoring
+cloud voice would be a deliberate rebuild, not a config flip. For lower
+perceived latency, `POST /voice/converse/stream` streams draft tokens for
+display while the spoken audio is always synthesized from the governed final
+text.
 
 The contract:
 
-- audio travels as base64 JSON; recordings and transcripts are stored under the local data dir for the audit trail regardless of engine
-- unconfigured engines and missing API keys report unavailable (`503`) naming exactly what to set; cloud HTTP failures return `400` with the status code
+- audio travels as base64 JSON; recordings and transcripts are stored under the local data dir for the audit trail
+- an unconfigured engine reports unavailable (`503`) naming exactly what to set; a config naming a removed cloud engine is refused the same way
 - a TTS failure still returns the text answer with a `speech_error` note
 - by default the spoken reply omits the appended `Contrarian check` block (pass `speak_full = true` to hear it)
-
-Cloud engine setup (Deepgram transcription + ElevenLabs voice):
-
-```toml
-[voice]
-stt_engine = "deepgram"
-tts_engine = "elevenlabs"
-tts_voice = "21m00Tcm4TlvDq8ikWAM"   # any ElevenLabs voice id
-```
-
-```powershell
-[Environment]::SetEnvironmentVariable("DEEPGRAM_API_KEY", "your-key", "User")
-[Environment]::SetEnvironmentVariable("ELEVENLABS_API_KEY", "your-key", "User")
-```
 
 Local engine setup (see `config.example.toml` for whisper.cpp and piper examples):
 
