@@ -4882,6 +4882,74 @@ def test_experiment_evidence_review_and_pushback_loop(tmp_path: Path, monkeypatc
     assert events.status_code == 200
 
 
+def test_experiment_update_revises_design_fields_with_audit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    experiment = client.post(
+        "/experiments",
+        json={
+            "title": "Manual Object Habit Test",
+            "experiment_type": "retention",
+            "hypothesis": "Founders will maintain operating objects manually before integrations.",
+            "success_metric": "founders completing two weekly reviews",
+            "success_threshold": "3 of 5",
+            "minimum_evidence": 2,
+            "decision_rule": "Continue if at least 3 founders complete two reviews; revise otherwise.",
+            "end_date": "2026-07-31",
+        },
+    )
+    experiment_id = experiment.json()["item"]["id"]
+    review = client.post(
+        f"/experiments/{experiment_id}/review",
+        json={"decision": "revise", "outcome_summary": "Scope is too wide for the evidence window."},
+    )
+    updated = client.post(
+        f"/experiments/{experiment_id}/update",
+        json={
+            "hypothesis": "One founder will maintain five manual objects for two weeks.",
+            "minimum_evidence": 4,
+            "end_date": "2026-08-15",
+            "reason": "Founder-directed scope revision after review.",
+            "review_id": review.json()["review"]["id"],
+        },
+    )
+    noop = client.post(
+        f"/experiments/{experiment_id}/update",
+        json={"success_metric": "founders completing two weekly reviews"},
+    )
+    missing = client.post("/experiments/999999/update", json={"hypothesis": "Ghost experiment."})
+    loaded = client.get(f"/experiments/{experiment_id}")
+    audit = client.get("/audit/recent")
+
+    assert updated.status_code == 200
+    item = updated.json()["experiment"]
+    assert item["hypothesis"] == "One founder will maintain five manual objects for two weeks."
+    assert item["minimum_evidence"] == 4
+    assert item["end_date"] == "2026-08-15"
+    assert item["status"] == "revised"
+    assert item["success_metric"] == "founders completing two weekly reviews"
+    assert set(updated.json()["changes"]) == {"hypothesis", "minimum_evidence", "end_date"}
+    assert updated.json()["changes"]["minimum_evidence"] == {"from": 2, "to": 4}
+    assert loaded.json()["item"]["hypothesis"] == "One founder will maintain five manual objects for two weeks."
+    assert noop.status_code == 400
+    assert missing.status_code == 400
+    update_events = [event for event in audit.json()["events"] if event["action"] == "experiments.update"]
+    assert len(update_events) == 1
+    assert update_events[0]["actor"] == "experiments"
+    assert update_events[0]["permission_tier"] == "L1_MEMORY_WRITE"
+    assert update_events[0]["target"] == f"experiment:{experiment_id}"
+    assert update_events[0]["details"]["reason"] == "Founder-directed scope revision after review."
+    assert update_events[0]["details"]["review_id"] == review.json()["review"]["id"]
+    assert set(update_events[0]["details"]["changes"]) == {"hypothesis", "minimum_evidence", "end_date"}
+
+
 def test_experiment_dashboard_seeds_exp001_on_empty_database(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     monkeypatch.setattr(OllamaClient, "embed", fake_embed)

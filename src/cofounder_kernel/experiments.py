@@ -11,6 +11,15 @@ from .ingestion import IngestionService, SUPPORTED_TEXT_EXTENSIONS
 
 
 REVIEW_DECISIONS = {"continue", "revise", "kill", "escalate"}
+DESIGN_FIELDS = (
+    "hypothesis",
+    "target_persona",
+    "success_metric",
+    "success_threshold",
+    "minimum_evidence",
+    "decision_rule",
+    "end_date",
+)
 ACTIVE_STATUSES = {"active", "running", "revised"}
 DEFAULT_EXPERIMENT_TITLE = "EXP-001 - Founder Evidence Intake"
 
@@ -138,6 +147,40 @@ class ExperimentService:
         experiment = _experiment_row_to_dict(row)
         experiment["reviews"] = self.list_reviews(experiment_id=experiment_id, limit=10)
         return experiment
+
+    def update_experiment(self, experiment_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        experiment = self.get_experiment(experiment_id)
+        changes: dict[str, dict[str, Any]] = {}
+        for field in DESIGN_FIELDS:
+            if field not in payload:
+                continue
+            new_value = payload[field]
+            # end_date is the only nullable design column; None elsewhere means "leave as-is".
+            if new_value is None and field != "end_date":
+                continue
+            if new_value != experiment.get(field):
+                changes[field] = {"from": experiment.get(field), "to": new_value}
+        if not changes:
+            raise ValueError("No design changes to apply; updatable fields: " + ", ".join(DESIGN_FIELDS))
+        assignments = ", ".join(f"{field} = ?" for field in changes)
+        with self.db.connect() as conn:
+            conn.execute(
+                f"UPDATE founder_experiments SET updated_at = ?, {assignments} WHERE id = ?",
+                (utc_now(), *[change["to"] for change in changes.values()], experiment_id),
+            )
+        self.db.audit(
+            actor="experiments",
+            action="experiments.update",
+            target=f"experiment:{experiment_id}",
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={
+                "changes": changes,
+                "reason": payload.get("reason", ""),
+                "review_id": payload.get("review_id"),
+            },
+        )
+        return {"experiment": self.get_experiment(experiment_id), "changes": changes}
 
     def add_evidence(self, experiment_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         experiment = self.get_experiment(experiment_id)

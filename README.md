@@ -493,6 +493,7 @@ GET  /experiments/reviews
 GET  /experiments/{experiment_id}
 POST /experiments/{experiment_id}/evidence
 POST /experiments/{experiment_id}/review
+POST /experiments/{experiment_id}/update
 POST /experiments/{experiment_id}/pushback
 GET  /action-handlers
 ```
@@ -1354,6 +1355,20 @@ $body = @{
 } | ConvertTo-Json -Depth 8
 
 Invoke-RestMethod -Uri "http://127.0.0.1:8787/experiments/1/review" -Method Post -Body $body -ContentType "application/json"
+```
+
+Revise an experiment's design after a `revise` decision (only the fields you send change; status stays under the review flow, and every change lands in the audit ledger):
+
+```powershell
+$body = @{
+  hypothesis = "One founder will maintain five manual objects for two weeks."
+  minimum_evidence = 4
+  end_date = "2026-08-15"
+  reason = "Founder-directed scope revision after review."
+  review_id = 47
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/experiments/1/update" -Method Post -Body $body -ContentType "application/json"
 ```
 
 Log Zade pushback without blocking execution:

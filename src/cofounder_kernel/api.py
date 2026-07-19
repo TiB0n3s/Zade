@@ -148,6 +148,7 @@ from .models import (
     ExperimentLoopRequest,
     ExperimentPushbackCreate,
     ExperimentReviewCreate,
+    ExperimentUpdate,
     FounderGoalCreate,
     FounderOverrideCreate,
     FounderPredictionCreate,
@@ -2591,6 +2592,13 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/experiments/{experiment_id}/update")
+    def update_experiment(experiment_id: int, payload: ExperimentUpdate) -> dict[str, Any]:
+        try:
+            return experiments.update_experiment(experiment_id, payload.model_dump(exclude_unset=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/experiments/{experiment_id}/pushback")
     def pushback_experiment(experiment_id: int, payload: ExperimentPushbackCreate) -> dict[str, Any]:
         try:
@@ -4405,6 +4413,7 @@ def _inventory_payload(
             "GET /experiments/{experiment_id}",
             "POST /experiments/{experiment_id}/evidence",
             "POST /experiments/{experiment_id}/review",
+            "POST /experiments/{experiment_id}/update",
             "POST /experiments/{experiment_id}/pushback",
             "POST /runtime/experiment-loop",
             "POST /runtime/cadence",
@@ -4420,6 +4429,7 @@ def _inventory_payload(
             "Every experiment tests a linked assumption, bet, goal, or prediction.",
             "Experiment evidence remains in the shared founder_evidence ledger.",
             "Reviews must force one of: continue, revise, kill, or escalate.",
+            "Design revisions go through the audited update route, never raw DB writes.",
             "Pushback logs disagreement without blocking execution.",
         ],
     }

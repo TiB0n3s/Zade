@@ -579,6 +579,18 @@ class ExperimentCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExperimentUpdate(BaseModel):
+    hypothesis: str | None = None
+    target_persona: str | None = None
+    success_metric: str | None = None
+    success_threshold: str | None = None
+    minimum_evidence: int | None = Field(default=None, ge=0, le=100)
+    decision_rule: str | None = None
+    end_date: str | None = None
+    reason: str = ""
+    review_id: int | None = None
+
+
 class ExperimentEvidenceCreate(BaseModel):
     evidence_type: str = Field(default="experiment_observation", max_length=120)
     source: str = Field(default="", max_length=500)
