@@ -3,9 +3,16 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from cofounder_kernel.api import create_app
-from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, SkillConfig
+from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig, SkillConfig, ensure_local_paths
+from cofounder_kernel.db import KernelDatabase
 from cofounder_kernel.ollama import GenerateResult, OllamaClient
-from cofounder_kernel.skills import CODING_HINT_SKILLS, DEFAULT_ENABLED_SKILLS, parse_frontmatter
+from cofounder_kernel.skills import (
+    CODING_HINT_SKILLS,
+    DEFAULT_ENABLED_SKILLS,
+    EMBED_RECIPE_VERSION,
+    SkillService,
+    parse_frontmatter,
+)
 
 
 def fake_health(self: OllamaClient) -> dict:
@@ -103,6 +110,204 @@ TOOL_PROFILE_SKILLS = {
 }
 
 BUNDLED_SKILLS = BUNDLED_CODE_SKILLS | {"deep-research"} | set(TOOL_PROFILE_SKILLS)
+
+
+class FakeEmbedder:
+    """Deterministic embedder: first mapping key found in the text wins; anything
+    unmapped gets a vector orthogonal to every mapped one."""
+
+    def __init__(self, mapping: dict[str, list[float]]):
+        self.mapping = mapping
+        self.calls: list[str] = []
+
+    def embed(self, *, text: str, model: str | None = None) -> list[float]:
+        self.calls.append(text)
+        for key, vector in self.mapping.items():
+            if key in text:
+                return list(vector)
+        return [0.0, 0.0, 1.0]
+
+
+def make_skill_service(tmp_path: Path, skills_dir: Path, embedder=None) -> tuple[SkillService, KernelDatabase]:
+    config = make_config(tmp_path, skills_dir)
+    ensure_local_paths(config)
+    db = KernelDatabase(config.paths.database_path)
+    db.migrate()
+    return SkillService(config=config, db=db, embedder=embedder), db
+
+
+def test_skill_embeddings_carry_nomic_prefixes_and_recipe_version(tmp_path: Path) -> None:
+    """Both embedding sides carry the nomic task prefixes the memory path already
+    uses, and stored hashes carry the recipe version. Under the unprefixed v1
+    recipe all 147 live skills compressed into a 0.26-0.55 similarity band
+    against any query — the semantic signal had no discriminative power, which
+    made the router admit 3 skills on literally every message."""
+    skills_dir = tmp_path / "skills"
+    write_skill(skills_dir, "pricing", "Set pricing for products.", "How to price a product line.")
+    embedder = FakeEmbedder({"pricing": [1.0, 0.0, 0.0]})
+    service, db = make_skill_service(tmp_path, skills_dir, embedder)
+
+    service.scan()
+    service.route(query="pricing strategy for the subscription", task_type="general", limit=3)
+
+    document_calls = [text for text in embedder.calls if text.startswith("search_document: ")]
+    query_calls = [text for text in embedder.calls if text.startswith("search_query: ")]
+    assert document_calls, "document embedding must carry the nomic document prefix"
+    assert query_calls, "query embedding must carry the nomic query prefix"
+    skill_id = int(db.get_skill("pricing")["id"])
+    stored_hash = db.get_skill_embedding_hash(skill_id)
+    assert stored_hash is not None and stored_hash.startswith(f"{EMBED_RECIPE_VERSION}:")
+
+
+def test_route_abstains_on_chat_and_selects_on_topic(tmp_path: Path) -> None:
+    """Small talk with no keyword signal and below-floor similarity selects
+    NOTHING — the pre-fix router injected 3 skills on 253 of 258 live responds,
+    including marketing skills on "Good morning". A semantically close query
+    still selects even without keyword overlap."""
+    skills_dir = tmp_path / "skills"
+    write_skill(skills_dir, "pricing", "Set pricing for products.", "How to price a product line.")
+    write_skill(skills_dir, "systematic-debugging", "Debug through reproduction.", "Reproduce, inspect, verify.")
+    embedder = FakeEmbedder(
+        {
+            # skill documents (matched by name in the embed text)
+            "pricing": [1.0, 0.0, 0.0],
+            "systematic-debugging": [0.0, 1.0, 0.0],
+            # a query about revenue models: close to pricing (cos ≈ 0.995),
+            # far from debugging — and shares no keyword token with either skill
+            "monetization": [0.995, 0.1, 0.0],
+        }
+    )
+    service, _db = make_skill_service(tmp_path, skills_dir, embedder)
+    service.scan()
+
+    chat = service.route(query="hey, how are you doing?", task_type="general", limit=3)
+    on_topic = service.route(query="monetization ideas", task_type="general", limit=3)
+
+    assert chat.items == []
+    assert service.prompt_block(chat) == "No operating skills matched this request."
+    assert [item["name"] for item in on_topic.items] == ["pricing"]
+    assert on_topic.items[0]["semantic_similarity"] >= 0.62
+
+
+def test_route_never_scores_against_older_recipe_and_self_heals(tmp_path: Path) -> None:
+    """Vectors stored under an older embedding recipe (or model) are excluded from
+    scoring — cosine between a prefixed query and an unprefixed document is
+    meaningless. While the heal throttle is armed the router runs keyword-only
+    (here: abstains); once allowed, the routing path re-embeds the library
+    itself, so a failed migration boot degrades for one cooldown window instead
+    of killing semantic routing for the whole process lifetime."""
+    import time as _time
+
+    skills_dir = tmp_path / "skills"
+    write_skill(skills_dir, "pricing", "Set pricing for products.", "How to price a product line.")
+    embedder = FakeEmbedder({"pricing": [1.0, 0.0, 0.0], "monetization": [0.995, 0.1, 0.0]})
+    service, db = make_skill_service(tmp_path, skills_dir, embedder)
+    service.scan()
+
+    # overwrite with a legacy (unversioned) embedding row, as a pre-upgrade DB would hold
+    skill = db.get_skill("pricing")
+    db.upsert_skill_embedding(
+        skill_id=int(skill["id"]),
+        model="nomic-embed-text",
+        vector=[1.0, 0.0, 0.0],
+        content_hash=str(skill["content_hash"]),
+    )
+    service._invalidate_vector_cache()
+
+    # heal throttled (as right after a failed attempt): legacy vector is excluded,
+    # not scored — the query has no keyword overlap, so the router abstains
+    service._heal_attempted_at = _time.monotonic()
+    routed = service.route(query="monetization ideas", task_type="general", limit=3)
+    assert routed.items == []
+
+    # throttle expired: the routing path heals itself — re-embeds under the
+    # current recipe and the same query now routes semantically
+    service._heal_attempted_at = 0.0
+    healed = service.route(query="monetization ideas", task_type="general", limit=3)
+    assert [item["name"] for item in healed.items] == ["pricing"]
+    stored_hash = db.get_skill_embedding_hash(int(skill["id"]))
+    assert stored_hash is not None and stored_hash.startswith(f"{EMBED_RECIPE_VERSION}:")
+
+
+def test_route_excludes_vectors_from_a_different_embedding_model(tmp_path: Path) -> None:
+    """Changing [ollama] embedding_model must invalidate stored skill vectors:
+    the stored hash carries the model, so a model switch re-embeds at the next
+    rebuild instead of silently dotting new-model queries against old-model
+    vectors (where a 768-vs-1024 dimension mismatch would otherwise truncate
+    into plausible-looking garbage)."""
+    skills_dir = tmp_path / "skills"
+    write_skill(skills_dir, "pricing", "Set pricing for products.", "How to price a product line.")
+    embedder = FakeEmbedder({"pricing": [1.0, 0.0, 0.0], "monetization": [0.995, 0.1, 0.0]})
+    service, db = make_skill_service(tmp_path, skills_dir, embedder)
+    service.scan()
+
+    # stored under the current recipe+model — but stamped as a DIFFERENT model,
+    # as a pre-switch DB would hold after the founder edits embedding_model
+    skill = db.get_skill("pricing")
+    db.upsert_skill_embedding(
+        skill_id=int(skill["id"]),
+        model="mxbai-embed-large",
+        vector=[1.0, 0.0, 0.0, 0.0],
+        content_hash=f"{EMBED_RECIPE_VERSION}:mxbai-embed-large:{skill['content_hash']}",
+    )
+    service._invalidate_vector_cache()
+    service._heal_attempted_at = 0.0
+
+    # the cross-model row fails the current-model hash prefix, so the heal path
+    # re-embeds under the configured model and routing works — at no point is a
+    # new-model query dotted against the old-model vector
+    routed = service.route(query="monetization ideas", task_type="general", limit=3)
+    assert [item["name"] for item in routed.items] == ["pricing"]
+    stored_hash = db.get_skill_embedding_hash(int(skill["id"]))
+    assert stored_hash is not None
+    assert "mxbai" not in stored_hash
+
+
+def test_vector_cache_loads_once_and_invalidates_on_toggle(tmp_path: Path, monkeypatch) -> None:
+    """Skill vectors load from SQLite once (uncached, every route re-parsed
+    ~1.5MB of vector JSON — 13ms/call measured live) and reload only after
+    scan/rebuild/enable/disable."""
+    skills_dir = tmp_path / "skills"
+    write_skill(skills_dir, "pricing", "Set pricing for products.", "How to price a product line.")
+    embedder = FakeEmbedder({"pricing": [1.0, 0.0, 0.0]})
+    service, db = make_skill_service(tmp_path, skills_dir, embedder)
+    service.scan()
+
+    loads = {"count": 0}
+    original = db.list_skill_embeddings
+
+    def counting_list(**kwargs):
+        loads["count"] += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(db, "list_skill_embeddings", counting_list)
+
+    service.route(query="pricing the product", task_type="general", limit=3)
+    service.route(query="price a subscription", task_type="general", limit=3)
+    assert loads["count"] == 1
+
+    service.disable("pricing")
+    routed = service.route(query="pricing the product", task_type="general", limit=3)
+    assert loads["count"] == 2
+    assert all(item["name"] != "pricing" for item in routed.items)
+
+
+def test_rebuild_embeddings_is_incremental_and_skips_without_embedder(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    write_skill(skills_dir, "pricing", "Set pricing for products.", "How to price a product line.")
+    write_skill(skills_dir, "launch", "Plan a product launch.", "Sequence the launch checklist.")
+
+    # no embedder: scan registers skills but embeds nothing, rebuild reports skipped
+    bare, _db = make_skill_service(tmp_path, skills_dir, embedder=None)
+    bare.scan()
+    assert bare.rebuild_embeddings()["status"] == "skipped"
+
+    # with an embedder: first rebuild embeds both, steady-state is a no-op
+    bare.embedder = FakeEmbedder({"pricing": [1.0, 0.0, 0.0], "launch": [0.0, 1.0, 0.0]})
+    first = bare.rebuild_embeddings()
+    second = bare.rebuild_embeddings()
+    assert first["refreshed"] == 2
+    assert second["refreshed"] == 0
 
 
 def test_bundled_code_model_skills_are_packaged_for_skill_scanner() -> None:

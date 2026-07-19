@@ -9,14 +9,46 @@ from pathlib import Path
 from typing import Any
 
 from .config import KernelConfig
-from .db import KernelDatabase, cosine_similarity
-from .ingestion import Embedder, normalize_text, read_text_file
+from .db import KernelDatabase
+from .ingestion import Embedder, _nomic_task_prefix, normalize_text, read_text_file
 
 
 SEMANTIC_WEIGHT = 6.0
-MIN_SEMANTIC_SIMILARITY = 0.30
+# Floor below which a similarity contributes NOTHING to a skill's score (and is
+# ineligible as a semantic-only candidate). Calibrated on the real 147-skill
+# library with prefixed nomic embeddings (2026-07-18): junk/chat queries top out
+# at 0.596 ("Good morning, Zade..." → prompt-automation-context), while genuine
+# topical matches score 0.646-0.810 (security-review 0.810, launch 0.765,
+# debug 0.695, pricing 0.668, test-driven-development 0.667). 0.62 sits in the
+# measured gap. A real query whose best similarity falls below the floor still
+# routes on keyword evidence (observed: "cold email sequence" → copywriting via
+# keywords at max sim 0.586) — the floor only withholds the semantic bonus.
+# The old value of 0.30 was calibrated on UNPREFIXED embeddings whose
+# similarities compressed into 0.26-0.55 background noise — every skill passed,
+# so the router never abstained and junk skills (marketing-psychology on
+# "Good morning") consumed the prompt slots.
+MIN_SEMANTIC_SIMILARITY = 0.62
 EMBED_BODY_CHARS = 2000
+# Routing embeds at most this much of the user message. Pasted terminal
+# transcripts (seen live: whole npm install logs) otherwise swamp the semantic
+# signal for the routing decision.
+EMBED_QUERY_CHARS = 2000
 EMBED_FAILURE_COOLDOWN_SECONDS = 60.0
+# Embeds per lazy-heal attempt on the routing path. Bounds the latency a single
+# route call can absorb while re-embedding a library the boot rebuild missed
+# (~50ms/embed warm → a few hundred ms per batch).
+HEAL_BATCH_SIZE = 12
+# Bumped whenever the embedding recipe changes (prefixes, text composition).
+# Stored as part of the embedding's content_hash so recipe changes invalidate
+# every cached embedding at once: vectors embedded under an older recipe are
+# never compared against queries embedded under the current one — mixed-recipe
+# cosine scores are meaningless. Until a rescan refreshes them, routing simply
+# runs keyword-only.
+EMBED_RECIPE_VERSION = "v2-nomic-prefix"
+# Description lines injected into the prompt are capped: several imported
+# marketing skills carry 600-1000 char descriptions, and the operating excerpt
+# already carries the body.
+PROMPT_DESCRIPTION_CHARS = 400
 
 
 DEFAULT_ENABLED_SKILLS = {
@@ -175,6 +207,12 @@ class SkillService:
         self.db = db
         self.embedder = embedder
         self._embed_unavailable_until = 0.0
+        self._heal_attempted_at = 0.0
+        # Normalized skill vectors, loaded once and reused across route calls.
+        # Uncached, every route() re-read and JSON-parsed all ~1.5MB of stored
+        # vectors from SQLite (~13ms/call measured on the live DB). Entries:
+        # (skill_id, enabled, unit_vector). None = load on next use.
+        self._vector_cache: list[tuple[int, bool, list[float]]] | None = None
 
     def scan(self, *, source_dir: str | Path | None = None, enable_defaults: bool | None = None) -> dict[str, Any]:
         root = Path(source_dir or self.config.skills.source_dir).expanduser().resolve()
@@ -238,6 +276,7 @@ class SkillService:
             except Exception as exc:
                 errors.append({"path": str(skill_md), "error": str(exc)})
 
+        self._invalidate_vector_cache()
         audit_id = self.db.audit(
             actor="skills",
             action="skills.scan",
@@ -267,14 +306,29 @@ class SkillService:
         }
 
     def _embed_skill(self, *, skill_id: int, name: str, description: str, body: str, content_hash: str) -> str:
-        """Embed a skill for semantic routing; failures are silent so keyword routing keeps working."""
+        """Embed a skill for semantic routing; failures are silent so keyword routing keeps working.
+
+        The document-side nomic task prefix is load-bearing: without it (the v1
+        recipe) all 147 live skills compressed into a 0.26-0.55 similarity band
+        against ANY query and the semantic signal had no discriminative power.
+        """
         if not self._embedder_ready():
             return "skipped"
-        if self.db.get_skill_embedding_hash(skill_id) == content_hash:
+        model = self.config.ollama.embedding_model
+        # The model is part of the recipe: the task prefix is model-conditional
+        # and vectors from different models (or dimensions) must never be
+        # compared. Including it in the stored hash means a config change to
+        # [ollama] embedding_model invalidates every skill embedding at the next
+        # rebuild — the same invariant the memory path enforces with its
+        # per-model hash lookups.
+        versioned_hash = f"{EMBED_RECIPE_VERSION}:{model}:{content_hash}"
+        if self.db.get_skill_embedding_hash(skill_id) == versioned_hash:
             return "cached"
-        embed_text = "\n".join(part for part in [name, description, body[:EMBED_BODY_CHARS]] if part)
+        embed_text = _nomic_task_prefix(model, "document") + "\n".join(
+            part for part in [name, description, body[:EMBED_BODY_CHARS]] if part
+        )
         try:
-            vector = self.embedder.embed(text=embed_text, model=self.config.ollama.embedding_model)  # type: ignore[union-attr]
+            vector = self.embedder.embed(text=embed_text, model=model)  # type: ignore[union-attr]
         except Exception:
             self._mark_embedder_down()
             return "error"
@@ -282,11 +336,57 @@ class SkillService:
             return "error"
         self.db.upsert_skill_embedding(
             skill_id=skill_id,
-            model=self.config.ollama.embedding_model,
+            model=model,
             vector=vector,
-            content_hash=content_hash,
+            content_hash=versioned_hash,
         )
         return "embedded"
+
+    def rebuild_embeddings(self, *, max_embeds: int | None = None) -> dict[str, Any]:
+        """Refresh skill embeddings whose stored hash predates the current content,
+        recipe version, OR embedding model. Incremental + best-effort, mirroring
+        the boot-time memory/chunk rebuilds: steady-state is a hash-check-only
+        no-op, an embedder outage bails after the first failure (cooldown), and
+        routing degrades to keyword-only rather than comparing mixed-recipe
+        vectors. ``max_embeds`` bounds actual embed calls (hash checks are free)
+        so the lazy heal on the routing path stays cheap per call."""
+        checked = 0
+        refreshed = 0
+        errors = 0
+        if not self._embedder_ready():
+            return {"status": "skipped", "reason": "embedder_unavailable", "checked": 0, "refreshed": 0, "errors": 0}
+        for skill in self.db.list_skills(limit=1000):
+            checked += 1
+            status = self._embed_skill(
+                skill_id=int(skill["id"]),
+                name=str(skill["name"]),
+                description=str(skill["description"]),
+                body=str(skill["body"]),
+                content_hash=str(skill["content_hash"]),
+            )
+            if status == "embedded":
+                refreshed += 1
+                if max_embeds is not None and refreshed >= max_embeds:
+                    break
+            elif status == "error":
+                errors += 1
+                if not self._embedder_ready():
+                    break
+        if refreshed:
+            self._invalidate_vector_cache()
+        if refreshed or errors:
+            # Failures are audited too: a silently-degraded semantic channel
+            # (keyword-only routing after a failed migration) must be visible in
+            # the founder-facing ledger, not only successes.
+            self.db.audit(
+                actor="skills",
+                action="skills.rebuild_embeddings",
+                target="skill_embeddings",
+                permission_tier="L1_MEMORY_WRITE",
+                status="ok" if not errors else "partial",
+                details={"checked": checked, "refreshed": refreshed, "errors": errors, "recipe": EMBED_RECIPE_VERSION},
+            )
+        return {"status": "ok" if not errors else "partial", "checked": checked, "refreshed": refreshed, "errors": errors}
 
     def list_skills(
         self,
@@ -309,6 +409,7 @@ class SkillService:
 
     def enable(self, name: str) -> dict[str, Any]:
         skill = self.db.set_skill_enabled(name, True)
+        self._invalidate_vector_cache()
         self.db.audit(
             actor="skills",
             action="skills.enable",
@@ -321,6 +422,7 @@ class SkillService:
 
     def disable(self, name: str) -> dict[str, Any]:
         skill = self.db.set_skill_enabled(name, False)
+        self._invalidate_vector_cache()
         self.db.audit(
             actor="skills",
             action="skills.disable",
@@ -342,7 +444,16 @@ class SkillService:
         for index, item in enumerate(candidates):
             keyword_score = score_skill_match(item, query=query, task_type=task_type, rank_index=index)
             similarity = max(0.0, semantic_scores.get(int(item["id"]), 0.0))
-            semantic_score = similarity * SEMANTIC_WEIGHT
+            # Below the floor a similarity is background noise, not signal, and
+            # contributes zero. Under the v1 unprefixed embeddings every skill's
+            # noise-level similarity (0.35-0.45) times SEMANTIC_WEIGHT cleared the
+            # 2.0 acceptance threshold on its own, so the router admitted 3 skills
+            # on literally every message (253 of 258 live responds) — including
+            # marketing skills on "Good morning". Zeroing sub-floor similarity
+            # makes the threshold real again: no keyword signal + no semantic
+            # signal = no skill injected.
+            effective_similarity = similarity if similarity >= MIN_SEMANTIC_SIMILARITY else 0.0
+            semantic_score = effective_similarity * SEMANTIC_WEIGHT
             total = keyword_score + semantic_score
             if total >= 2.0:
                 scored.append(
@@ -359,20 +470,83 @@ class SkillService:
         return SkillRouteResult(items=scored[:limit], query=query, task_type=task_type)
 
     def _semantic_scores(self, query: str) -> dict[int, float]:
-        """Cosine similarity per enabled skill; empty when no embedder or embeddings exist."""
+        """Cosine similarity per enabled skill; empty when no embedder or embeddings exist.
+
+        The query carries the nomic query-side task prefix (matching the
+        document-side prefix applied at embed time) and is clipped so a pasted
+        terminal transcript doesn't swamp the routing signal. Skill vectors come
+        from the in-process cache — pre-normalized, so scoring is a plain dot
+        product per skill instead of a 1.5MB JSON parse plus full cosine.
+        """
         if not self._embedder_ready():
             return {}
-        embeddings = self.db.list_skill_embeddings(enabled_only=True)
-        if not embeddings:
-            return {}
+        vectors = self._enabled_unit_vectors()
+        if not vectors:
+            # No current-recipe vectors at all — the state a failed migration
+            # boot leaves behind (e.g. Ollama lost the race with kernel
+            # autostart). Without this heal the semantic channel would stay dead
+            # for the whole process lifetime: with zero vectors this method
+            # returned before ever attempting an embed, so the failure cooldown
+            # alone could never recover it. Heal in small bounded batches on the
+            # routing path (throttled to one attempt per cooldown window) until
+            # the library is re-embedded; a still-down embedder just re-arms the
+            # cooldown.
+            now = time.monotonic()
+            if now < self._heal_attempted_at + EMBED_FAILURE_COOLDOWN_SECONDS:
+                return {}
+            self._heal_attempted_at = now
+            self.rebuild_embeddings(max_embeds=HEAL_BATCH_SIZE)
+            vectors = self._enabled_unit_vectors()
+            if not vectors:
+                return {}
+        model = self.config.ollama.embedding_model
+        query_text = _nomic_task_prefix(model, "query") + query[:EMBED_QUERY_CHARS]
         try:
-            query_vector = self.embedder.embed(text=query, model=self.config.ollama.embedding_model)  # type: ignore[union-attr]
+            query_vector = self.embedder.embed(text=query_text, model=model)  # type: ignore[union-attr]
         except Exception:
             self._mark_embedder_down()
             return {}
-        if not query_vector:
+        query_unit = _unit_vector(query_vector)
+        if query_unit is None:
             return {}
-        return {item["skill_id"]: cosine_similarity(query_vector, item["vector"]) for item in embeddings}
+        return {skill_id: _dot(query_unit, unit_vector) for skill_id, unit_vector in vectors}
+
+    def _enabled_unit_vectors(self) -> list[tuple[int, list[float]]]:
+        """Current-recipe skill vectors for enabled skills, unit-normalized.
+
+        Loaded from SQLite once and cached until a scan, rebuild, or
+        enable/disable invalidates it. Vectors stored under an older embedding
+        recipe are excluded outright: cosine between a v2-prefixed query and a
+        v1-unprefixed document is meaningless, so until a rebuild refreshes them
+        routing honestly runs keyword-only instead of scoring against noise.
+        """
+        # Snapshot to a local: endpoints run in a threadpool, and a concurrent
+        # enable/disable/scan may null self._vector_cache between the build and
+        # the read below — re-reading the attribute would raise mid-route and
+        # 500 the founder's chat turn. Worst case with the snapshot is one route
+        # served from the just-invalidated view, which the next call reloads.
+        cache = self._vector_cache
+        if cache is None:
+            model = self.config.ollama.embedding_model
+            hash_prefix = f"{EMBED_RECIPE_VERSION}:{model}:"
+            cache = []
+            for row in self.db.list_skill_embeddings(enabled_only=False):
+                # Both recipe version AND model must match the current config —
+                # a vector from a different embedding model (or dimension) is
+                # not comparable to the query about to be embedded.
+                if not str(row.get("content_hash", "")).startswith(hash_prefix):
+                    continue
+                if str(row.get("model", "")) != model:
+                    continue
+                unit = _unit_vector(row["vector"])
+                if unit is None:
+                    continue
+                cache.append((int(row["skill_id"]), bool(row.get("enabled", True)), unit))
+            self._vector_cache = cache
+        return [(skill_id, unit) for skill_id, enabled, unit in cache if enabled]
+
+    def _invalidate_vector_cache(self) -> None:
+        self._vector_cache = None
 
     def _embedder_ready(self) -> bool:
         return bool(self.embedder) and time.monotonic() >= self._embed_unavailable_until
@@ -415,11 +589,14 @@ class SkillService:
             return "No operating skills matched this request."
         lines = []
         for item in route.items:
+            description = str(item["description"])
+            if len(description) > PROMPT_DESCRIPTION_CHARS:
+                description = description[: PROMPT_DESCRIPTION_CHARS - 1].rstrip() + "…"
             lines.append(
                 "\n".join(
                     [
                         f"- Skill: {item['name']} (score {item['score']}, risk {item['risk_tier']}, source {item['source'] or 'local'})",
-                        f"  Description: {item['description']}",
+                        f"  Description: {description}",
                         f"  Operating excerpt: {item['prompt_excerpt']}",
                     ]
                 )
@@ -436,6 +613,27 @@ class SkillService:
             return {}
         skills = raw.get("skills", {})
         return skills if isinstance(skills, dict) else {}
+
+
+def _unit_vector(vector: list[float]) -> list[float] | None:
+    """Vector scaled to unit length, or None for empty/zero vectors. Normalizing
+    once at cache-load (and once per query) turns each per-skill cosine into a
+    plain dot product."""
+    if not vector:
+        return None
+    norm = sum(value * value for value in vector) ** 0.5
+    if norm == 0:
+        return None
+    return [value / norm for value in vector]
+
+
+def _dot(a: list[float], b: list[float]) -> float:
+    # Defense-in-depth: the cache already excludes cross-model vectors, but a
+    # dimension mismatch must never silently truncate into a plausible-looking
+    # similarity. Zero similarity is the honest value for incomparable vectors.
+    if len(a) != len(b):
+        return 0.0
+    return sum(x * y for x, y in zip(a, b, strict=False))
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -539,35 +737,86 @@ def score_skill_match(skill: dict[str, Any], *, query: str, task_type: str, rank
 
 
 def query_tokens(query: str) -> list[str]:
+    # Conversational filler must not earn relevance: a +2.0 description hit per
+    # token means "how are you doing" used to score churn-prevention at 4.47
+    # (marketing descriptions are full of "you"/"your") and clear the 2.0
+    # admission threshold on small talk. Only content-bearing tokens count.
     stopwords = {
         "about",
         "after",
+        "all",
         "and",
+        "answer",
+        "any",
+        "are",
         "before",
         "action",
+        "also",
         "check",
         "could",
+        "did",
+        "does",
+        "doing",
         "for",
         "from",
+        "going",
+        "good",
+        "had",
+        "has",
         "have",
+        "here",
+        "hey",
+        "how",
         "into",
+        "just",
+        "like",
         "local",
+        "many",
+        "more",
+        "morning",
+        "most",
+        "much",
         "need",
         "next",
+        "okay",
         "one",
+        "our",
         "please",
+        "really",
         "sentence",
         "should",
         "smoke",
+        "some",
         "state",
+        "still",
+        "than",
+        "thank",
+        "thanks",
         "that",
         "the",
+        "them",
+        "then",
+        "there",
+        "they",
         "this",
+        "today",
+        "tonight",
+        "very",
+        "was",
+        "well",
+        "were",
         "will",
         "what",
         "when",
+        "who",
         "with",
         "would",
+        "yeah",
+        "yes",
+        "you",
+        "your",
+        "yours",
+        "yourself",
         "zade",
     }
     return [token for token in re.findall(r"[a-z0-9_]+", query.lower()) if len(token) >= 3 and token not in stopwords]

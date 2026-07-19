@@ -1181,7 +1181,7 @@ class KernelDatabase:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT e.skill_id, e.model, e.vector_json, s.name
+                SELECT e.skill_id, e.model, e.vector_json, e.content_hash, s.name, s.enabled
                 FROM skill_embeddings e
                 JOIN skill_registry s ON s.id = e.skill_id
                 {where}
@@ -1192,6 +1192,8 @@ class KernelDatabase:
                 "skill_id": int(row["skill_id"]),
                 "name": str(row["name"]),
                 "model": str(row["model"]),
+                "content_hash": str(row["content_hash"] or ""),
+                "enabled": bool(row["enabled"]),
                 "vector": json.loads(row["vector_json"] or "[]"),
             }
             for row in rows

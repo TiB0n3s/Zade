@@ -321,6 +321,13 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             ingestion.rebuild_chunk_embeddings()
         except Exception:
             pass
+        # Skill-routing embeddings, same contract: hash-guarded (content AND
+        # embed-recipe version), so steady-state startup makes no embedder calls,
+        # and a recipe bump re-embeds the library once at next boot.
+        try:
+            skills.rebuild_embeddings()
+        except Exception:
+            pass
         # Tier 8: finalize abandoned threads. The UI resumes only the most-recent
         # active conversation; every older active thread is unreachable and would
         # never distill on its own (short threads never hit the auto-distill

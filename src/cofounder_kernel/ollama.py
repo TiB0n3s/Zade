@@ -71,6 +71,15 @@ class GenerateResult:
 class OllamaClient:
     def __init__(self, config: OllamaConfig):
         self.config = config
+        # Tiny embed memo: within one respond() the same user message is embedded
+        # by memory hybrid recall AND skill routing (identical "search_query: ..."
+        # text), costing a duplicate Ollama round-trip — 40-60ms warm, ~1.6s when
+        # nomic-embed was evicted (MAX_LOADED_MODELS=2 makes that routine).
+        # Embeddings are deterministic for identical (model, text), so a small
+        # LRU is safe. Kept deliberately tiny: this dedupes within a turn, it is
+        # not an embedding store.
+        self._embed_memo: dict[tuple[str, str], list[float]] = {}
+        self._embed_memo_order: list[tuple[str, str]] = []
 
     # ---- provider policy -------------------------------------------------
     def _policy(self) -> str:
@@ -231,15 +240,27 @@ class OllamaClient:
         response = message.get("content", "") if isinstance(message, dict) else ""
         return GenerateResult(response=response, model=selected_model, raw=raw)
 
+    _EMBED_MEMO_SIZE = 8
+
     def embed(self, *, text: str, model: str | None = None) -> list[float]:
         selected_model = model or self.config.embedding_model
         self._assert_model_allowed(selected_model)
+        memo_key = (selected_model, text)
+        cached = self._embed_memo.get(memo_key)
+        if cached is not None:
+            return list(cached)
         body = {"model": selected_model, "input": text}
         raw = self._post_json("/api/embed", body)
         embeddings = raw.get("embeddings") or []
         if not embeddings:
             return []
-        return list(embeddings[0])
+        vector = list(embeddings[0])
+        self._embed_memo[memo_key] = vector
+        self._embed_memo_order.append(memo_key)
+        if len(self._embed_memo_order) > self._EMBED_MEMO_SIZE:
+            evicted = self._embed_memo_order.pop(0)
+            self._embed_memo.pop(evicted, None)
+        return list(vector)
 
     def _get_json(self, path: str) -> dict[str, Any]:
         request = urllib.request.Request(f"{self.config.base_url}{path}", method="GET")
