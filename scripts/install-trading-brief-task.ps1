@@ -7,7 +7,13 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
 $BriefScript = Join-Path $PSScriptRoot "run-trading-brief.ps1"
-$PowerShell = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
+# Prefer the Store app-execution ALIAS over Get-Command: the latter resolves to
+# a version-pinned WindowsApps path (...PowerShell_7.6.3.0...) that breaks the
+# task the next time the Store updates PowerShell. The alias is stable.
+$PowerShell = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\pwsh.exe"
+if (-not (Test-Path -LiteralPath $PowerShell)) {
+    $PowerShell = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
+}
 if (-not $PowerShell) {
     $PowerShell = (Get-Command powershell.exe).Source
 }

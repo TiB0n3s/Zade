@@ -279,3 +279,165 @@ def test_parse_ics_events_unfolds_and_normalizes() -> None:
     # Folded DESCRIPTION line is joined.
     assert events[0]["DESCRIPTION"].endswith("two solo founders.")
     assert events[1]["DTSTART"] == "20260717"
+
+
+def test_connector_update_edits_in_place_with_same_rules(tmp_path: Path, monkeypatch) -> None:
+    """Update is partial (omitted fields keep stored values), replaces config
+    wholesale under the same no-secrets/required-field rules, and never changes
+    name or connector_type."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    client = TestClient(create_app(_config(tmp_path)))
+    client.post(
+        "/connectors",
+        json={
+            "name": "inbox",
+            "connector_type": "imap",
+            "description": "original",
+            "config": {"host": "imap.example.com", "username": "zade", "password_env": "ZADE_TEST_IMAP_PW"},
+        },
+    )
+
+    paused = client.post("/connectors/inbox/update", json={"enabled": False, "description": "paused: blocked"})
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["item"]["enabled"] is False
+    assert paused.json()["item"]["description"] == "paused: blocked"
+    # config untouched by a partial update
+    assert paused.json()["item"]["config"]["host"] == "imap.example.com"
+
+    with_secret = client.post(
+        "/connectors/inbox/update",
+        json={"config": {"host": "h2", "username": "u2", "password": "hunter2", "password_env": "PW"}},
+    )
+    assert with_secret.status_code == 400
+    assert "must not contain secrets" in with_secret.json()["detail"]
+
+    incomplete = client.post("/connectors/inbox/update", json={"config": {"host": "h2"}})
+    assert incomplete.status_code == 400
+
+    replaced = client.post(
+        "/connectors/inbox/update",
+        json={"config": {"host": "imap.gmail.com", "username": "z@example.com", "password_env": "PW2"}, "enabled": True},
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["item"]["config"]["host"] == "imap.gmail.com"
+    assert replaced.json()["item"]["enabled"] is True
+    assert replaced.json()["item"]["name"] == "inbox"
+
+    missing = client.post("/connectors/nope/update", json={"enabled": True})
+    assert missing.status_code == 404
+
+
+def test_xoauth2_connector_validation_and_enrollment_flow(tmp_path: Path, monkeypatch) -> None:
+    """xoauth2 IMAP connectors need client_id (not password_env); enrollment
+    runs the device flow in the background and caches tokens; sync then
+    authenticates with SASL XOAUTH2 instead of LOGIN."""
+    import time as time_module
+
+    import cofounder_kernel.msoauth as msoauth
+
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    client = TestClient(create_app(_config(tmp_path)))
+
+    missing_client_id = client.post(
+        "/connectors",
+        json={
+            "name": "founder-mail",
+            "connector_type": "imap",
+            "config": {"host": "outlook.office365.com", "username": "z@outlook.com", "auth": "xoauth2"},
+        },
+    )
+    assert missing_client_id.status_code == 400
+    assert "client_id" in missing_client_id.json()["detail"]
+
+    created = client.post(
+        "/connectors",
+        json={
+            "name": "founder-mail",
+            "connector_type": "imap",
+            "config": {
+                "host": "outlook.office365.com",
+                "username": "z@outlook.com",
+                "auth": "xoauth2",
+                "client_id": "app-123",
+            },
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    # OAuth begin on a password connector is refused
+    client.post(
+        "/connectors",
+        json={
+            "name": "legacy",
+            "connector_type": "imap",
+            "config": {"host": "h", "username": "u", "password_env": "PW"},
+        },
+    )
+    wrong_mode = client.post("/connectors/legacy/oauth/begin")
+    assert wrong_mode.status_code == 400
+
+    monkeypatch.setattr(
+        msoauth,
+        "begin_device_flow",
+        lambda client_id, tenant="consumers": {
+            "device_code": "dc-1",
+            "user_code": "ABC-123",
+            "verification_uri": "https://microsoft.com/devicelogin",
+            "interval": 0,
+            "expires_in": 900,
+        },
+    )
+    monkeypatch.setattr(
+        msoauth,
+        "poll_token",
+        lambda client_id, device_code, tenant="consumers": (
+            "ok",
+            {"access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3600},
+        ),
+    )
+    begun = client.post("/connectors/founder-mail/oauth/begin")
+    assert begun.status_code == 200, begun.text
+    assert begun.json()["flow"]["user_code"] == "ABC-123"
+
+    deadline = time_module.time() + 5
+    status = {}
+    while time_module.time() < deadline:
+        status = client.get("/connectors/founder-mail/oauth/status").json()
+        if status.get("status") == "authorized":
+            break
+        time_module.sleep(0.05)
+    assert status.get("status") == "authorized", status
+    assert status.get("tokens_enrolled") is True
+
+    # Sync authenticates via XOAUTH2 (fake IMAP server; no LOGIN call).
+    auth_calls: list[tuple[str, bytes]] = []
+
+    class FakeImap:
+        def __init__(self, host, port):
+            pass
+
+        def authenticate(self, mechanism, authobject):
+            auth_calls.append((mechanism, authobject(b"")))
+            return "OK", []
+
+        def login(self, username, password):
+            raise AssertionError("XOAUTH2 connectors must never use LOGIN")
+
+        def select(self, mailbox, readonly=False):
+            assert readonly is True
+            return "OK", []
+
+        def search(self, charset, criteria):
+            return "OK", [b""]
+
+        def logout(self):
+            return "BYE", []
+
+    monkeypatch.setattr(connectors_module.imaplib, "IMAP4_SSL", FakeImap)
+    queued = client.post("/connectors/founder-mail/sync")
+    assert queued.status_code == 200, queued.text
+    approved = _approve_and_dispatch(client, queued.json()["item_id"])
+    assert approved["dispatch"] == "dispatched"
+    assert approved["dispatch_result"]["fetched"] == 0
+    assert auth_calls and auth_calls[0][0] == "XOAUTH2"
+    assert auth_calls[0][1] == b"user=z@outlook.com\x01auth=Bearer at-1\x01\x01"

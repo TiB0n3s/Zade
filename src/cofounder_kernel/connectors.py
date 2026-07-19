@@ -8,12 +8,14 @@ import imaplib
 import json
 import os
 import re
+import threading
+import time
 import urllib.error
 from email.header import decode_header
 from pathlib import Path
 from typing import Any
 
-from . import netguard
+from . import msoauth, netguard
 from .config import KernelConfig
 from .db import KernelDatabase, utc_now
 from .founder import FounderService
@@ -60,6 +62,11 @@ class ConnectorService:
         self.founder = founder
         self.ingestion = ingestion
         self.work_queue = work_queue
+        # In-flight OAuth device enrollments, keyed by connector name. Holds
+        # flow state only (codes, status) — never tokens; those go straight to
+        # the on-disk cache.
+        self._oauth_flows: dict[str, dict[str, Any]] = {}
+        self._oauth_lock = threading.Lock()
 
     def create_connector(self, payload: dict[str, Any]) -> dict[str, Any]:
         name = str(payload["name"]).strip()
@@ -69,24 +76,7 @@ class ConnectorService:
         if connector_type not in CONNECTOR_TYPES:
             raise ValueError(f"Connector type must be one of: {', '.join(sorted(CONNECTOR_TYPES))}")
         config = dict(payload.get("config", {}))
-        leaked = sorted(
-            key
-            for key in config
-            if not key.strip().lower().endswith("_env")
-            and any(fragment in key.strip().lower() for fragment in SECRET_KEY_FRAGMENTS)
-        )
-        if leaked:
-            raise ValueError(
-                f"Connector config must not contain secrets ({', '.join(leaked)}). "
-                "Store the credential in an environment variable and reference it via password_env."
-            )
-        if connector_type == "imap":
-            for required in ("host", "username", "password_env"):
-                if not str(config.get(required, "")).strip():
-                    raise ValueError(f"IMAP connector config requires '{required}'.")
-        if connector_type == "ics":
-            if not str(config.get("url", "")).strip() and not str(config.get("path", "")).strip():
-                raise ValueError("ICS connector config requires 'url' or 'path'.")
+        _validate_connector_config(connector_type, config)
         now = utc_now()
         with self.db.connect() as conn:
             existing = conn.execute("SELECT id FROM connectors WHERE name = ?", (name,)).fetchone()
@@ -118,6 +108,44 @@ class ConnectorService:
             permission_tier="L1_MEMORY_WRITE",
             status="ok",
             details={"connector_type": connector_type, "config_keys": sorted(config.keys())},
+        )
+        return self.get_connector(name)
+
+    def update_connector(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Update description/config/enabled in place. Name and connector_type are
+        immutable (register a new connector instead); a supplied config replaces
+        the stored one wholesale and passes the same no-secrets + required-field
+        rules as create."""
+        connector = self.get_connector(name)
+        requested_type = str(payload.get("connector_type", "")).strip().lower()
+        if requested_type and requested_type != connector["connector_type"]:
+            raise ValueError("connector_type is immutable; register a new connector instead.")
+        config = dict(payload["config"]) if "config" in payload and payload["config"] is not None else connector["config"]
+        _validate_connector_config(connector["connector_type"], config)
+        description = (
+            str(payload["description"]) if payload.get("description") is not None else connector["description"]
+        )
+        enabled = bool(payload["enabled"]) if payload.get("enabled") is not None else connector["enabled"]
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE connectors
+                SET updated_at = ?, description = ?, config_json = ?, enabled = ?
+                WHERE id = ?
+                """,
+                (utc_now(), description, json.dumps(config, sort_keys=True), int(enabled), connector["id"]),
+            )
+        self.db.audit(
+            actor="connectors",
+            action="connectors.update",
+            target=name,
+            permission_tier="L1_MEMORY_WRITE",
+            status="ok",
+            details={
+                "connector_type": connector["connector_type"],
+                "config_keys": sorted(config.keys()),
+                "enabled": enabled,
+            },
         )
         return self.get_connector(name)
 
@@ -174,7 +202,12 @@ class ConnectorService:
             raise ValueError(f"Connector is disabled: {name}")
         try:
             if connector["connector_type"] == "imap":
-                fetched = fetch_imap_items(connector["config"], self._resolve_password(connector))
+                if str(connector["config"].get("auth", "password")) == "xoauth2":
+                    fetched = fetch_imap_items(
+                        connector["config"], self._resolve_access_token(connector), auth="xoauth2"
+                    )
+                else:
+                    fetched = fetch_imap_items(connector["config"], self._resolve_password(connector))
             else:
                 fetched = fetch_ics_events(connector["config"], allowed_roots=self._allowed_roots())
         except ValueError:
@@ -332,6 +365,124 @@ class ConnectorService:
         )
         return self._get_item(item_id)
 
+    # -- OAuth (XOAUTH2) enrollment ----------------------------------------
+    def begin_oauth(self, name: str) -> dict[str, Any]:
+        """Start Microsoft device-code enrollment for an xoauth2 IMAP connector.
+
+        Founder-interactive by construction: the returned user_code must be
+        typed at the verification URI in the founder's own browser, so the
+        kernel never sees the Microsoft password. A background thread polls the
+        token endpoint and writes the on-disk token cache when Microsoft
+        confirms. Flow state is served by oauth_status()."""
+        connector = self.get_connector(name)
+        if connector["connector_type"] != "imap" or connector["config"].get("auth") != "xoauth2":
+            raise ValueError("OAuth enrollment applies only to IMAP connectors with auth='xoauth2'.")
+        client_id = str(connector["config"].get("client_id", "")).strip()
+        tenant = str(connector["config"].get("tenant", msoauth.DEFAULT_TENANT)).strip() or msoauth.DEFAULT_TENANT
+        with self._oauth_lock:
+            pending = self._oauth_flows.get(name)
+            if pending and pending.get("status") == "pending" and time.time() < pending.get("expires_at", 0):
+                return self._flow_public(pending)
+        flow = msoauth.begin_device_flow(client_id, tenant=tenant)
+        interval = max(1, int(flow.get("interval", 5)))
+        state = {
+            "status": "pending",
+            "user_code": str(flow.get("user_code", "")),
+            "verification_uri": str(flow.get("verification_uri", "https://microsoft.com/devicelogin")),
+            "expires_at": time.time() + float(flow.get("expires_in", 900) or 900),
+            "message": str(flow.get("message", "")),
+        }
+        with self._oauth_lock:
+            self._oauth_flows[name] = state
+        thread = threading.Thread(
+            target=self._poll_oauth,
+            args=(name, client_id, tenant, str(flow["device_code"]), interval, state["expires_at"]),
+            name=f"oauth-{name}",
+            daemon=True,
+        )
+        thread.start()
+        self.db.audit(
+            actor="connectors",
+            action="connectors.oauth.begin",
+            target=name,
+            permission_tier="L3_EXTERNAL_ACTION",
+            status="ok",
+            details={"tenant": tenant, "verification_uri": state["verification_uri"]},
+        )
+        return self._flow_public(state)
+
+    def oauth_status(self, name: str) -> dict[str, Any]:
+        connector = self.get_connector(name)
+        with self._oauth_lock:
+            state = dict(self._oauth_flows.get(name) or {"status": "none"})
+        cache = msoauth.TokenCache(self._token_cache_path(name))
+        record = cache.load()
+        return self._flow_public(state) | {
+            "connector": connector["name"],
+            "tokens_enrolled": bool(record and record.get("refresh_token")),
+        }
+
+    def _poll_oauth(
+        self, name: str, client_id: str, tenant: str, device_code: str, interval: int, expires_at: float
+    ) -> None:
+        while time.time() < expires_at:
+            time.sleep(interval)
+            try:
+                outcome, payload = msoauth.poll_token(client_id, device_code, tenant=tenant)
+            except Exception as exc:
+                self._finish_oauth(name, status="failed", detail=str(exc)[:200])
+                return
+            if outcome == "pending":
+                continue
+            if outcome == "slow_down":
+                interval += 5
+                continue
+            if outcome == "ok":
+                msoauth.TokenCache(self._token_cache_path(name)).save(payload)
+                self._finish_oauth(name, status="authorized", detail="tokens cached")
+                return
+            self._finish_oauth(
+                name,
+                status="failed",
+                detail=f"{payload.get('error', 'unknown')}: {str(payload.get('error_description', ''))[:160]}",
+            )
+            return
+        self._finish_oauth(name, status="expired", detail="device code expired before login completed")
+
+    def _finish_oauth(self, name: str, *, status: str, detail: str) -> None:
+        with self._oauth_lock:
+            state = self._oauth_flows.setdefault(name, {})
+            state["status"] = status
+            state["detail"] = detail
+        try:
+            self.db.audit(
+                actor="connectors",
+                action="connectors.oauth.result",
+                target=name,
+                permission_tier="L3_EXTERNAL_ACTION",
+                status="ok" if status == "authorized" else "error",
+                details={"status": status, "detail": detail},
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _flow_public(state: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: state[key]
+            for key in ("status", "user_code", "verification_uri", "message", "detail", "expires_at")
+            if key in state
+        }
+
+    def _token_cache_path(self, name: str) -> Path:
+        return self.config.paths.data_dir / "oauth" / f"{name}.json"
+
+    def _resolve_access_token(self, connector: dict[str, Any]) -> str:
+        client_id = str(connector["config"].get("client_id", "")).strip()
+        tenant = str(connector["config"].get("tenant", msoauth.DEFAULT_TENANT)).strip() or msoauth.DEFAULT_TENANT
+        cache = msoauth.TokenCache(self._token_cache_path(connector["name"]))
+        return msoauth.access_token_from_cache(cache, client_id, tenant=tenant)
+
     def _resolve_password(self, connector: dict[str, Any]) -> str:
         env_name = str(connector["config"].get("password_env", "")).strip()
         if not env_name:
@@ -454,8 +605,44 @@ class ConnectorService:
             )
 
 
-def fetch_imap_items(config: dict[str, Any], password: str, *, limit: int = DEFAULT_FETCH_LIMIT) -> list[dict[str, Any]]:
-    """Fetch recent messages read-only: readonly select + BODY.PEEK, no flag changes."""
+def _validate_connector_config(connector_type: str, config: dict[str, Any]) -> None:
+    """Shared create/update rules: no inline secrets (env-var references only)
+    and the per-type required fields."""
+    leaked = sorted(
+        key
+        for key in config
+        if not key.strip().lower().endswith("_env")
+        and any(fragment in key.strip().lower() for fragment in SECRET_KEY_FRAGMENTS)
+    )
+    if leaked:
+        raise ValueError(
+            f"Connector config must not contain secrets ({', '.join(leaked)}). "
+            "Store the credential in an environment variable and reference it via password_env."
+        )
+    if connector_type == "imap":
+        auth = str(config.get("auth", "password")).strip().lower()
+        if auth == "password":
+            required_fields = ("host", "username", "password_env")
+        elif auth == "xoauth2":
+            # client_id is a PUBLIC identifier (Azure public-client app, no
+            # secret); tokens live in the on-disk cache, never in config.
+            required_fields = ("host", "username", "client_id")
+        else:
+            raise ValueError("IMAP connector 'auth' must be 'password' or 'xoauth2'.")
+        for required in required_fields:
+            if not str(config.get(required, "")).strip():
+                raise ValueError(f"IMAP connector config ({auth}) requires '{required}'.")
+    if connector_type == "ics":
+        if not str(config.get("url", "")).strip() and not str(config.get("path", "")).strip():
+            raise ValueError("ICS connector config requires 'url' or 'path'.")
+
+
+def fetch_imap_items(
+    config: dict[str, Any], secret: str, *, auth: str = "password", limit: int = DEFAULT_FETCH_LIMIT
+) -> list[dict[str, Any]]:
+    """Fetch recent messages read-only: readonly select + BODY.PEEK, no flag
+    changes. ``secret`` is the mailbox password (auth='password') or an OAuth
+    access token (auth='xoauth2', SASL XOAUTH2 — required by outlook.com)."""
     host = str(config["host"])
     port = int(config.get("port", 993))
     username = str(config["username"])
@@ -463,7 +650,10 @@ def fetch_imap_items(config: dict[str, Any], password: str, *, limit: int = DEFA
     limit = max(1, min(int(config.get("fetch_limit", limit)), 100))
     connection = imaplib.IMAP4_SSL(host, port)
     try:
-        connection.login(username, password)
+        if auth == "xoauth2":
+            connection.authenticate("XOAUTH2", lambda _challenge: msoauth.build_xoauth2(username, secret))
+        else:
+            connection.login(username, secret)
         connection.select(mailbox, readonly=True)
         _status, data = connection.search(None, "ALL")
         message_numbers = data[0].split() if data and data[0] else []

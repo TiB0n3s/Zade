@@ -204,3 +204,52 @@ def test_client_builds_token_scoped_json_requests(monkeypatch) -> None:
     send_url, send_body = calls[1]
     assert send_url == "https://api.telegram.org/bot123:ABC/sendMessage"
     assert send_body == {"chat_id": 555, "text": "hi there"}
+
+
+# ---- token resolution -------------------------------------------------------
+def test_token_from_env_prefers_process_env(monkeypatch) -> None:
+    from cofounder_kernel.telegram_adapter import token_from_env
+
+    monkeypatch.setenv("TG_TOKEN_TEST", "from-process")
+    assert token_from_env("TG_TOKEN_TEST") == "from-process"
+
+
+def test_token_from_env_falls_back_to_user_registry(monkeypatch) -> None:
+    """A kernel respawned by a long-lived launcher inherits a stale env snapshot;
+    the User-scope registry (the authoritative store) must win over absence."""
+    import sys
+
+    from cofounder_kernel.telegram_adapter import token_from_env
+
+    monkeypatch.delenv("TG_TOKEN_TEST", raising=False)
+    if sys.platform != "win32":
+        assert token_from_env("TG_TOKEN_TEST") == ""
+        return
+    import winreg
+
+    class FakeKey:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(winreg, "OpenKey", lambda *a, **k: FakeKey())
+    monkeypatch.setattr(winreg, "QueryValueEx", lambda key, name: ("from-registry", 1))
+    assert token_from_env("TG_TOKEN_TEST") == "from-registry"
+
+
+def test_token_from_env_missing_everywhere_is_empty(monkeypatch) -> None:
+    import sys
+
+    from cofounder_kernel.telegram_adapter import token_from_env
+
+    monkeypatch.delenv("TG_TOKEN_MISSING", raising=False)
+    if sys.platform == "win32":
+        import winreg
+
+        def raise_missing(key, name):
+            raise FileNotFoundError(name)
+
+        monkeypatch.setattr(winreg, "QueryValueEx", raise_missing)
+    assert token_from_env("TG_TOKEN_MISSING") == ""

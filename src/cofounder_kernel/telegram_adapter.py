@@ -53,6 +53,29 @@ class TelegramError(RuntimeError):
     pass
 
 
+def token_from_env(name: str) -> str:
+    """Read the bot token from the process env, falling back to the User-scope
+    registry on Windows. A long-lived launcher (the universe shell) hands its
+    children a snapshot of the environment from BEFORE the token was set, so a
+    respawned kernel silently loses the token; the registry is the authoritative
+    store for User env vars and never goes stale. Same secrecy posture: the
+    value is still an env var, never config or DB."""
+    import os
+    import sys
+
+    value = os.getenv(name, "")
+    if value or sys.platform != "win32":
+        return value
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            raw, _ = winreg.QueryValueEx(key, name)
+            return str(raw)
+    except OSError:
+        return ""
+
+
 @dataclass(frozen=True)
 class InboundTelegram:
     """A projected inbound Telegram message: what the governed flow needs, plus
@@ -150,9 +173,7 @@ class TelegramAdapter:
     ):
         self.config = config
         self.tg = config.telegram
-        import os
-
-        self._token = token if token is not None else os.getenv(self.tg.token_env, "")
+        self._token = token if token is not None else token_from_env(self.tg.token_env)
         self._route = route_message
         self.db = db
         self._client = TelegramClient(self.tg, self._token) if self._token else None

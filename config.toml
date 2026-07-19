@@ -123,3 +123,10 @@ token_env = "OPENCLAW_GATEWAY_TOKEN"
 # 2026-07-18.
 enabled = true
 token_env = "TELEGRAM_BOT_TOKEN"
+# Proactive morning brief (2026-07-19): once per local day at brief_time, a
+# founder-dashboard digest is pushed to every BOUND founder chat, through the
+# same reply_text:telegram standing grant as replies. One attempt per day;
+# refusals/failures are audited and notified, never retried. Set
+# brief_enabled = false to turn it off.
+brief_enabled = true
+brief_time = "07:30"
