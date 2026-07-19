@@ -46,7 +46,7 @@ distribution_targets:
   - apple_app_store_eventual
 ```
 
-The Dark Index manifest also records that it catalogs and helps users understand physical book collections; it is not a reading platform. Same Ground records that it is a resource, support, and community mobile app for veterans, EMTs, and law-enforcement personnel, with optional service verification as a trust layer.
+The Dark Index manifest also records that it catalogs and helps users understand physical book collections; it is not a reading platform. Its implementation must be created from scratch and must not ingest, copy, inspect, summarize, or reuse source code, generated files, dependencies, build artifacts, plans, completion claims, or technical decisions from the legacy `C:\BookCatalogingApp` repository. Same Ground records that it is a resource, support, and community mobile app for veterans, EMTs, and law-enforcement personnel, with optional service verification as a trust layer.
 
 ## Deep Module and Interface
 
@@ -120,7 +120,14 @@ Notifications are also sent for verified completion and terminal failure. Routin
 
 ## Initial Migration
 
-The Dark Index migration moves the validated Git repository at `C:\BookCatalogingApp` to `C:\AI Brain\project-intake\The Dark Index` as one repository-preserving move. The destination is checked before the move, and the resulting Git root, status, and working tree are verified afterward. Existing untracked project files remain intact.
+The Dark Index migration is a clean reset. The legacy repository at `C:\BookCatalogingApp` is removed from active use as a single recoverable move into a timestamped quarantine below `C:\AI Brain\.trash\dark-index-legacy`. The quarantine is excluded from ingestion, project discovery, prompt context, semantic retrieval, and builds. Zade records only the move outcome and quarantine path for recovery; it does not inspect or preserve implementation claims from that repository.
+
+A new empty folder is then created at `C:\AI Brain\project-intake\The Dark Index`. Only founder-authored product source material is admitted into the new project:
+
+- `dark_index_zade_context_pack.md`;
+- `dark_index_project_workbook.xlsx`.
+
+The files are selected from the validated Downloads/inbox copies by content hash. No legacy source, package manifest, lockfile, dependency tree, `.zade` build record, Git history, generated artifact, or technical plan is copied into the new project. A new `project.md`, new mobile scaffold, and new Git repository are created from the product definition under the project-intake flow.
 
 Same Ground migration creates `C:\AI Brain\project-intake\Same Ground` and moves the validated source pack:
 
@@ -134,7 +141,8 @@ Zade's delegated-build configuration is retargeted from the single Dark Index re
 
 ## Failure Handling
 
-- Partially copied or moved repositories are not registered as ready.
+- A failed legacy-repository quarantine leaves `C:\BookCatalogingApp` in place and blocks creation of the new Dark Index project; the system never operates on both as active projects.
+- A partially created clean Dark Index destination is not registered as ready.
 - Invalid or escaping paths are rejected and audited.
 - A malformed manifest produces one decision item and no scaffold.
 - Missing local mobile tooling pauses the project with the exact unmet prerequisite.
@@ -149,10 +157,11 @@ Automated tests cover direct-child confinement, idempotent discovery, manifest p
 Live verification requires:
 
 1. both destination folders exist and source locations no longer contain the moved project assets;
-2. The Dark Index remains a valid Git repository with its pre-move status preserved;
-3. Same Ground becomes a Git repository with a generated mobile scaffold;
-4. both project records declare mobile application, Google Play, and eventual Apple App Store intent;
-5. Zade can answer those product facts from live project intake state;
-6. a synthetic decision produces exactly one Telegram alert to the bound founder chat;
-7. a Telegram answer resolves that decision and resumes its project;
-8. the kernel, watcher, Telegram adapter, and UI report healthy after restart.
+2. `C:\BookCatalogingApp` no longer exists as an active project, its recoverable quarantine exists, and the quarantine cannot be discovered or ingested by Zade;
+3. The Dark Index is a new Git repository with no legacy Git history, source files, package manifests, lockfiles, dependencies, generated artifacts, or `.zade` build records;
+4. Same Ground becomes a Git repository with a generated mobile scaffold;
+5. both project records declare mobile application, Google Play, and eventual Apple App Store intent;
+6. Zade can answer those product facts from live project intake state without citing legacy Dark Index implementation claims;
+7. a synthetic decision produces exactly one Telegram alert to the bound founder chat;
+8. a Telegram answer resolves that decision and resumes its project;
+9. the kernel, watcher, Telegram adapter, and UI report healthy after restart.
