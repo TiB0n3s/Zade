@@ -1,11 +1,14 @@
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 import cofounder_kernel.notify as notify_module
 from cofounder_kernel.api import create_app
 from cofounder_kernel.config import AppConfig, KernelConfig, OllamaConfig, PathConfig
+from cofounder_kernel.db import KernelDatabase
+from cofounder_kernel.notify import NotificationBus
 from cofounder_kernel.notify import _in_quiet_hours
 from cofounder_kernel.ollama import OllamaClient
 
@@ -37,11 +40,14 @@ def test_default_channels_and_ui_delivery(tmp_path: Path, monkeypatch) -> None:
     inventory = client.get("/self-inventory")
 
     by_name = {item["channel"]: item for item in channels.json()["items"]}
-    assert set(by_name) == {"ui", "voice", "sms"}
+    assert set(by_name) == {"ui", "voice", "sms", "telegram"}
     assert by_name["ui"]["enabled"] is True
     assert by_name["voice"]["enabled"] is False
     assert by_name["sms"]["enabled"] is False
     assert by_name["sms"]["min_severity"] == "critical"
+    assert by_name["telegram"]["enabled"] is True
+    assert by_name["telegram"]["min_severity"] == "warning"
+    assert by_name["telegram"]["rate_limit_per_hour"] > 0
     assert sent.status_code == 200
     assert sent.json()["item"]["status"] == "delivered"
     deliveries = sent.json()["item"]["deliveries"]
@@ -52,6 +58,52 @@ def test_default_channels_and_ui_delivery(tmp_path: Path, monkeypatch) -> None:
     assert unread.json()["items"] == []
     assert "POST /notify" in inventory.json()["notification_layer"]["routes"]
     assert "sms" in inventory.json()["notification_layer"]["channels"]
+    assert "telegram" in inventory.json()["notification_layer"]["channels"]
+
+
+def test_telegram_callback_uses_bus_dedupe_and_hourly_rate_limit(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    bus = NotificationBus(db=db)
+    sent: list[str] = []
+
+    def deliver(text: str):
+        sent.append(text)
+        return SimpleNamespace(status="delivered", detail="1 bound founder chat")
+
+    bus.set_telegram_sender(deliver)
+    bus.update_channel("telegram", {"rate_limit_per_hour": 1})
+
+    first = bus.notify(
+        topic="project.decision_required",
+        title="Same Ground needs a decision",
+        body="Choose storage",
+        severity="warning",
+        dedupe_key="project-decision:9",
+    )
+    duplicate = bus.notify(
+        topic="project.decision_required",
+        title="Same Ground needs a decision",
+        body="Choose storage",
+        severity="warning",
+        dedupe_key="project-decision:9",
+    )
+    limited = bus.notify(
+        topic="project.decision_required",
+        title="The Dark Index needs a decision",
+        body="Choose navigation",
+        severity="warning",
+        dedupe_key="project-decision:10",
+    )
+
+    assert sent == ["Same Ground needs a decision\n\nChoose storage"]
+    assert duplicate["status"] == "suppressed"
+    assert duplicate["suppressed_reason"] == "duplicate_within_window"
+    first_telegram = next(item for item in first["deliveries"] if item["channel"] == "telegram")
+    limited_telegram = next(item for item in limited["deliveries"] if item["channel"] == "telegram")
+    assert first_telegram["status"] == "delivered"
+    assert limited_telegram["status"] == "suppressed"
+    assert limited_telegram["detail"] == "rate_limited"
 
 
 def test_dedupe_rate_limit_and_severity_rules(tmp_path: Path, monkeypatch) -> None:

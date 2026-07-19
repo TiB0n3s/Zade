@@ -86,6 +86,17 @@ class InboundTelegram:
     text: str
 
 
+@dataclass(frozen=True)
+class TelegramDeliveryResult:
+    """Aggregate result for one bus-controlled proactive Telegram delivery."""
+
+    status: str
+    recipient_count: int
+    delivered_count: int
+    failed_count: int
+    detail: str
+
+
 def _allowed_hosts(api_base: str) -> frozenset[str]:
     host = (urllib.parse.urlparse(api_base).hostname or "").lower()
     return frozenset({host}) if host else frozenset()
@@ -260,7 +271,90 @@ class TelegramAdapter:
         except Exception:
             return
 
-    def _egress_allows_reply(self) -> bool:
+    def send_bound_founders(self, text: str) -> TelegramDeliveryResult:
+        """Send one proactive message only to active Telegram founder bindings.
+
+        Callers are expected to reach this through ``NotificationBus`` so
+        severity, quiet hours, dedupe, and rate limits are applied first. This
+        adapter still independently enforces the transport switch, the existing
+        ``reply_text:telegram`` egress grant, Telegram's text bound, and the
+        active founder-binding allowlist.
+        """
+        if not self.tg.enabled:
+            self._audit_proactive(status="suppressed", detail="telegram_disabled")
+            return TelegramDeliveryResult("suppressed", 0, 0, 0, "telegram_disabled")
+
+        chat_ids = self._bound_founder_chat_ids()
+        if not chat_ids:
+            self._audit_proactive(status="suppressed", detail="no_bound_founder_chats")
+            return TelegramDeliveryResult("suppressed", 0, 0, 0, "no_bound_founder_chats")
+
+        if not self._egress_allows_reply(purpose="telegram.notification"):
+            for chat_id in chat_ids:
+                self._audit_proactive(
+                    status="suppressed", detail="egress_denied", chat_id=chat_id
+                )
+            return TelegramDeliveryResult("suppressed", len(chat_ids), 0, 0, "egress_denied")
+
+        if self._client is None:
+            for chat_id in chat_ids:
+                self._audit_proactive(
+                    status="failed", detail="telegram_client_not_configured", chat_id=chat_id
+                )
+            return TelegramDeliveryResult(
+                "failed", len(chat_ids), 0, len(chat_ids), "telegram_client_not_configured"
+            )
+
+        message = str(text or "").strip()[: self.tg.max_reply_chars]
+        if not message:
+            for chat_id in chat_ids:
+                self._audit_proactive(status="suppressed", detail="empty_message", chat_id=chat_id)
+            return TelegramDeliveryResult("suppressed", len(chat_ids), 0, 0, "empty_message")
+
+        delivered = 0
+        failed = 0
+        for chat_id in chat_ids:
+            try:
+                self._client.send_message(chat_id, message)
+            except Exception as exc:
+                failed += 1
+                self._audit_proactive(status="failed", detail=str(exc)[:200], chat_id=chat_id)
+            else:
+                delivered += 1
+                self._audit_proactive(status="delivered", detail="sendMessage", chat_id=chat_id)
+
+        status = "delivered" if delivered else "failed"
+        detail = f"delivered={delivered} failed={failed} recipients={len(chat_ids)}"
+        return TelegramDeliveryResult(status, len(chat_ids), delivered, failed, detail)
+
+    def _bound_founder_chat_ids(self) -> list[int]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT external_id FROM channel_bindings "
+                "WHERE channel = 'telegram' AND status = 'active' ORDER BY id ASC"
+            ).fetchall()
+        chats: list[int] = []
+        for row in rows:
+            try:
+                chats.append(int(row["external_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return chats
+
+    def _audit_proactive(self, *, status: str, detail: str, chat_id: int | None = None) -> None:
+        try:
+            self.db.audit(
+                actor="telegram",
+                action="telegram.proactive.delivery",
+                target=f"telegram:{chat_id}" if chat_id is not None else "telegram",
+                permission_tier="L3_EXTERNAL_ACTION",
+                status=status,
+                details={"detail": detail},
+            )
+        except Exception:
+            pass
+
+    def _egress_allows_reply(self, *, purpose: str = "telegram.reply") -> bool:
         """Gate the outbound reply through the data-class egress matrix, exactly
         like the voice lane. REPLY_TEXT -> telegram (CHANNEL tier) is STANDING, so
         a ``reply_text:telegram`` grant authorizes it; otherwise fail-closed. Every
@@ -270,7 +364,7 @@ class TelegramAdapter:
                 request_id=secrets.token_hex(8),
                 data_class=DataClass.REPLY_TEXT,
                 vendor="telegram",
-                purpose="telegram.reply",
+                purpose=purpose,
             )
         )
         try:

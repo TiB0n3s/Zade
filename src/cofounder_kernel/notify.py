@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from . import netguard
 from .db import KernelDatabase, utc_now
@@ -25,6 +25,14 @@ DEFAULT_CHANNELS = [
         "quiet_start": "22:00",
         "quiet_end": "07:00",
     },
+    {
+        "channel": "telegram",
+        "enabled": True,
+        "min_severity": "warning",
+        "rate_limit_per_hour": 12,
+        "quiet_start": "22:00",
+        "quiet_end": "07:00",
+    },
 ]
 
 
@@ -35,15 +43,31 @@ class NotificationBus:
     notify() and never talk to a channel directly. Channel rules — enabled,
     minimum severity, quiet hours, hourly rate limits, and a recipient
     whitelist for outbound channels — are founder configuration. Enabling an
-    outbound channel (sms) is a standing founder grant, bounded by those rules;
-    critical notifications bypass quiet hours but never the whitelist or rate
-    limit. Every suppression is recorded, never silent.
+    outbound channel (sms or Telegram) is a standing founder grant, bounded by
+    those rules; critical notifications bypass quiet hours but never the
+    whitelist or rate limit. Every suppression is recorded, never silent.
     """
 
-    def __init__(self, *, db: KernelDatabase, voice: Any | None = None):
+    def __init__(
+        self,
+        *,
+        db: KernelDatabase,
+        voice: Any | None = None,
+        telegram_sender: Callable[[str], Any] | None = None,
+    ):
         self.db = db
         self.voice = voice
+        self.telegram_sender = telegram_sender
         self.ensure_default_channels()
+
+    def set_telegram_sender(self, sender: Callable[[str], Any]) -> None:
+        """Attach Telegram's proactive callback after the API builds its adapter.
+
+        The bus remains the only producer-facing interface, so its dedupe,
+        severity, quiet-hours, and rate-limit rules run before any Telegram
+        egress is attempted.
+        """
+        self.telegram_sender = sender
 
     def ensure_default_channels(self) -> None:
         now = utc_now()
@@ -239,6 +263,8 @@ class NotificationBus:
             return self._deliver_voice(title=title, body=body)
         if name == "sms":
             return self._deliver_sms(channel, title=title, body=body)
+        if name == "telegram":
+            return self._deliver_telegram(title=title, body=body)
         return "failed", f"no adapter for channel {name}"
 
     def _deliver_voice(self, *, title: str, body: str) -> tuple[str, str]:
@@ -279,6 +305,20 @@ class NotificationBus:
                 return "delivered", f"gateway HTTP {response.status}"
         except Exception as exc:
             return "failed", str(exc)[:200]
+
+    def _deliver_telegram(self, *, title: str, body: str) -> tuple[str, str]:
+        if self.telegram_sender is None:
+            return "failed", "telegram adapter not wired"
+        text = f"{title}\n\n{body}".strip()
+        try:
+            result = self.telegram_sender(text)
+        except Exception as exc:
+            return "failed", str(exc)[:200]
+        status = str(getattr(result, "status", "failed"))
+        detail = str(getattr(result, "detail", ""))[:400]
+        if status not in {"delivered", "suppressed", "failed"}:
+            return "failed", f"invalid telegram delivery status: {status}"[:400]
+        return status, detail
 
     def _delivered_last_hour(self, channel: str) -> int:
         cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat(timespec="seconds")

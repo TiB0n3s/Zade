@@ -7,7 +7,9 @@ token are needed. The egress gate runs for real against a KernelConfig.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from cofounder_kernel.channel_auth import ChannelAuth
 from cofounder_kernel.config import (
     AppConfig,
     EgressConfig,
@@ -15,6 +17,7 @@ from cofounder_kernel.config import (
     OllamaConfig,
     TelegramConfig,
 )
+from cofounder_kernel.db import KernelDatabase
 from cofounder_kernel.telegram_adapter import (
     TelegramAdapter,
     TelegramClient,
@@ -22,12 +25,18 @@ from cofounder_kernel.telegram_adapter import (
 )
 
 
-def make_config(*, grant: bool, policy: str = "local_preferred") -> KernelConfig:
+def make_config(
+    *, grant: bool, policy: str = "local_preferred", max_reply_chars: int = 4000
+) -> KernelConfig:
     grants = ("reply_text:telegram",) if grant else ()
     return KernelConfig(
         app=AppConfig(),
         ollama=OllamaConfig(base_url="http://127.0.0.1:1", provider_policy=policy),
-        telegram=TelegramConfig(enabled=True, token_env="TELEGRAM_TEST_TOKEN"),
+        telegram=TelegramConfig(
+            enabled=True,
+            token_env="TELEGRAM_TEST_TOKEN",
+            max_reply_chars=max_reply_chars,
+        ),
         egress=EgressConfig(standing_grants=grants),
     )
 
@@ -59,6 +68,14 @@ def make_adapter(config: KernelConfig, route, updates=None):
     adapter = TelegramAdapter(config, route_message=route, db=FakeDB(), token="test-token")
     adapter._client = FakeClient(updates)  # type: ignore[assignment]
     return adapter
+
+
+def bind_founder(db: KernelDatabase, *, external_id: str, channel: str = "telegram") -> int:
+    auth = ChannelAuth(db)
+    enrollment = auth.begin_enrollment(channel)
+    identity = auth.confirm_enrollment(channel, external_id, enrollment["code"])
+    assert identity.binding_id is not None
+    return identity.binding_id
 
 
 # ---- projection -------------------------------------------------------------
@@ -163,6 +180,58 @@ def test_local_only_policy_blocks_reply_even_with_grant() -> None:
     ])
     adapter._poll_once()
     assert adapter._client.sent == []  # type: ignore[attr-defined]
+
+
+# ---- proactive notification delivery --------------------------------------
+def test_proactive_notification_only_targets_active_bound_founders(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    bind_founder(db, external_id="42")
+    revoked = bind_founder(db, external_id="43")
+    ChannelAuth(db).revoke(revoked)
+    bind_founder(db, external_id="99", channel="slack")
+
+    adapter = TelegramAdapter(
+        make_config(grant=True), route_message=lambda _: {}, db=db, token="test-token"
+    )
+    adapter._client = FakeClient()  # type: ignore[assignment]
+
+    result = adapter.send_bound_founders("Same Ground needs a decision")
+
+    assert adapter._client.sent == [(42, "Same Ground needs a decision")]  # type: ignore[attr-defined]
+    assert result.status == "delivered"
+    assert result.recipient_count == 1
+    assert result.delivered_count == 1
+    assert result.failed_count == 0
+
+
+def test_proactive_notification_requires_reply_text_telegram_grant(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    bind_founder(db, external_id="42")
+    adapter = TelegramAdapter(
+        make_config(grant=False), route_message=lambda _: {}, db=db, token="test-token"
+    )
+    adapter._client = FakeClient()  # type: ignore[assignment]
+
+    result = adapter.send_bound_founders("Private project decision")
+
+    assert adapter._client.sent == []  # type: ignore[attr-defined]
+    assert result.status == "suppressed"
+    assert result.detail == "egress_denied"
+
+
+def test_proactive_notification_obeys_telegram_reply_length(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    bind_founder(db, external_id="42")
+    config = make_config(grant=True, max_reply_chars=12)
+    adapter = TelegramAdapter(config, route_message=lambda _: {}, db=db, token="test-token")
+    adapter._client = FakeClient()  # type: ignore[assignment]
+
+    adapter.send_bound_founders("This notification is longer than twelve characters")
+
+    assert adapter._client.sent == [(42, "This notific")]  # type: ignore[attr-defined]
 
 
 # ---- client request construction -------------------------------------------

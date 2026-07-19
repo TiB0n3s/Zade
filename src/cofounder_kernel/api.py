@@ -2515,6 +2515,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         )
 
     telegram_adapter = TelegramAdapter(cfg, route_message=_route_telegram, db=db)
+    bus.set_telegram_sender(telegram_adapter.send_bound_founders)
     app.state.telegram_adapter = telegram_adapter
     if run_boot_maintenance and cfg.telegram.enabled:
         try:
@@ -4275,7 +4276,7 @@ def _inventory_payload(
             "POST /notify/channels/{channel}",
         ],
         "artifacts": ["notifications", "notification_deliveries", "notification_channels"],
-        "channels": ["ui", "voice", "sms"],
+        "channels": ["ui", "voice", "sms", "telegram"],
         "operating_rules": [
             "Producers call notify(); no feature talks to a delivery channel directly.",
             "Channel rules govern egress: enabled flag, minimum severity, quiet hours, hourly rate limits, and a recipient whitelist for outbound channels.",
