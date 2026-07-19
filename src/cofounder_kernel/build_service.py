@@ -8,6 +8,7 @@ from typing import Any, Callable, Sequence
 
 from .build_assessment import BuildAssessmentService
 from .build_budget import BuildBudgetService
+from .build_orchestrator import BuildOrchestrator
 from .build_routing import (
     BuildContextSelector,
     BuildRouter,
@@ -18,6 +19,7 @@ from .build_routing import (
 )
 from .build_store import BuildStore
 from .build_types import BuildAssessment, BuildLease, BuildSession, BuildTier
+from .build_workers import BuildExecutionManager
 from .config import KernelConfig
 from .db import KernelDatabase
 from .egress import (
@@ -50,6 +52,8 @@ class BuildService:
         cloud_coding_agent_factory: CloudCodingAgentFactory | None,
         egress_policy: EgressPolicy,
         typed_confirmation_phrase: str = "make the jump to hyperspace",
+        orchestrator: BuildOrchestrator | None = None,
+        execution_manager: BuildExecutionManager | None = None,
     ):
         self.config = config
         self.db = db
@@ -61,6 +65,17 @@ class BuildService:
         self.cloud_coding_agent_factory = cloud_coding_agent_factory
         self.egress_policy = egress_policy
         self.typed_confirmation_phrase = typed_confirmation_phrase
+        self.orchestrator = orchestrator
+        self.execution_manager = execution_manager
+
+    def configure_orchestration(
+        self,
+        *,
+        orchestrator: BuildOrchestrator,
+        execution_manager: BuildExecutionManager,
+    ) -> None:
+        self.orchestrator = orchestrator
+        self.execution_manager = execution_manager
 
     def prepare(
         self,
@@ -78,6 +93,8 @@ class BuildService:
             task=task, workspace=workspace, acceptance=acceptance
         )
         session = self.store.create_session(assessment, work_item_id=work_item_id)
+        if self.orchestrator is not None:
+            self.orchestrator.ensure_plan(session.id)
         stored_assessment = self.store.get_assessment(session.assessment_id)
         assert stored_assessment is not None
         limits = self.config.build.limits(stored_assessment.recommended_tier)
@@ -252,6 +269,8 @@ class BuildService:
         return self.status(session.id)
 
     def run(self, session_id: int) -> dict[str, Any]:
+        if self.orchestrator is not None:
+            return self.orchestrator.run_next(session_id)
         session, assessment = self._session_assessment(session_id)
         lease = self.store.get_active_lease(session_id)
         if lease is None:
@@ -362,6 +381,12 @@ class BuildService:
             source_type=BUILD_LEASE_SOURCE, source_id=session_id
         )
         usage_events = self.store.list_session_usage(session_id) if lease else []
+        tasks = self.store.list_tasks(session_id)
+        task_runs = [
+            run
+            for task in tasks
+            for run in self.store.list_task_runs(task_id=task.id)
+        ]
         return {
             "assessment": _assessment_dict(assessment),
             "session": _session_dict(session),
@@ -374,7 +399,38 @@ class BuildService:
             "route_counts": _route_counts(session.checkpoint),
             "approval_request_id": approval.id if approval else None,
             "upgrade_request_id": self._pending_upgrade_id(session_id),
+            "tasks": [_task_dict(task) for task in tasks],
+            "task_runs": [_task_run_dict(run) for run in task_runs],
+            "artifacts": [asdict(item) for item in self.store.list_artifacts(session_id)],
+            "worker": (
+                self.execution_manager.status(session_id)
+                if self.execution_manager is not None
+                else None
+            ),
         }
+
+    def start(self, session_id: int) -> dict[str, Any]:
+        if self.execution_manager is None:
+            raise ValueError("Durable build background execution is not configured")
+        return self.execution_manager.start(session_id)
+
+    def pause(self, session_id: int) -> dict[str, Any]:
+        if self.execution_manager is None:
+            session = self.store.pause_session(session_id)
+            return {"status": session.status, "session_id": session_id}
+        return self.execution_manager.pause(session_id)
+
+    def resume(self, session_id: int) -> dict[str, Any]:
+        if self.execution_manager is None:
+            session = self.store.resume_session(session_id)
+            return {"status": session.status, "session_id": session_id}
+        return self.execution_manager.resume(session_id)
+
+    def cancel(self, session_id: int) -> dict[str, Any]:
+        if self.execution_manager is None:
+            session = self.store.cancel_session(session_id)
+            return {"status": session.status, "session_id": session_id}
+        return self.execution_manager.cancel(session_id)
 
     def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return [self.status(session.id) for session in self.store.list_sessions(limit=limit)]
@@ -692,6 +748,47 @@ def _lease_dict(lease: BuildLease | None) -> dict[str, Any] | None:
         "cloud_turns": lease.cloud_turns,
         "started_at": lease.started_at,
         "expires_at": lease.expires_at,
+    }
+
+
+def _task_dict(task: Any) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "session_id": task.session_id,
+        "phase": task.phase,
+        "position": task.position,
+        "kind": task.kind.value,
+        "title": task.title,
+        "payload": task.payload,
+        "dependencies": list(task.dependencies),
+        "acceptance": task.acceptance,
+        "idempotency_key": task.idempotency_key,
+        "status": task.status.value,
+        "max_attempts": task.max_attempts,
+        "attempt_count": task.attempt_count,
+        "active_run_id": task.active_run_id,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }
+
+
+def _task_run_dict(run: Any) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "task_id": run.task_id,
+        "session_id": run.session_id,
+        "attempt_number": run.attempt_number,
+        "worker_id": run.worker_id,
+        "backend": run.backend,
+        "command": list(run.command),
+        "pid": run.pid,
+        "status": run.status.value,
+        "result": run.result,
+        "error": run.error,
+        "log_path": run.log_path,
+        "artifact_ids": list(run.artifact_ids),
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
     }
 
 

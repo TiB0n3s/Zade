@@ -8,6 +8,7 @@ import pytest
 from cofounder_kernel.build_assessment import BuildAssessmentService
 from cofounder_kernel.build_budget import BuildBudgetService
 from cofounder_kernel.build_budget import ProviderUsage
+from cofounder_kernel.build_orchestrator import BuildOrchestrator, BuildPlanner
 from cofounder_kernel.build_routing import BuildRouter
 from cofounder_kernel.build_service import BuildService
 from cofounder_kernel.build_store import BuildStore
@@ -21,6 +22,7 @@ from cofounder_kernel.config import (
 )
 from cofounder_kernel.db import KernelDatabase
 from cofounder_kernel.egress import EgressPolicy
+from cofounder_kernel.toolchain_profiles import ToolchainRegistry
 
 
 CONFIRMATION = "make the jump to hyperspace"
@@ -163,6 +165,31 @@ def test_approve_mints_lease_then_local_route_spends_zero(tmp_path: Path) -> Non
 
     assert approved["run"]["route"] == "local"
     assert approved["usage"]["actual_microdollars"] == 0
+    assert len(local.calls) == 1
+    assert cloud.calls == []
+
+
+def test_durable_service_can_run_local_phases_before_cloud_approval(tmp_path: Path) -> None:
+    service, _database, local, cloud = make_service(tmp_path)
+    planner = BuildPlanner(store=service.store, toolchains=ToolchainRegistry())
+    orchestrator = BuildOrchestrator(
+        store=service.store,
+        planner=planner,
+        router=service.router,
+        local_agent=local,
+    )
+    service.orchestrator = orchestrator
+    prepared = service.prepare(
+        task="Build the app", workspace=tmp_path / "workspace"
+    )
+
+    discovery = service.run(prepared["session"]["id"])
+    requirements = service.run(prepared["session"]["id"])
+
+    assert discovery["status"] == "succeeded"
+    assert requirements["status"] == "succeeded"
+    assert requirements["route"] == "local"
+    assert service.status(prepared["session"]["id"])["lease"] is None
     assert len(local.calls) == 1
     assert cloud.calls == []
 

@@ -129,6 +129,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `e16e913` 2026-07-19 - feat: persist durable build orchestration
 - `1dd6384` 2026-07-19 - feat: add governed build command runner
 - `1e78147` 2026-07-19 - docs: design durable product build orchestration
 - `80216b5` 2026-07-19 - Voice streaming + cloud-voice teardown; MCP evidence.recent; shareable-memory review UX
@@ -140,7 +141,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `365701e` 2026-07-18 - feat: orchestrate approved hybrid builds
 - `805b4f7` 2026-07-18 - Enable OpenClaw bridge; fix connect enums and subscription
 - `9efb717` 2026-07-18 - feat: add budgeted Anthropic build adapter
-- `075c481` 2026-07-18 - refactor: make coding model provider neutral
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
