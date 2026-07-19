@@ -133,6 +133,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `178c9d4` 2026-07-19 - fix: exclude generated outputs from verifier context
 - `50f9405` 2026-07-19 - fix: verify Flutter implementation phases locally
 - `a027968` 2026-07-19 - Merge branch 'codex/build-runtime-enablement'
 - `10a1f38` 2026-07-19 - feat: harden durable build phase gates
@@ -144,7 +145,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `c16d25c` 2026-07-19 - XOAUTH2 IMAP for outlook.com: Microsoft device-code flow + token cache
 - `de459ce` 2026-07-19 - feat: expose durable product build orchestration
 - `1455d76` 2026-07-19 - Connectors: in-place update endpoint (POST /connectors/{name}/update)
-- `8956197` 2026-07-19 - feat: add optional review and build calibration
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

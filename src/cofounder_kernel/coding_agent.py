@@ -356,7 +356,12 @@ class CodingAgentService:
         # this run changed nothing).
         if state["status"] == "ok" and (verify_targets or verify_always):
             auto_verification = self._run_verification(
-                tools, root, verify_targets, steps=steps, rounds=state["rounds"]
+                tools,
+                root,
+                verify_targets,
+                steps=steps,
+                rounds=state["rounds"],
+                force_workspace=verify_always,
             )
             repairs = 0
             while (
@@ -384,7 +389,12 @@ class CodingAgentService:
                     # would reproduce the same failure; keep the honest result.
                     break
                 auto_verification = self._run_verification(
-                    tools, root, real_change_targets(), steps=steps, rounds=state["rounds"]
+                    tools,
+                    root,
+                    real_change_targets(),
+                    steps=steps,
+                    rounds=state["rounds"],
+                    force_workspace=verify_always,
                 )
             auto_verification["repair_rounds"] = repairs
             rendered = str(auto_verification.pop("rendered", "") or "")
@@ -581,7 +591,11 @@ class CodingAgentService:
         return ["npm", "exec", "--no", "--", "tsc", "--noEmit"]
 
     def _verification_plan(
-        self, root: Path, changed: list[str]
+        self,
+        root: Path,
+        changed: list[str],
+        *,
+        force_workspace: bool = False,
     ) -> tuple[str, list[list[str]], list[str]]:
         """The kernel's check plan for this run: (mode, check argvs, unchecked
         files). Prefer the workspace's real test entry point (plus tsc for
@@ -590,7 +604,13 @@ class CodingAgentService:
         py_compile, .json via json.tool, .ts/.tsx via tsc). Files with no
         reliable checker come back as unchecked — they are reported as
         unverified, never silently passed."""
-        if (root / "pubspec.yaml").is_file() and (root / "lib").is_dir():
+        flutter_workspace = (root / "pubspec.yaml").is_file() and (
+            root / "lib"
+        ).is_dir()
+        changed_product_files = any(
+            not _is_build_phase_artifact(relative_path) for relative_path in changed
+        )
+        if flutter_workspace and (force_workspace or changed_product_files):
             return (
                 "tests",
                 [
@@ -632,11 +652,14 @@ class CodingAgentService:
         *,
         steps: list[dict[str, Any]],
         rounds: int,
+        force_workspace: bool = False,
     ) -> dict[str, Any]:
         """Execute the check plan through the audited run_command path and
         return a structured verdict: ok True (all checks passed), False (a
         check failed), or None (no runnable check exists — unverified)."""
-        mode, checks, unchecked = self._verification_plan(root, changed)
+        mode, checks, unchecked = self._verification_plan(
+            root, changed, force_workspace=force_workspace
+        )
         results: list[dict[str, Any]] = []
         rendered_blocks: list[str] = []
         failing_blocks: list[str] = []
@@ -1317,6 +1340,11 @@ def _is_generated_review_target(relative_path: str) -> bool:
         "flutter",
         "ephemeral",
     )
+
+
+def _is_build_phase_artifact(relative_path: str) -> bool:
+    normalized = relative_path.replace("\\", "/").casefold().lstrip("./")
+    return normalized.startswith("zade/build/")
 
 
 def _tool_schemas(tools: dict[str, AgentTool]) -> list[dict[str, Any]]:

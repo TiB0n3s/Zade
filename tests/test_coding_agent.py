@@ -746,6 +746,25 @@ def test_verification_plan_uses_offline_flutter_checks(tmp_path: Path) -> None:
     ]
     assert unchecked == []
 
+    mode, checks, unchecked = svc._verification_plan(
+        flutter_ws, [".zade/build/requirements.md"]
+    )
+    assert mode == "none"
+    assert checks == []
+    assert unchecked == [".zade/build/requirements.md"]
+
+    mode, checks, unchecked = svc._verification_plan(
+        flutter_ws,
+        [".zade/build/build_info.json"],
+        force_workspace=True,
+    )
+    assert mode == "tests"
+    assert checks == [
+        ["flutter", "analyze", "--no-pub"],
+        ["flutter", "test", "--no-pub"],
+    ]
+    assert unchecked == []
+
 
 def test_verify_always_checks_goal_state_on_no_change_runs(
     tmp_path: Path, fixture_repo: Path
