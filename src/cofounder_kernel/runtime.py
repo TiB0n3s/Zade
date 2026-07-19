@@ -1617,6 +1617,19 @@ The founder's current message is supplied separately as the user-role message. D
                 )
         if (
             not ledger_answered
+            and not (chat_action_route or research_route or build_route)
+        ):
+            registered_projects = self.db.list_projects(limit=50)
+            if _is_project_registry_status_question(message, registered_projects):
+                text = _render_project_registry_status(message, registered_projects)
+                ledger_answered = True
+                applied_rules.append("project_registry_status_answer")
+                notes.append(
+                    "Answered a project-status question deterministically from the live "
+                    "project registry; the model draft and historical recall were discarded."
+                )
+        if (
+            not ledger_answered
             and _is_completion_or_status_question(message)
             and _matches_prior_assistant_reply(text, recent_turns or [])
         ):
@@ -4139,6 +4152,57 @@ def _render_work_plan_status(plan: dict[str, Any]) -> str:
     lines.append(
         "Each status above is the kernel's verified run outcome, not prose. "
         "Say `perform step N` to run one."
+    )
+    return "\n".join(lines)
+
+
+def _is_project_registry_status_question(
+    message: str, projects: list[dict[str, Any]]
+) -> bool:
+    if not projects or not _is_completion_or_status_question(message):
+        return False
+    lowered = str(message or "").casefold()
+    if re.search(r"\bprojects?\b", lowered):
+        return True
+    return any(str(project.get("name") or "").casefold() in lowered for project in projects)
+
+
+def _render_project_registry_status(
+    message: str, projects: list[dict[str, Any]]
+) -> str:
+    lowered = str(message or "").casefold()
+    mentioned = [
+        project
+        for project in projects
+        if str(project.get("name") or "").casefold() in lowered
+    ]
+    selected = mentioned or projects
+    lines = [f"Current registered projects — {len(selected)}:"]
+    target_labels = {
+        "google_play": "Google Play",
+        "apple_app_store_eventual": "Apple App Store (eventual)",
+    }
+    for project in selected:
+        product_type = str(project.get("product_type") or "project").replace("_", " ")
+        state = str(project.get("lifecycle_state") or "unknown")
+        targets = ", ".join(
+            target_labels.get(str(target), str(target).replace("_", " "))
+            for target in project.get("distribution_targets", [])
+        )
+        verification = (project.get("metadata") or {}).get("existing_scaffold_verification")
+        verification = verification if isinstance(verification, dict) else {}
+        checked_at = str(verification.get("checked_at") or "").strip()
+        verified = ""
+        if verification.get("ok") is True:
+            verified = f"; local verification passed{f' at {checked_at}' if checked_at else ''}"
+        target_text = f"; targets: {targets}" if targets else ""
+        lines.append(
+            f"- {project.get('name')} — {product_type}; state: {state}"
+            f"{target_text}{verified}."
+        )
+    lines.append(
+        "This is the live project registry. Historical goals and recalled build claims "
+        "do not count as active projects."
     )
     return "\n".join(lines)
 

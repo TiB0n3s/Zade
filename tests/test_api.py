@@ -163,6 +163,75 @@ def test_ui_assets_send_no_cache_header(tmp_path: Path, monkeypatch) -> None:
         assert response.headers.get("cache-control") == "no-cache", path
 
 
+def test_runtime_project_status_uses_live_registry_over_stale_model_draft(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+
+    def stale_project_answer(self, **kwargs):
+        return GenerateResult(
+            response=(
+                "The status on the three new projects is: The Dark Index, "
+                "Lakes & Lures, and Same Ground. All are in development."
+            ),
+            model="qwen3:14b",
+            raw={},
+        )
+
+    monkeypatch.setattr(OllamaClient, "chat", stale_project_answer)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(
+            hot_root=tmp_path / "hot",
+            cold_root=tmp_path / "cold",
+            data_dir=tmp_path / "data",
+        ),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    app = create_app(config, run_boot_maintenance=False)
+    for name, checked_at in (
+        ("The Dark Index", "2026-07-19T16:04:28-05:00"),
+        ("Same Ground", "2026-07-19T16:04:21-05:00"),
+    ):
+        app.state.db.upsert_project(
+            canonical_path=str(config.paths.project_intake_dir / name),
+            name=name,
+            product_type="mobile_application",
+            distribution_targets=["google_play", "apple_app_store_eventual"],
+            lifecycle_state="verified",
+            repo_fingerprint=name,
+            metadata={
+                "existing_scaffold_verification": {"ok": True, "checked_at": checked_at}
+            },
+        )
+    client = TestClient(app)
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": (
+                "You should have two projects to work on autonomously, "
+                "what is the status on those builds?"
+            ),
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "use_tools": False,
+            "contrarian": False,
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert "Current registered projects — 2" in payload["response"]
+    assert "The Dark Index — mobile application; state: verified" in payload["response"]
+    assert "Same Ground — mobile application; state: verified" in payload["response"]
+    assert "Google Play" in payload["response"]
+    assert "Apple App Store (eventual)" in payload["response"]
+    assert "Lakes & Lures" not in payload["response"]
+    assert "project_registry_status_answer" in payload["governor"]["applied_rules"]
+
+
 def test_health_and_memory_routes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     config = KernelConfig(
