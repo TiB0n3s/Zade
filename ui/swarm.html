@@ -322,7 +322,11 @@
           <div class="build-task-phase">${esc(task.phase)}</div>
           <div class="build-task-title">${esc(task.title)}</div>
           <div class="build-task-status">${esc(task.status)}</div>
+          ${task.status === 'failed' ? `<button class="ghost build-task-retry" data-task-id="${Number(task.id)}" type="button">Retry</button>` : ''}
         </div>`).join('') : '<div class="build-tools">No lifecycle tasks planned.</div>';
+      byId('buildTasks').querySelectorAll('.build-task-retry').forEach((button) => {
+        button.addEventListener('click', () => retryBuildTask(Number(button.dataset.taskId)));
+      });
       byId('buildSection').hidden = false;
       byId('buildTier').value = tier;
       const pendingInitial = Boolean(build.approval_request_id) && !lease;
@@ -426,6 +430,19 @@
         await loadBuild(currentBuild.session.id);
         note.textContent = 'Build session quarantined and active leases paused.';
         note.className = 'note good';
+      } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
+    }
+    async function retryBuildTask(taskId) {
+      if (!currentBuild || !taskId) return;
+      const reason = window.prompt('Reason for one additional local attempt:');
+      if (!reason || !reason.trim()) return;
+      const note = byId('buildNote'); note.textContent = ''; note.className = 'note';
+      try {
+        await api(`/build/sessions/${currentBuild.session.id}/tasks/${taskId}/retry`, {
+          method: 'POST', body: JSON.stringify({ reason: reason.trim() })
+        });
+        await loadBuild(currentBuild.session.id);
+        note.textContent = 'Audited local retry started.'; note.className = 'note good';
       } catch (err) { note.textContent = 'Failed: ' + err.message; note.className = 'note err'; }
     }
     async function verifyBuild() {

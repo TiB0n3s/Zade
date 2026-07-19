@@ -109,6 +109,7 @@ from .models import (
     BuildQuarantineRequest,
     BuildPlanRequest,
     BuildTaskCreateRequest,
+    BuildTaskRetryRequest,
     BuildVerifyRequest,
     GitHubRunCancelRequest,
     GitHubWorkflowDispatchRequest,
@@ -1444,6 +1445,18 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"task": asdict(task)}
+
+    @app.post("/build/sessions/{session_id}/tasks/{task_id}/retry")
+    def build_session_task_retry(
+        session_id: int, task_id: int, payload: BuildTaskRetryRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            return build_service.retry_local_task(
+                session_id, task_id, reason=payload.reason
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/build/sessions/{session_id}/approve")
     def build_session_approve(
@@ -4015,11 +4028,13 @@ def _inventory_payload(
             "POST /build/sessions/{session_id}/plan",
             "GET /build/sessions/{session_id}/tasks",
             "POST /build/sessions/{session_id}/tasks",
+            "POST /build/sessions/{session_id}/tasks/{task_id}/retry",
             "POST /build/sessions/{session_id}/run-next",
             "POST /build/sessions/{session_id}/start",
             "POST /build/sessions/{session_id}/pause",
             "POST /build/sessions/{session_id}/resume",
             "POST /build/sessions/{session_id}/cancel",
+            "POST /build/sessions/{session_id}/quarantine",
             "GET /build/runs/{run_id}",
             "POST /build/runs/{run_id}/cancel",
             "GET /build/toolchains",
@@ -4048,6 +4063,7 @@ def _inventory_payload(
             "Routine coding, repository discovery, tools, tests, and verification stay on Zade's local Ollama coding agent.",
             "Eligible Anthropic turns require a typed project lease, lease-scoped source-code egress, and a worst-case reservation under token, dollar, turn, and time ceilings.",
             "Cloud failures never retry automatically, fall back to another paid provider, or enlarge the approved lease.",
+            "Failed or interrupted local tasks may receive one operator-authorized audited retry; cloud tasks are rejected by that recovery path.",
             "Build checkpoints, immutable usage events, cache categories, route reasons, and upgrade requests survive restart in SQLite.",
             "Discovery through release is a durable local-first task graph with background start, pause, resume, cancellation, and restart recovery.",
             "All build commands are argv-only, profile-constrained, workspace-confined, time-bounded, credential-stripped, and audited.",

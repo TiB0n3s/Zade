@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from cofounder_kernel.api import create_app
 from cofounder_kernel.anthropic_client import AnthropicNotConfigured
 from cofounder_kernel.coding_agent import CodingAgentService
+from cofounder_kernel.build_types import BuildTaskKind, BuildTaskStatus
 from cofounder_kernel.config import (
     AnthropicConfig,
     AppConfig,
@@ -454,6 +455,42 @@ def test_durable_build_mutations_require_local_token(build_client) -> None:
         assert response.status_code == 401, route
 
 
+def test_failed_local_task_can_be_retried_with_audited_reason(build_client) -> None:
+    client, app, workspace = build_client
+    prepared = _assess(client, workspace)
+    session_id = prepared["session"]["id"]
+    task = app.state.build_store.create_task(
+        session_id,
+        phase="verification",
+        kind=BuildTaskKind.VERIFICATION,
+        title="Transient verification",
+        idempotency_key="transient-verification",
+    )
+    run = app.state.build_store.claim_task(
+        task.id, worker_id="worker", backend="local"
+    )
+    app.state.build_store.finish_task_run(
+        run.id,
+        status=BuildTaskStatus.INTERRUPTED,
+        error="kernel restarted",
+    )
+
+    unauthorized = client.post(
+        f"/build/sessions/{session_id}/tasks/{task.id}/retry",
+        json={"reason": "Retry after transient kernel restart"},
+    )
+    assert unauthorized.status_code == 401
+
+    response = client.post(
+        f"/build/sessions/{session_id}/tasks/{task.id}/retry",
+        headers=_headers(),
+        json={"reason": "Retry after transient kernel restart"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] in {"pending", "running"}
+
+
 def test_swarm_ui_exposes_durable_build_controls() -> None:
     html = Path("ui/swarm.html").read_text(encoding="utf-8")
 
@@ -469,6 +506,7 @@ def test_swarm_ui_exposes_durable_build_controls() -> None:
         "buildReviewRunBtn",
     ):
         assert f'id="{control_id}"' in html
+    assert "/tasks/${taskId}/retry" in html
     assert "/run-next" in html
     assert "/quarantine" in html
     assert "/build/toolchains" in html

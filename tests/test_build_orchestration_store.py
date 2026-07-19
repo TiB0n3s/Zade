@@ -206,6 +206,56 @@ def test_failed_local_run_requeues_until_attempt_limit_but_cloud_never_retries(
     assert store.get_task(cloud_task.id).status is BuildTaskStatus.FAILED
 
 
+def test_operator_can_retry_failed_local_task_but_not_cloud_task(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    session = create_session(store)
+    local_task = store.create_task(
+        session.id,
+        phase="verification",
+        kind=BuildTaskKind.VERIFICATION,
+        title="Verify locally",
+        idempotency_key="operator-local-retry",
+    )
+    local_run = store.claim_task(local_task.id, worker_id="worker", backend="local")
+    store.finish_task_run(
+        local_run.id,
+        status=BuildTaskStatus.INTERRUPTED,
+        error="kernel restarted",
+    )
+
+    retried = store.retry_failed_local_task(
+        session.id,
+        local_task.id,
+        reason="Retry after transient kernel restart",
+    )
+
+    assert retried.status is BuildTaskStatus.PENDING
+    assert retried.max_attempts == 2
+    checkpoint = store.get_session(session.id).checkpoint
+    assert checkpoint["operator_retries"][-1]["task_id"] == local_task.id
+
+    cloud_task = store.create_task(
+        session.id,
+        phase="review",
+        kind=BuildTaskKind.REVIEW,
+        title="Review in cloud",
+        idempotency_key="operator-cloud-retry",
+    )
+    cloud_run = store.claim_task(cloud_task.id, worker_id="worker", backend="cloud")
+    store.finish_task_run(
+        cloud_run.id,
+        status=BuildTaskStatus.FAILED,
+        error="provider failed",
+    )
+
+    with pytest.raises(ValueError, match="Cloud task retries are forbidden"):
+        store.retry_failed_local_task(
+            session.id,
+            cloud_task.id,
+            reason="Do not allow this",
+        )
+
+
 def test_session_pause_resume_and_cancel_are_durable(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     session = create_session(store)

@@ -174,6 +174,7 @@ class BuildPlanner:
                 BuildTaskKind.VERIFICATION,
                 "Run the integrated product verification plan",
                 shared | {"route": "local"},
+                max_attempts=2,
             ),
             _TaskSpec(
                 "review",

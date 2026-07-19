@@ -498,6 +498,84 @@ class BuildStore:
             ).fetchone()
         return _task_run_from_row(row)
 
+    def retry_failed_local_task(
+        self,
+        session_id: int,
+        task_id: int,
+        *,
+        reason: str,
+        actor: str = "founder",
+    ) -> BuildTask:
+        clean_reason = " ".join(reason.split())
+        clean_actor = " ".join(actor.split())
+        if not clean_reason:
+            raise ValueError("Retry reason is required")
+        if not clean_actor:
+            raise ValueError("Retry actor is required")
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = connection.execute(
+                "SELECT * FROM build_tasks WHERE id = ? AND session_id = ?",
+                (task_id, session_id),
+            ).fetchone()
+            if task is None:
+                raise ValueError(f"Build task not found in session {session_id}: {task_id}")
+            if str(task["status"]) not in {
+                BuildTaskStatus.FAILED.value,
+                BuildTaskStatus.INTERRUPTED.value,
+            }:
+                raise ValueError("Only a failed or interrupted build task can be retried")
+            session = connection.execute(
+                "SELECT * FROM build_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if session is None or str(session["status"]) not in {"active", "paused"}:
+                raise ValueError("Build session must be active or paused to retry a task")
+            previous = connection.execute(
+                """
+                SELECT * FROM build_task_runs
+                WHERE task_id = ? ORDER BY id DESC LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+            if previous is None:
+                raise ValueError("Failed build task has no recorded run")
+            if str(previous["backend"]) == "cloud":
+                raise ValueError("Cloud task retries are forbidden")
+            next_max = max(int(task["max_attempts"]), int(task["attempt_count"]) + 1)
+            connection.execute(
+                """
+                UPDATE build_tasks
+                SET status = 'pending', max_attempts = ?, active_run_id = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (next_max, now, task_id),
+            )
+            checkpoint = json.loads(str(session["checkpoint_json"] or "{}"))
+            retries = list(checkpoint.get("operator_retries") or [])
+            retries.append(
+                {
+                    "task_id": task_id,
+                    "previous_run_id": int(previous["id"]),
+                    "reason": clean_reason[:2000],
+                    "actor": clean_actor[:200],
+                    "at": now,
+                }
+            )
+            checkpoint["operator_retries"] = retries[-100:]
+            connection.execute(
+                """
+                UPDATE build_sessions SET checkpoint_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (_dumps(checkpoint), now, session_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM build_tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        return _task_from_row(updated)
+
     def create_artifact(
         self,
         session_id: int,

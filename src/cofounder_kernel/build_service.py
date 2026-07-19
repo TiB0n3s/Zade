@@ -434,6 +434,22 @@ class BuildService:
             return {"status": session.status, "session_id": session_id}
         return self.execution_manager.cancel(session_id)
 
+    def retry_local_task(
+        self, session_id: int, task_id: int, *, reason: str
+    ) -> dict[str, Any]:
+        task = self.store.retry_failed_local_task(
+            session_id, task_id, reason=reason, actor="founder"
+        )
+        session = self.store.get_session(session_id)
+        worker = (
+            self.execution_manager.start(session_id)
+            if self.execution_manager is not None
+            and session is not None
+            and session.status == "active"
+            else {"started": False, "status": "paused", "session_id": session_id}
+        )
+        return {"task": _task_dict(task), "worker": worker}
+
     def quarantine(self, session_id: int, *, reason: str) -> dict[str, Any]:
         if self.orchestrator is not None:
             self.orchestrator.cancel(session_id)

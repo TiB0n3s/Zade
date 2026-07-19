@@ -113,6 +113,7 @@ def test_planner_creates_idempotent_full_lifecycle_graph(tmp_path: Path) -> None
     }
     assert first[1].max_attempts == 2
     assert first[3].max_attempts == 2
+    assert first[5].max_attempts == 2
 
 
 def test_flutter_plan_requires_github_ios_workflow_evidence(tmp_path: Path) -> None:

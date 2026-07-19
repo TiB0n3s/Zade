@@ -185,8 +185,10 @@ Task advancement is evidence-gated. A failed kernel check, an unavailable
 required implementation check, a failed fresh-context verifier, a missing phase
 artifact, or an out-of-contract write prevents dependent tasks from starting.
 Failed local tasks receive only their configured bounded retries; cloud failures
-never retry automatically. A quarantined session retains its full audit history,
-stops execution, and pauses active paid-provider leases.
+never retry automatically. An operator can grant one additional audited attempt
+to a failed or interrupted local task; the same path rejects cloud tasks. A
+quarantined session retains its full audit history, stops execution, and pauses
+active paid-provider leases.
 
 Commands are generated from Python SaaS, Node SaaS, Flutter mobile, or generic
 profiles. They use argv execution without a shell, resolve only approved
@@ -339,11 +341,13 @@ POST /build/sessions/{session_id}/run
 POST /build/sessions/{session_id}/plan
 GET  /build/sessions/{session_id}/tasks
 POST /build/sessions/{session_id}/tasks
+POST /build/sessions/{session_id}/tasks/{task_id}/retry
 POST /build/sessions/{session_id}/run-next
 POST /build/sessions/{session_id}/start
 POST /build/sessions/{session_id}/pause
 POST /build/sessions/{session_id}/resume
 POST /build/sessions/{session_id}/cancel
+POST /build/sessions/{session_id}/quarantine
 GET  /build/runs/{run_id}
 POST /build/runs/{run_id}/cancel
 GET  /build/toolchains

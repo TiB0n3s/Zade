@@ -418,6 +418,10 @@ class BuildQuarantineRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class BuildTaskRetryRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class BuildPlanRequest(BaseModel):
     profile_id: str | None = Field(
         default=None,
