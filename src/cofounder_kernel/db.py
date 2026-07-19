@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -3367,6 +3367,94 @@ CREATE TABLE IF NOT EXISTS action_handler_access (
   enabled INTEGER NOT NULL DEFAULT 1,
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS build_assessments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task TEXT NOT NULL,
+  acceptance TEXT NOT NULL DEFAULT '',
+  workspace TEXT NOT NULL,
+  repo_fingerprint TEXT NOT NULL,
+  deterministic_score INTEGER NOT NULL,
+  local_adjustment INTEGER NOT NULL,
+  final_score INTEGER NOT NULL,
+  confidence REAL NOT NULL,
+  recommended_tier TEXT NOT NULL,
+  dimensions_json TEXT NOT NULL DEFAULT '{}',
+  floor_rules_json TEXT NOT NULL DEFAULT '[]',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  unknowns_json TEXT NOT NULL DEFAULT '[]',
+  local_work_json TEXT NOT NULL DEFAULT '[]',
+  cloud_reasons_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS build_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  assessment_id INTEGER NOT NULL REFERENCES build_assessments(id),
+  work_item_id INTEGER,
+  workspace TEXT NOT NULL,
+  repo_fingerprint TEXT NOT NULL,
+  phase TEXT NOT NULL DEFAULT 'approval',
+  status TEXT NOT NULL DEFAULT 'active',
+  checkpoint_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS build_leases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES build_sessions(id),
+  version INTEGER NOT NULL,
+  tier TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  limits_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'active',
+  approval_request_id INTEGER NOT NULL,
+  actual_input_tokens INTEGER NOT NULL DEFAULT 0,
+  actual_output_tokens INTEGER NOT NULL DEFAULT 0,
+  actual_microdollars INTEGER NOT NULL DEFAULT 0,
+  reserved_input_tokens INTEGER NOT NULL DEFAULT 0,
+  reserved_output_tokens INTEGER NOT NULL DEFAULT 0,
+  reserved_microdollars INTEGER NOT NULL DEFAULT 0,
+  cloud_turns INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_build_leases_session_version
+  ON build_leases (session_id, version);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_build_leases_open_session
+  ON build_leases (session_id)
+  WHERE state IN ('active', 'warning', 'paused');
+
+CREATE TABLE IF NOT EXISTS cloud_usage_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lease_id INTEGER NOT NULL REFERENCES build_leases(id),
+  request_id TEXT NOT NULL,
+  turn_number INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  input_upper_tokens INTEGER NOT NULL DEFAULT 0,
+  max_output_tokens INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  reserved_microdollars INTEGER NOT NULL DEFAULT 0,
+  settled_microdollars INTEGER NOT NULL DEFAULT 0,
+  pricing_json TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  settled_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cloud_usage_request
+  ON cloud_usage_events (request_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cloud_usage_lease_turn
+  ON cloud_usage_events (lease_id, turn_number);
 
 CREATE TABLE IF NOT EXISTS work_plans (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
