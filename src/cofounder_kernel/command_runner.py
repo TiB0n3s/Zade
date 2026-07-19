@@ -162,7 +162,12 @@ _CODING_COMMAND_PREFIXES: dict[str, tuple[tuple[str, ...], ...]] = {
         ("exec", "--no", "--", "tsc", "--noEmit"),
     ),
     "node": (("--version",), ("--test",), ("--check",)),
-    "flutter": (("analyze", "--no-pub"), ("test", "--no-pub")),
+    "flutter": (
+        ("create", "--no-pub", "."),
+        ("pub", "get", "--offline"),
+        ("analyze", "--no-pub"),
+        ("test", "--no-pub"),
+    ),
 }
 
 
@@ -206,10 +211,21 @@ def normalize_coding_agent_command(argv: tuple[str, ...]) -> tuple[str, tuple[st
             f"program {argv[0]!r} is not allowlisted. Allowed: {allowed}"
         )
     normalized_tail = tuple(normalized[1:])
-    if not any(
-        normalized_tail[: len(prefix)] == prefix
-        for prefix in _CODING_COMMAND_PREFIXES[profile]
-    ):
+    allowed_prefixes = _CODING_COMMAND_PREFIXES[profile]
+    exact_flutter_bootstrap = (
+        profile == "flutter"
+        and normalized_tail
+        and normalized_tail[0] in {"create", "pub"}
+    )
+    allowed_shape = (
+        normalized_tail in allowed_prefixes
+        if exact_flutter_bootstrap
+        else any(
+            normalized_tail[: len(prefix)] == prefix
+            for prefix in allowed_prefixes
+        )
+    )
+    if not allowed_shape:
         raise CommandPolicyError(
             "command is outside the approved test and verification shapes"
         )

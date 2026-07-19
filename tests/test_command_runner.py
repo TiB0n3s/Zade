@@ -348,7 +348,7 @@ def test_coding_agent_policies_allow_checks_but_not_install_or_payloads(
         )
 
 
-def test_coding_agent_flutter_policy_is_offline_and_verification_only(
+def test_coding_agent_flutter_policy_allows_only_offline_root_bootstrap_and_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flutter = tmp_path / "flutter.bat"
@@ -379,7 +379,18 @@ def test_coding_agent_flutter_policy_is_offline_and_verification_only(
     )
     assert allowed.backend == "host"
 
+    _profile, create = normalize_coding_agent_command(
+        ("flutter", "create", "--no-pub", ".")
+    )
+    assert create == (str(flutter), "create", "--no-pub", ".")
+    _profile, pub_get = normalize_coding_agent_command(
+        ("flutter", "pub", "get", "--offline")
+    )
+    assert pub_get == (str(flutter), "pub", "get", "--offline")
+
     with pytest.raises(CommandPolicyError, match="shape"):
         normalize_coding_agent_command(("flutter", "pub", "get"))
+    with pytest.raises(CommandPolicyError, match="shape"):
+        normalize_coding_agent_command(("flutter", "create", "nested-project"))
     with pytest.raises(CommandPolicyError, match="shape"):
         normalize_coding_agent_command(("flutter", "build", "apk"))

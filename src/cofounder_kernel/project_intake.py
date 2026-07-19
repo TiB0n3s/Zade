@@ -408,9 +408,16 @@ class ProjectIntakeService:
             "Do not choose a framework whose required local toolchain is unavailable.",
         ]
         for name in tool_names:
-            resolved = shutil.which(name)
+            resolved = _mobile_tool_path(name)
             state = f"available ({resolved})" if resolved else "unavailable"
             lines.append(f"- {name}: {state}")
+        if _mobile_tool_path("flutter"):
+            lines.extend(
+                [
+                    "- Approved offline Flutter bootstrap: flutter create --no-pub .",
+                    "- Approved offline Flutter dependency resolution: flutter pub get --offline",
+                ]
+            )
         return "\n".join(lines)
 
     @staticmethod
@@ -479,6 +486,17 @@ def _dispatch_verified(dispatch: dict[str, Any]) -> bool:
     if isinstance(verifier, dict) and str(verifier.get("verdict") or "").lower() == "fail":
         return False
     return True
+
+
+def _mobile_tool_path(name: str) -> str | None:
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
+    known = {
+        "flutter": Path(r"C:\tools\flutter\bin\flutter.bat"),
+        "dart": Path(r"C:\tools\flutter\bin\dart.bat"),
+    }.get(name)
+    return str(known) if known is not None and known.is_file() else None
 
 
 def _verification_block_reason(dispatch: dict[str, Any]) -> str:

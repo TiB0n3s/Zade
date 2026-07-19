@@ -171,9 +171,9 @@ def test_documentation_only_project_initializes_git_and_routes_scaffold(tmp_path
 def test_scaffold_context_reports_available_mobile_tooling(tmp_path: Path, monkeypatch) -> None:
     delegation = FakeDelegation()
     monkeypatch.setattr(
-        project_intake_module.shutil,
-        "which",
-        lambda name: f"C:/tools/{name}.exe" if name in {"node", "npm", "java"} else None,
+        project_intake_module,
+        "_mobile_tool_path",
+        lambda name: f"C:/tools/{name}.exe" if name in {"node", "npm", "java", "flutter", "dart"} else None,
     )
     service, config, _db = make_service(tmp_path, delegation=delegation)
     project = config.paths.project_intake_dir / "Same Ground"
@@ -185,7 +185,8 @@ def test_scaffold_context_reports_available_mobile_tooling(tmp_path: Path, monke
     context = delegation.calls[0]["context"]
     assert "node: available" in context
     assert "npm: available" in context
-    assert "flutter: unavailable" in context
+    assert "flutter: available" in context
+    assert "flutter create --no-pub ." in context
     assert "Do not choose a framework whose required local toolchain is unavailable" in context
 
 
