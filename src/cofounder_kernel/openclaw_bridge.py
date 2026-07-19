@@ -370,6 +370,7 @@ class OpenClawBridge:
         self._ws = ws
         try:
             self._handshake(ws)
+            self._subscribe(ws)
             while not self._stop.is_set():
                 try:
                     raw = ws.recv_text(timeout=30.0)
@@ -413,11 +414,16 @@ class OpenClawBridge:
                     "params": {
                         "minProtocol": PROTOCOL_VERSION,
                         "maxProtocol": PROTOCOL_VERSION,
+                        # client.id and client.mode are CLOSED enums the gateway
+                        # validates (GATEWAY_CLIENT_IDS / _MODES). "gateway-client"
+                        # + "backend" is the headless-operator fit, verified
+                        # accepted against the live gateway; arbitrary values
+                        # (e.g. "zade"/"service") are rejected INVALID_REQUEST.
                         "client": {
-                            "id": "zade",
+                            "id": "gateway-client",
                             "version": "0.1.0",
                             "platform": "cofounder-kernel",
-                            "mode": "service",
+                            "mode": "backend",
                             "displayName": "Zade",
                         },
                         "role": "operator",
@@ -440,6 +446,35 @@ class OpenClawBridge:
                     raise OpenClawBridgeError(f"Gateway rejected connect: {frame.get('error')}")
                 return
         raise OpenClawBridgeError("No hello-ok response to connect")
+
+    def _subscribe(self, ws: _WebSocket) -> None:
+        """Subscribe to all session events after hello-ok.
+
+        WITHOUT this the operator connects but hears nothing: the gateway
+        delivers `session.message` only to `sessions.subscribe` subscribers (the
+        broad, all-sessions subscription — empty params), so a bridge that skips
+        it is deaf. Any `session.message` that races in before the subscribe
+        response is still handled, so an inbound message on the boundary is not
+        dropped."""
+        sub_id = self._next_id()
+        ws.send_text(json.dumps({"type": "req", "id": sub_id, "method": "sessions.subscribe", "params": {}}))
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            try:
+                raw = ws.recv_text(timeout=10.0)
+            except socket.timeout:
+                continue
+            if raw is None:
+                continue
+            frame = json.loads(raw)
+            if frame.get("type") == "res" and frame.get("id") == sub_id:
+                if not frame.get("ok"):
+                    raise OpenClawBridgeError(f"Gateway rejected sessions.subscribe: {frame.get('error')}")
+                return
+            # a message may arrive between subscribe and its ack — don't drop it
+            if frame.get("type") == "event":
+                self._on_frame(ws, raw)
+        raise OpenClawBridgeError("No response to sessions.subscribe")
 
     def _on_frame(self, ws: _WebSocket, raw: str) -> None:
         try:

@@ -92,6 +92,7 @@ class _FakeGateway:
         self.sock.listen(1)
         self.port = self.sock.getsockname()[1]
         self.connect_params: dict | None = None
+        self.subscribe_method: str | None = None
         self.reply_params: dict | None = None
         self._thread = threading.Thread(target=self._serve, daemon=True)
 
@@ -155,6 +156,10 @@ class _FakeGateway:
         connect = json.loads(self._recv_frame(conn, buf))
         self.connect_params = connect["params"]
         self._send_text(conn, {"type": "res", "id": connect["id"], "ok": True, "payload": {"type": "hello-ok", "protocol": 4}})
+        # the operator must subscribe before it can receive session events
+        subscribe = json.loads(self._recv_frame(conn, buf))
+        self.subscribe_method = subscribe.get("method")
+        self._send_text(conn, {"type": "res", "id": subscribe["id"], "ok": True, "payload": {}})
         # deliver one inbound channel message
         self._send_text(
             conn,
@@ -199,6 +204,9 @@ def test_bridge_handshake_routes_inbound_and_sends_reply() -> None:
     assert gateway.connect_params["role"] == "operator"
     assert gateway.connect_params["auth"]["token"] == "test-token"
     assert gateway.connect_params["minProtocol"] == 4
+
+    # the operator subscribed to session events (else it would be deaf)
+    assert gateway.subscribe_method == "sessions.subscribe"
 
     # the inbound message was projected and routed through the governed callable
     assert routed and routed[0].text == "status?"

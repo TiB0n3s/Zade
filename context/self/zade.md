@@ -127,6 +127,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `64f1090` 2026-07-18 - Channel transport, ingress hardening, egress ledger
 - `5d6684e` 2026-07-18 - chore: ignore local worktrees
 - `341143f` 2026-07-18 - docs: plan token-budgeted build delegation
 - `b9a03eb` 2026-07-18 - docs: design token-budgeted build delegation
@@ -138,7 +139,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `a1f8bcb` 2026-07-17 - Channel auth design
 - `fd1a81a` 2026-07-17 - Channel auth
 - `1b7618e` 2026-07-17 - Research traversal
-- `0939b96` 2026-07-17 - Anthropic API integration
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
