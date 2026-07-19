@@ -16,6 +16,8 @@ def test_project_intake_watcher_uses_events_startup_scan_and_authenticated_route
     assert script.index("Invoke-ProjectIntakeScan") < script.index("while ($true)")
     assert "project-intake-watcher.jsonl" in script
     assert "DebounceSeconds" in script
+    assert "ScanTimeoutSeconds" in script
+    assert "-TimeoutSec $ScanTimeoutSeconds" in script
 
 
 def test_project_intake_watcher_installer_runs_limited_at_logon() -> None:

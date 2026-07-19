@@ -2,6 +2,7 @@ param(
     [string]$BaseUrl = "http://127.0.0.1:8787",
     [string]$ProjectIntake = "C:\AI Brain\project-intake",
     [int]$DebounceSeconds = 3,
+    [int]$ScanTimeoutSeconds = 3900,
     [switch]$NoStart
 )
 
@@ -33,7 +34,7 @@ function Write-ProjectIntakeWatcherLog {
 function Invoke-ProjectIntakeScan {
     $Token = Resolve-ZadeToken -BaseUrl $BaseUrl
     $Headers = @{ "X-Zade-Token" = $Token }
-    $Result = Invoke-RestMethod -Uri "$BaseUrl/project-intake/scan" -Method Post -Headers $Headers -ContentType "application/json" -TimeoutSec 180
+    $Result = Invoke-RestMethod -Uri "$BaseUrl/project-intake/scan" -Method Post -Headers $Headers -ContentType "application/json" -TimeoutSec $ScanTimeoutSeconds
     Write-ProjectIntakeWatcherLog @{
         event = "scan"
         created_count = $Result.created_count
