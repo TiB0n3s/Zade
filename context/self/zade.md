@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `e4cce47` 2026-07-19 - feat: activate inline project intake builds
 - `4d241ce` 2026-07-19 - fix: quarantine duplicate intake sources
 - `0004b1a` 2026-07-19 - feat: resume project decisions from Telegram
 - `8f47750` 2026-07-19 - feat: notify founders through Telegram
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `8ef1694` 2026-07-19 - docs: plan project intake autopilot
 - `e15c5f2` 2026-07-19 - docs: reset Dark Index intake design
 - `ca5b6c4` 2026-07-19 - fix: value-aware trading-brief concern detection + weekend awareness
-- `92cd8bb` 2026-07-19 - docs: design project intake autopilot
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

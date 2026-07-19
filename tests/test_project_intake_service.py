@@ -143,6 +143,23 @@ def test_documentation_only_project_initializes_git_and_routes_scaffold(tmp_path
     assert "Apple App Store" in delegation.calls[0]["acceptance"]
 
 
+def test_reconciliation_scan_does_not_restart_a_completed_scaffold(tmp_path: Path) -> None:
+    delegation = FakeDelegation()
+    service, config, db = make_service(tmp_path, delegation=delegation)
+    project = config.paths.project_intake_dir / "Same Ground"
+    project.mkdir(parents=True)
+    (project / "project.md").write_text(MOBILE_MANIFEST, encoding="utf-8")
+
+    first = service.scan(auto_run=True)
+    second = service.scan(auto_run=True)
+    stored = db.find_project_by_path(str(project))
+
+    assert first["projects"][0]["lifecycle_state"] == "verified"
+    assert second["projects"][0]["lifecycle_state"] == "verified"
+    assert stored["lifecycle_state"] == "verified"
+    assert len(delegation.calls) == 1
+
+
 def test_needs_decision_blocks_project_and_notifies_with_resume_command(tmp_path: Path) -> None:
     bus = FakeBus()
     service, config, _db = make_service(tmp_path, delegation=BlockingDelegation(), bus=bus)

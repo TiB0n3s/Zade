@@ -50,12 +50,18 @@ class ProjectIntakeService:
                 continue
             try:
                 prior = self.db.find_project_by_path(str(resolved))
-                project = self._register(resolved)
+                project = self._register(resolved, prior=prior)
                 if prior is None:
                     created += 1
                 else:
                     existing += 1
-                if auto_run and project["metadata"].get("scaffold_on_intake"):
+                should_auto_run = (
+                    auto_run
+                    and project["metadata"].get("scaffold_on_intake")
+                    and project["lifecycle_state"] in {"intake", "discovered"}
+                    and not project["metadata"].get("last_build_route")
+                )
+                if should_auto_run:
                     project = self.run_until_blocked(project["id"])
                 projects.append(project)
             except Exception as exc:  # noqa: BLE001 - one bad intake must not stop siblings
@@ -269,23 +275,36 @@ class ProjectIntakeService:
         )
         return _positive_int(notification.get("id"))
 
-    def _register(self, root: Path) -> dict[str, Any]:
+    def _register(
+        self, root: Path, *, prior: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         manifest_path = root / "project.md"
         if not manifest_path.is_file():
             raise ValueError(f"Registered projects require project.md: {root}")
         manifest = load_project_manifest(manifest_path)
         fingerprint = self._fingerprint(root)
+        prior_metadata = dict(prior.get("metadata") or {}) if prior else {}
         project_id = self.db.upsert_project(
             canonical_path=str(root),
             name=manifest.name,
             product_type=manifest.product_type,
             distribution_targets=list(manifest.distribution_targets),
-            lifecycle_state=manifest.lifecycle_state,
+            lifecycle_state=(prior["lifecycle_state"] if prior else manifest.lifecycle_state),
             repo_fingerprint=fingerprint,
-            metadata={"scaffold_on_intake": manifest.scaffold_on_intake},
+            metadata={**prior_metadata, "scaffold_on_intake": manifest.scaffold_on_intake},
+            active_build_session_id=(prior.get("active_build_session_id") if prior else None),
             last_scanned_at=utc_now(),
         )
-        self.db.append_project_event(project_id, event_type="discovered", metadata={"fingerprint": fingerprint})
+        if prior is None:
+            self.db.append_project_event(
+                project_id, event_type="discovered", metadata={"fingerprint": fingerprint}
+            )
+        elif prior.get("repo_fingerprint") != fingerprint:
+            self.db.append_project_event(
+                project_id,
+                event_type="source_updated",
+                metadata={"prior_fingerprint": prior.get("repo_fingerprint"), "fingerprint": fingerprint},
+            )
         self._ingest_documentation(project_id, root)
         return self.get(project_id)
 
