@@ -2,6 +2,7 @@ param(
     [string]$LegacyDarkIndex = "C:\BookCatalogingApp",
     [string]$IntakeRoot = "C:\AI Brain\project-intake",
     [string]$QuarantineRoot = "C:\AI Brain\.trash\dark-index-legacy",
+    [string]$DuplicateQuarantineRoot = "C:\AI Brain\.trash\project-intake-duplicates",
     [string]$Downloads = "$env:USERPROFILE\Downloads",
     [string]$Inbox = "C:\AI Brain\inbox",
     [switch]$WhatIf
@@ -13,6 +14,7 @@ $SameGroundDestination = Join-Path $IntakeRoot "Same Ground"
 $RunLogs = Join-Path (Split-Path -Parent $PSScriptRoot) "run-logs"
 $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $QuarantineDestination = Join-Path $QuarantineRoot $Timestamp
+$DuplicateQuarantineDestination = Join-Path $DuplicateQuarantineRoot $Timestamp
 $ReceiptPath = Join-Path $RunLogs "project-intake-migration-receipt-$Timestamp.json"
 
 function Resolve-AbsolutePath {
@@ -43,10 +45,12 @@ function Select-SourceFile {
 
 $IntakeRoot = Resolve-AbsolutePath $IntakeRoot
 $QuarantineRoot = Resolve-AbsolutePath $QuarantineRoot
+$DuplicateQuarantineRoot = Resolve-AbsolutePath $DuplicateQuarantineRoot
 $LegacyDarkIndex = Resolve-AbsolutePath $LegacyDarkIndex
 $DarkIndexDestination = Assert-ChildPath -Parent $IntakeRoot -Candidate $DarkIndexDestination
 $SameGroundDestination = Assert-ChildPath -Parent $IntakeRoot -Candidate $SameGroundDestination
 $QuarantineDestination = Assert-ChildPath -Parent $QuarantineRoot -Candidate $QuarantineDestination
+$DuplicateQuarantineDestination = Assert-ChildPath -Parent $DuplicateQuarantineRoot -Candidate $DuplicateQuarantineDestination
 
 if (-not (Test-Path -LiteralPath $LegacyDarkIndex -PathType Container)) {
     throw "Legacy Dark Index project does not exist: $LegacyDarkIndex"
@@ -63,6 +67,25 @@ $Sources = @{
     Same_Ground_CSV_Bundle = Select-SourceFile -Name "Same_Ground_CSV_Bundle.zip"
 }
 
+$DuplicateMoves = @($Sources.GetEnumerator() | ForEach-Object {
+    $SourceName = $_.Key
+    $SourceHash = $_.Value.Hash
+    foreach ($DuplicatePath in $_.Value.Duplicates) {
+        $DuplicateLeaf = "$SourceName-$(Split-Path -Leaf $DuplicatePath)"
+        $DuplicateDestination = Assert-ChildPath `
+            -Parent $DuplicateQuarantineDestination `
+            -Candidate (Join-Path $DuplicateQuarantineDestination $DuplicateLeaf)
+        [pscustomobject]@{
+            Source = Resolve-AbsolutePath $DuplicatePath
+            Destination = $DuplicateDestination
+            Hash = $SourceHash
+        }
+    }
+})
+if ($DuplicateMoves.Count -gt 0 -and (Test-Path -LiteralPath $DuplicateQuarantineDestination)) {
+    throw "Duplicate quarantine destination already exists; refusing to overwrite: $DuplicateQuarantineDestination"
+}
+
 $Receipt = [ordered]@{
     timestamp = (Get-Date).ToString("o")
     dry_run = [bool]$WhatIf
@@ -71,6 +94,8 @@ $Receipt = [ordered]@{
     dark_index_destination = $DarkIndexDestination
     same_ground_destination = $SameGroundDestination
     sources = @($Sources.GetEnumerator() | ForEach-Object { @{ name = $_.Key; path = $_.Value.Path; sha256 = $_.Value.Hash } })
+    duplicate_quarantine = if ($DuplicateMoves.Count -gt 0) { $DuplicateQuarantineDestination } else { $null }
+    duplicate_moves = @($DuplicateMoves | ForEach-Object { @{ source = $_.Source; destination = $_.Destination; sha256 = $_.Hash } })
 }
 
 if ($WhatIf) {
@@ -79,6 +104,10 @@ if ($WhatIf) {
 }
 
 New-Item -ItemType Directory -Force -Path $IntakeRoot, $QuarantineRoot, $RunLogs | Out-Null
+if ($DuplicateMoves.Count -gt 0) {
+    New-Item -ItemType Directory -Force -Path $DuplicateQuarantineRoot | Out-Null
+    New-Item -ItemType Directory -Path $DuplicateQuarantineDestination | Out-Null
+}
 Move-Item -LiteralPath $LegacyDarkIndex -Destination $QuarantineDestination
 if (Test-Path -LiteralPath $LegacyDarkIndex) { throw "Legacy source still exists after quarantine move." }
 
@@ -90,6 +119,9 @@ Move-Item -LiteralPath $Sources.dark_index_project_workbook.Path -Destination (J
 Move-Item -LiteralPath $Sources.Same_Ground_Zade_Handoff.Path -Destination (Join-Path $SameGroundDestination "Same_Ground_Zade_Handoff.md")
 Move-Item -LiteralPath $Sources.Same_Ground_Project_Workbook.Path -Destination (Join-Path $SameGroundDestination "Same_Ground_Project_Workbook.xlsx")
 Move-Item -LiteralPath $Sources.Same_Ground_CSV_Bundle.Path -Destination (Join-Path $SameGroundDestination "Same_Ground_CSV_Bundle.zip")
+foreach ($DuplicateMove in $DuplicateMoves) {
+    Move-Item -LiteralPath $DuplicateMove.Source -Destination $DuplicateMove.Destination
+}
 
 $DarkManifest = @"
 ---

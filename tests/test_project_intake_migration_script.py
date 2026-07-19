@@ -10,6 +10,7 @@ def test_initial_project_migration_is_literal_recoverable_and_dry_runnable() -> 
     assert "[switch]$WhatIf" in script
     assert r"C:\BookCatalogingApp" in script
     assert r"C:\AI Brain\.trash\dark-index-legacy" in script
+    assert r"C:\AI Brain\.trash\project-intake-duplicates" in script
     assert 'Join-Path $IntakeRoot "The Dark Index"' in script
     assert 'Join-Path $IntakeRoot "Same Ground"' in script
     assert "Move-Item -LiteralPath" in script
@@ -18,6 +19,8 @@ def test_initial_project_migration_is_literal_recoverable_and_dry_runnable() -> 
     assert "Test-Path -LiteralPath" in script
     assert "migration-receipt" in script
     assert "$Candidates = @(@(" in script
+    assert "duplicate_quarantine" in script
+    assert "foreach ($DuplicateMove in $DuplicateMoves)" in script
     assert script.index("Move-Item -LiteralPath $LegacyDarkIndex") < script.index("New-Item -ItemType Directory -Path $DarkIndexDestination")
 
 
