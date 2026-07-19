@@ -35,14 +35,15 @@ def _init(server: McpServer, client: str = "codex") -> dict:
 
 
 def test_live_surface_contents(tmp_path: Path) -> None:
-    # two reads + the promoted non-destructive write; destructive stays off-wire.
-    assert set(LIVE_EXPOSED) == {"memory.search", "audit.recent", "memory.write"}
+    # three reads + the promoted non-destructive write; destructive stays off-wire.
+    assert set(LIVE_EXPOSED) == {"memory.search", "audit.recent", "work.status", "memory.write"}
     assert LIVE_EXPOSED["memory.search"] == READ
+    assert LIVE_EXPOSED["work.status"] == READ
     server, _ = _server(tmp_path)
     _init(server)
     listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {t["name"] for t in listed["result"]["tools"]}
-    assert names == {"memory.search", "audit.recent", "memory.write"}
+    assert names == {"memory.search", "audit.recent", "work.status", "memory.write"}
     assert "memory.forget" not in names  # destructive remains excluded
 
 

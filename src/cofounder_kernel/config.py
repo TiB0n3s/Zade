@@ -355,6 +355,32 @@ class AnthropicConfig:
 
 
 @dataclass(frozen=True)
+class OpenClawConfig:
+    """Channel gateway bridge (OpenClaw). OFF by default.
+
+    When enabled, a background client connects to the local OpenClaw gateway's
+    WebSocket, receives inbound channel messages (WhatsApp/Telegram/etc.), routes
+    each through the SAME governed ``/channels/message`` path (channel auth +
+    capped authority + optional HMAC), and sends Zade's reply back via the
+    gateway. The gateway is a LOCAL process (loopback); the token authenticates
+    Zade to it and is read from ``token_env`` — never stored in config or the DB.
+
+    Zade connects as an OPERATOR client (observe + reply), not a registered
+    agent: it does not run the channel's model, it governs and answers.
+    """
+
+    enabled: bool = False
+    ws_url: str = "ws://127.0.0.1:18789"
+    token_env: str = "OPENCLAW_GATEWAY_TOKEN"
+    channel_prefix: str = "openclaw"
+    reconnect_min_seconds: float = 1.0
+    reconnect_max_seconds: float = 30.0
+    # Only loopback gateways are allowed unless this is set — a channel bridge to
+    # a non-local host would route the founder's messages off-machine.
+    allow_remote_gateway: bool = False
+
+
+@dataclass(frozen=True)
 class EgressConfig:
     """Data-class egress gate (see egress.py and EGRESS-DESIGN.md).
 
@@ -394,6 +420,7 @@ class KernelConfig:
     screen: ScreenConfig = ScreenConfig()
     egress: EgressConfig = EgressConfig()
     anthropic: AnthropicConfig = AnthropicConfig()
+    openclaw: OpenClawConfig = OpenClawConfig()
     prompt_profiles: PromptProfileConfig = PromptProfileConfig()
 
 
@@ -598,6 +625,16 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         max_tokens=int(anthropic_raw.get("max_tokens", 2048)),
         timeout_seconds=float(anthropic_raw.get("timeout_seconds", 120.0)),
     )
+    openclaw_raw = raw.get("openclaw", {})
+    openclaw = OpenClawConfig(
+        enabled=_bool(os.getenv("ZADE_OPENCLAW_ENABLED", openclaw_raw.get("enabled", False))),
+        ws_url=str(os.getenv("ZADE_OPENCLAW_WS_URL", openclaw_raw.get("ws_url", "ws://127.0.0.1:18789"))).strip(),
+        token_env=str(openclaw_raw.get("token_env", "OPENCLAW_GATEWAY_TOKEN")).strip(),
+        channel_prefix=str(openclaw_raw.get("channel_prefix", "openclaw")).strip() or "openclaw",
+        reconnect_min_seconds=float(openclaw_raw.get("reconnect_min_seconds", 1.0)),
+        reconnect_max_seconds=float(openclaw_raw.get("reconnect_max_seconds", 30.0)),
+        allow_remote_gateway=_bool(openclaw_raw.get("allow_remote_gateway", False)),
+    )
     prompt_profiles_raw = raw.get("prompt_profiles", {})
     prompt_profiles = PromptProfileConfig(
         default=str(os.getenv("ZADE_PROMPT_PROFILE", prompt_profiles_raw.get("default", "general"))).strip()
@@ -622,6 +659,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
         screen=screen,
         egress=egress,
         anthropic=anthropic,
+        openclaw=openclaw,
         prompt_profiles=prompt_profiles,
     )
 
