@@ -66,6 +66,27 @@ def test_flutter_profile_reports_exact_missing_tool_blockers(tmp_path: Path) -> 
     assert any("flutter pub get" in blocker for blocker in blockers)
 
 
+def test_flutter_profile_does_not_preblock_when_gradle_wrapper_is_generated_later(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "flutter_app"
+    (workspace / "lib").mkdir(parents=True)
+    (workspace / "android").mkdir()
+    (workspace / "pubspec.yaml").write_text("name: app\n", encoding="utf-8")
+    _touch(workspace / ".dart_tool" / "package_config.json")
+    flutter = _touch(tmp_path / "flutter" / "bin" / "flutter.bat")
+    dart = _touch(tmp_path / "flutter" / "bin" / "dart.bat")
+    sdk = tmp_path / "android-sdk"
+    _touch(sdk / "platform-tools" / "adb.exe")
+
+    profile = ToolchainRegistry(
+        env={"FLUTTER_HOME": str(flutter.parent.parent), "ANDROID_HOME": str(sdk)},
+        which=lambda _name: None,
+    ).detect(workspace)
+
+    assert not any("Gradle wrapper" in blocker for blocker in profile.blockers)
+
+
 def test_node_profile_uses_declared_scripts_without_install_or_npx(tmp_path: Path) -> None:
     workspace = tmp_path / "node_app"
     workspace.mkdir()

@@ -251,7 +251,6 @@ class ToolchainRegistry:
         required_ids = {
             "flutter",
             "dart",
-            "gradle-wrapper",
             "adb",
             "flutter-dependencies",
         }

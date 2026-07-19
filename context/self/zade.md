@@ -133,6 +133,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `0bfc54b` 2026-07-19 - feat: retry interrupted local build tasks
 - `14066c5` 2026-07-19 - fix: feed verifier evidence into local retries
 - `6ed15f7` 2026-07-19 - fix: keep planning phases command free
 - `178c9d4` 2026-07-19 - fix: exclude generated outputs from verifier context
@@ -144,7 +145,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `429bd1d` 2026-07-19 - Docs: purge stale cloud-voice instructions; sync egress design + channel_auth docstring with shipped reality
 - `839fee9` 2026-07-19 - Merge branch 'main' into codex/durable-build-orchestration
 - `2276070` 2026-07-19 - fix: harden durable build execution boundaries
-- `c16d25c` 2026-07-19 - XOAUTH2 IMAP for outlook.com: Microsoft device-code flow + token cache
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

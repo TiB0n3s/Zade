@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 from typing import Any, Callable
@@ -138,6 +138,56 @@ class BuildVerificationService:
                         timeout_seconds=60,
                     )
                 )
+                application_id = _android_application_id(root)
+                if application_id:
+                    apk = (
+                        root
+                        / "build"
+                        / "app"
+                        / "outputs"
+                        / "flutter-apk"
+                        / "app-debug.apk"
+                    )
+                    checks.extend(
+                        [
+                            VerificationCheck(
+                                id="adb-install-debug-apk",
+                                kind="android-install",
+                                required=True,
+                                available=True,
+                                argv=(str(adb.path), "install", "-r", str(apk)),
+                                timeout_seconds=180,
+                                artifact_kind="android-install",
+                            ),
+                            VerificationCheck(
+                                id="adb-launch-app",
+                                kind="android-launch",
+                                required=True,
+                                available=True,
+                                argv=(
+                                    str(adb.path),
+                                    "shell",
+                                    "am",
+                                    "start",
+                                    "-W",
+                                    "-n",
+                                    f"{application_id}/.MainActivity",
+                                ),
+                                timeout_seconds=60,
+                                artifact_kind="android-launch",
+                            ),
+                        ]
+                    )
+                else:
+                    checks.append(
+                        VerificationCheck(
+                            id="android-application-id",
+                            kind="availability",
+                            required=True,
+                            available=False,
+                            blocker="Android applicationId could not be resolved for install and launch verification.",
+                        )
+                    )
         if browser_url:
             checks.append(
                 VerificationCheck(
@@ -196,8 +246,14 @@ class BuildVerificationService:
                 results.append(result)
                 artifacts.extend(evidence)
                 continue
-            command_result = self._run_command(root, profile, check)
-            check_result = self._command_result(check, command_result)
+            effective_check = check
+            if android_device and check.kind in {"android-install", "android-launch"}:
+                effective_check = replace(
+                    check,
+                    argv=(check.argv[0], "-s", android_device, *check.argv[1:]),
+                )
+            command_result = self._run_command(root, profile, effective_check)
+            check_result = self._command_result(effective_check, command_result)
             if check.kind == "android-device" and command_result.ok:
                 online = _online_android_devices(command_result.stdout_tail)
                 target_ok = (
@@ -223,6 +279,20 @@ class BuildVerificationService:
                     command_result, session_id=session_id, task_id=task_id, run_id=run_id
                 )
             )
+            if command_result.ok and check.kind in {"android-install", "android-launch"}:
+                artifacts.append(
+                    self._artifact(
+                        check.artifact_kind,
+                        command_result.stdout_log,
+                        {
+                            "command_run_id": command_result.run_id,
+                            "android_device": android_device or "default",
+                        },
+                        session_id,
+                        task_id,
+                        run_id,
+                    )
+                )
             if check.id == "flutter-apk-debug" and command_result.ok:
                 apk_result, apk_artifacts = self._apk_evidence(
                     root, session_id=session_id, task_id=task_id, run_id=run_id
@@ -264,7 +334,11 @@ class BuildVerificationService:
             executable_candidates=(executable,),
             executable_aliases=(Path(executable).name,),
             allowed_prefixes=(check.argv[1:],),
-            denied_tokens=("install", "publish", "deploy", "release", "upload"),
+            denied_tokens=(
+                ("publish", "deploy", "release", "upload")
+                if check.kind == "android-install"
+                else ("install", "publish", "deploy", "release", "upload")
+            ),
             max_timeout_seconds=max(1.0, check.timeout_seconds),
             docker_image=(
                 profile.docker_image if check.kind == "command" else None
@@ -437,6 +511,34 @@ class BuildVerificationService:
             )
             record_id = record.id
         return VerificationArtifact(kind, str(path), metadata, record_id)
+
+
+def _android_application_id(root: Path) -> str:
+    for relative in (
+        "android/app/build.gradle.kts",
+        "android/app/build.gradle",
+    ):
+        path = root / relative
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for pattern in (
+            r"\bapplicationId\s*=\s*[\"']([^\"']+)[\"']",
+            r"\bapplicationId\s+[\"']([^\"']+)[\"']",
+            r"\bnamespace\s*=\s*[\"']([^\"']+)[\"']",
+        ):
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1).strip()
+    manifest = root / "android" / "app" / "src" / "main" / "AndroidManifest.xml"
+    if manifest.is_file():
+        match = re.search(
+            r"\bpackage\s*=\s*[\"']([^\"']+)[\"']",
+            manifest.read_text(encoding="utf-8", errors="replace"),
+        )
+        if match:
+            return match.group(1).strip()
+    return ""
 
 
 def _online_android_devices(output: str) -> tuple[str, ...]:

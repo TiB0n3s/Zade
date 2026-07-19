@@ -165,6 +165,12 @@ def test_flutter_verification_requires_online_adb_and_registers_apk(tmp_path: Pa
     apk = workspace / "build" / "app" / "outputs" / "flutter-apk" / "app-debug.apk"
     apk.parent.mkdir(parents=True)
     apk.write_bytes(b"apk")
+    gradle = workspace / "android" / "app" / "build.gradle.kts"
+    gradle.parent.mkdir(parents=True)
+    gradle.write_text(
+        'android { defaultConfig { applicationId = "com.deadstarlabs.canary" } }\n',
+        encoding="utf-8",
+    )
     mobile = profile(
         "flutter-mobile",
         probes=(
@@ -190,6 +196,8 @@ def test_flutter_verification_requires_online_adb_and_registers_apk(tmp_path: Pa
                 "List of devices attached\nemulator-5554 device product:sdk model:Pixel\n",
                 "",
             ),
+            "adb-install-debug-apk": (True, "Success\n", ""),
+            "adb-launch-app": (True, "Status: ok\nActivity: com.deadstarlabs.canary/.MainActivity\n", ""),
         },
     )
     store, session = make_store(tmp_path, workspace)
@@ -201,7 +209,23 @@ def test_flutter_verification_requires_online_adb_and_registers_apk(tmp_path: Pa
 
     assert report.ok is True
     assert any(check.id == "adb-online" and check.status == "passed" for check in report.checks)
+    assert any(
+        check.id == "adb-install-debug-apk" and check.status == "passed"
+        for check in report.checks
+    )
+    assert any(
+        check.id == "adb-launch-app" and check.status == "passed"
+        for check in report.checks
+    )
     assert any(artifact.kind == "apk" and artifact.uri.endswith("app-debug.apk") for artifact in report.artifacts)
+    assert any(artifact.kind == "android-install" for artifact in report.artifacts)
+    assert any(artifact.kind == "android-launch" for artifact in report.artifacts)
+    install_request = next(
+        request
+        for request in runner.requests
+        if request.profile_id.endswith("adb-install-debug-apk")
+    )
+    assert install_request.argv[1:4] == ("-s", "emulator-5554", "install")
     assert store.list_artifacts(session.id)
 
 
