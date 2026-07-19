@@ -323,6 +323,49 @@ class KernelDatabase:
             ).fetchone()
         return _project_row_to_dict(row) if row else None
 
+    def update_project_metadata(
+        self, project_id: int, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge into a project's metadata without touching lifecycle or identity.
+
+        The autonomy reporter layers its durable state onto projects without
+        re-deriving name/fingerprint/lifecycle the way upsert_project requires.
+        Keys set to None are removed, matching the intake service's convention.
+        """
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT metadata_json FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Project not found: {project_id}")
+            metadata = json.loads(row["metadata_json"] or "{}")
+            metadata.update(updates)
+            metadata = {key: value for key, value in metadata.items() if value is not None}
+            conn.execute(
+                "UPDATE projects SET updated_at = ?, metadata_json = ? WHERE id = ?",
+                (utc_now(), json.dumps(metadata, sort_keys=True), project_id),
+            )
+        project = self.get_project(project_id)
+        if project is None:
+            raise RuntimeError(f"Project vanished during metadata update: {project_id}")
+        return project
+
+    def list_project_events(
+        self, project_id: int, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM project_events WHERE project_id = ? ORDER BY id DESC LIMIT ?",
+                (project_id, limit),
+            ).fetchall()
+        return [
+            {
+                **{key: row[key] for key in row.keys() if key != "metadata_json"},
+                "metadata": json.loads(row["metadata_json"] or "{}"),
+            }
+            for row in rows
+        ]
+
     def append_project_event(
         self,
         project_id: int,

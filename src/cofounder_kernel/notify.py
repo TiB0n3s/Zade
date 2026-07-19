@@ -109,7 +109,16 @@ class NotificationBus:
         source: str = "kernel",
         dedupe_key: str = "",
         metadata: dict[str, Any] | None = None,
+        force_channels: tuple[str, ...] | list[str] = (),
     ) -> dict[str, Any]:
+        """Route one notification through channel rules.
+
+        force_channels lets a producer push a single milestone (e.g. an
+        info-severity MVP completion) past a channel's standing min_severity
+        WITHOUT changing that configuration. Every other founder rule —
+        channel enabled, quiet hours, rate limit, recipient whitelist, and
+        dedupe — still governs; force never creates a new egress path.
+        """
         severity = severity.strip().lower()
         if severity not in SEVERITY_RANK:
             raise ValueError(f"Severity must be one of: {', '.join(SEVERITIES)}")
@@ -138,8 +147,15 @@ class NotificationBus:
             metadata=metadata,
         )
         delivered_any = False
+        forced = {str(name) for name in force_channels}
         for channel in self.list_channels():
-            outcome, detail = self._deliver(channel, severity=severity, title=title, body=body)
+            outcome, detail = self._deliver(
+                channel,
+                severity=severity,
+                title=title,
+                body=body,
+                force=channel["channel"] in forced,
+            )
             if outcome is None:
                 continue  # channel disabled or below severity: not part of this notification's story
             self._record_delivery(notification_id, channel["channel"], outcome, detail)
@@ -247,10 +263,18 @@ class NotificationBus:
         )
         return next(item for item in self.list_channels() if item["channel"] == channel)
 
-    def _deliver(self, channel: dict[str, Any], *, severity: str, title: str, body: str) -> tuple[str | None, str]:
+    def _deliver(
+        self,
+        channel: dict[str, Any],
+        *,
+        severity: str,
+        title: str,
+        body: str,
+        force: bool = False,
+    ) -> tuple[str | None, str]:
         if not channel["enabled"]:
             return None, ""
-        if SEVERITY_RANK[severity] < SEVERITY_RANK.get(channel["min_severity"], 0):
+        if not force and SEVERITY_RANK[severity] < SEVERITY_RANK.get(channel["min_severity"], 0):
             return None, ""
         if severity != "critical" and _in_quiet_hours(_local_hhmm(), channel["quiet_start"], channel["quiet_end"]):
             return "suppressed", "quiet_hours"

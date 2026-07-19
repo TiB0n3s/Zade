@@ -204,6 +204,7 @@ from .ollama import OllamaClient, OllamaError
 from .ops import KernelOpsService
 from .prompts import PromptProfileRegistry
 from .project_intake import ProjectIntakeService, parse_project_decision_reply
+from .project_autonomy import ProjectAutonomyReporter, autonomy_projection, portfolio_status
 from .actions import ActionPipelineService
 from .commitments import CommitmentLedger
 from .notify import NotificationBus
@@ -546,6 +547,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         bus=bus,
         approvals=approvals,
     )
+    project_autonomy = ProjectAutonomyReporter(db=db, bus=bus)
     screen = ScreenService(config=cfg, db=db)
 
     # Serving-boot maintenance. Skipped for read-only introspection builds so
@@ -630,6 +632,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     app.state.roles = roles
     app.state.delegation = delegation
     app.state.project_intake = project_intake
+    app.state.project_autonomy = project_autonomy
     app.state.build = build_service
     app.state.build_store = build_store
     app.state.build_budget = build_budget
@@ -961,14 +964,29 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
 
     @app.get("/project-intake/projects")
     def list_project_intake(lifecycle_state: str | None = None, limit: int = 500) -> dict[str, Any]:
-        return {"items": db.list_projects(lifecycle_state=lifecycle_state, limit=min(max(limit, 1), 500))}
+        items = db.list_projects(lifecycle_state=lifecycle_state, limit=min(max(limit, 1), 500))
+        return {"items": [{**item, "autonomy": autonomy_projection(item)} for item in items]}
 
     @app.get("/project-intake/projects/{project_id}")
     def get_project_intake(project_id: int) -> dict[str, Any]:
         try:
-            return {"project": project_intake.get(project_id)}
+            project = project_intake.get(project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"project": {**project, "autonomy": autonomy_projection(project)}}
+
+    @app.get("/project-intake/status")
+    def project_intake_status() -> dict[str, Any]:
+        """Read-only portfolio view; scaffold-verified is never conflated with MVP-complete."""
+        return portfolio_status(db.list_projects(limit=500))
+
+    @app.get("/project-intake/projects/{project_id}/events")
+    def list_project_intake_events(project_id: int, limit: int = 200) -> dict[str, Any]:
+        try:
+            project_intake.get(project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"items": db.list_project_events(project_id, limit=min(max(limit, 1), 500))}
 
     @app.post("/project-intake/projects/{project_id}/run")
     def run_project_intake(project_id: int) -> dict[str, Any]:
@@ -4192,6 +4210,8 @@ def _inventory_payload(
             "POST /project-intake/scan",
             "GET /project-intake/projects",
             "GET /project-intake/projects/{project_id}",
+            "GET /project-intake/projects/{project_id}/events",
+            "GET /project-intake/status",
             "POST /project-intake/projects/{project_id}/run",
             "POST /project-intake/projects/{project_id}/verify",
             "POST /project-intake/decisions/{decision_id}/resolve",

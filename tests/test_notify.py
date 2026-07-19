@@ -246,3 +246,41 @@ def test_surfacing_brief_announces_through_the_bus(tmp_path: Path, monkeypatch) 
     assert brief.json()["notification_id"] is not None
     assert notifications.json()["items"]
     assert "need founder attention" in notifications.json()["items"][0]["title"]
+
+
+def test_force_channels_bypasses_min_severity_but_not_enablement(tmp_path: Path) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    bus = NotificationBus(db=db)
+    sent: list[str] = []
+
+    def deliver(text: str):
+        sent.append(text)
+        return SimpleNamespace(status="delivered", detail="1 bound founder chat")
+
+    bus.set_telegram_sender(deliver)
+    bus.update_channel("telegram", {"quiet_start": "", "quiet_end": ""})
+
+    gated = bus.notify(topic="project.mvp_complete", title="MVP done", body="a", severity="info")
+    forced = bus.notify(
+        topic="project.mvp_complete",
+        title="MVP done",
+        body="b",
+        severity="info",
+        dedupe_key="project:1:mvp:abc",
+        force_channels=("telegram",),
+    )
+    bus.update_channel("telegram", {"enabled": False})
+    disabled = bus.notify(
+        topic="project.mvp_complete",
+        title="MVP done",
+        body="c",
+        severity="info",
+        dedupe_key="project:2:mvp:def",
+        force_channels=("telegram",),
+    )
+
+    assert [d["channel"] for d in gated["deliveries"]] == ["ui"]
+    assert {d["channel"] for d in forced["deliveries"]} == {"ui", "telegram"}
+    assert len(sent) == 1
+    assert [d["channel"] for d in disabled["deliveries"]] == ["ui"]
