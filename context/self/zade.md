@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `b37bd93` 2026-07-19 - test: update stale schema-version pins to v32
 - `d3a9259` 2026-07-19 - docs: orchestrator integration handoff for the project-autonomy contract
 - `346093e` 2026-07-19 - feat: project-autonomy truth and notification contract
 - `c569377` 2026-07-19 - fix: [OK] all-clear diagnostic lines are never concerns
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `5f4151d` 2026-07-19 - fix: allow project scans to finish long builds
 - `458e8ab` 2026-07-19 - fix: make project intake reconciliation idempotent
 - `e4cce47` 2026-07-19 - feat: activate inline project intake builds
-- `4d241ce` 2026-07-19 - fix: quarantine duplicate intake sources
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
