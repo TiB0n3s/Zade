@@ -177,6 +177,33 @@ def test_build_session_routes_approve_local_work_and_report_remaining_budget(
     assert listed["sessions"][0]["session"]["id"] == session_id
 
 
+def test_generic_approval_endpoint_routes_build_lease_to_build_service(
+    build_client,
+) -> None:
+    client, _app, workspace = build_client
+    prepared = _assess(client, workspace)
+    session_id = prepared["session"]["id"]
+    approval_id = prepared["approval_request_id"]
+
+    approved = client.post(
+        f"/approval-requests/{approval_id}/approve",
+        headers=_headers(),
+        json={
+            "resolved_by": "founder",
+            "dispatch": True,
+            "typed_confirmation": CONFIRMATION,
+        },
+    )
+
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["specialized_approval"] == "build_lease"
+    assert approved.json()["build"]["run"]["route"] == "local"
+    detail = client.get(f"/build/sessions/{session_id}").json()
+    assert detail["lease"]["state"] == "active"
+    request = client.get(f"/approval-requests/{approval_id}").json()["item"]
+    assert request["status"] == "approved"
+
+
 def test_build_session_can_be_denied_and_missing_sessions_are_404(build_client) -> None:
     client, _app, workspace = build_client
     prepared = _assess(client, workspace)

@@ -192,6 +192,11 @@ use `--no-pub` and block when `.dart_tool/package_config.json` is absent.
 Host fallback is argv, path, environment, timeout, and process-tree confinement;
 it is not a separate Windows security principal or a host network sandbox. Use
 the approved local Docker images for untrusted Python or Node verification.
+Build the pinned images and run their isolated smoke tests with:
+
+```powershell
+.\scripts\build-runner-images.ps1
+```
 
 GitHub status and workflow evidence use the installed `gh` CLI. Every workflow
 dispatch or remote cancellation requires a fresh typed external-action
@@ -203,6 +208,12 @@ default, uses the Responses API with `store=false` and no hosted tools, and
 requires the optional SDK, `OPENAI_API_KEY`, current pricing, and its own Small
 lease. No provider can become another provider's fallback. Anthropic Managed
 Agents remain readiness-only and have no execution path.
+
+Configure the OpenAI key without printing it or writing it into the repository:
+
+```powershell
+.\scripts\configure-openai-review.ps1 -Restart
+```
 
 Approved web-research fetches are external **data** tools under their own
 permission gates; they are not model inference and no llm policy authorizes

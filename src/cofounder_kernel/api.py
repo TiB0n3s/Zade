@@ -43,7 +43,7 @@ from .build_budget import BuildBudgetExceeded, BuildBudgetService
 from .build_calibration import BuildCalibrationService, ManagedAgentsReadinessService
 from .build_orchestrator import BuildOrchestrator, BuildPlanner
 from .build_routing import BuildRouter
-from .build_service import BuildService
+from .build_service import BUILD_LEASE_SOURCE, BUILD_UPGRADE_SOURCE, BuildService
 from .build_store import BuildStore
 from .build_types import BuildTaskKind, BuildTier
 from .build_verification import BuildVerificationService
@@ -2840,6 +2840,28 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     @app.post("/approval-requests/{request_id}/approve")
     def approve_request(request_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
         request = payload or ApprovalResolveRequest()
+        approval = db.get_approval_request(request_id)
+        if approval and approval.source_type in {
+            BUILD_LEASE_SOURCE,
+            BUILD_UPGRADE_SOURCE,
+        }:
+            if approval.source_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Build lease approval has no build session.",
+                )
+            build = build_session_approve(
+                approval.source_id,
+                BuildLeaseApproveRequest(
+                    typed_confirmation=request.typed_confirmation,
+                    audit_note=request.note,
+                ),
+            )
+            return {
+                "specialized_approval": approval.source_type,
+                "request": approvals.get_request(request_id),
+                "build": build,
+            }
         try:
             return approvals.approve_request(
                 request_id,

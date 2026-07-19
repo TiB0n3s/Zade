@@ -92,10 +92,10 @@ max_workers = 2
 ios_workflow = "ios-toolchain-canary.yml"
 
 [openai_review]
-# Optional independent review only. Disabled until the optional SDK and
-# OPENAI_API_KEY are installed and a separate typed provider lease is approved.
+# Optional independent review only. Enabled for setup, but unavailable until
+# the optional SDK and OPENAI_API_KEY exist and a separate typed lease is approved.
 # Requests use store=false and no hosted tools; OpenAI is never a fallback.
-enabled = false
+enabled = true
 model = "gpt-5.6-terra"
 api_key_env = "OPENAI_API_KEY"
 max_output_tokens = 4000

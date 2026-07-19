@@ -104,7 +104,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 | Durable product builds | local-first governed execution | `BuildOrchestrator` | Discovery-through-release task graphs, background controls, governed commands, toolchain verification, artifacts, and calibration are persisted locally. |
 | GitHub Actions build evidence | governed external CI | `GitHubCIClient` | Read-only run evidence is available through gh; writes require fresh approval; configured iOS workflow=ios-toolchain-canary.yml. |
 | Ollama | local | `config.ollama` | Models at http://127.0.0.1:11434; chat=qwen3:14b, reasoning=deepseek-r1:14b. |
-| OpenAI build review | optional advisory provider | `config.openai_review` | Enabled=False; model=gpt-5.6-terra; store=false, no hosted tools, separate provider lease. |
+| OpenAI build review | optional advisory provider | `config.openai_review` | Enabled=True; model=gpt-5.6-terra; store=false, no hosted tools, separate provider lease. |
 | Read-only connectors | external-read | `ConnectorService` | IMAP and ICS connector routes are mounted; sync dispatches through registered app handlers. |
 | SQLite memory | local | `config.paths.database_path` | Structured memory, audit, work queue, and registry state at C:\AI Brain\memory-hot\cofounder-kernel\cofounder.sqlite. |
 | Trading-bot bridge | local WSL | `config.trading_bot` | Enabled=True; distro=Ubuntu-TradingBot-C; repo=/home/tradingbot/trading-bot. |
@@ -133,6 +133,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `429bd1d` 2026-07-19 - Docs: purge stale cloud-voice instructions; sync egress design + channel_auth docstring with shipped reality
 - `839fee9` 2026-07-19 - Merge branch 'main' into codex/durable-build-orchestration
 - `2276070` 2026-07-19 - fix: harden durable build execution boundaries
 - `c16d25c` 2026-07-19 - XOAUTH2 IMAP for outlook.com: Microsoft device-code flow + token cache
@@ -144,7 +145,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `565c136` 2026-07-19 - feat: add product build verification profiles
 - `9505817` 2026-07-19 - feat: orchestrate durable local-first builds
 - `3d34903` 2026-07-19 - Kernel heartbeat: morning Telegram brief + silent-failure alerts; registry token fallback
-- `e16e913` 2026-07-19 - feat: persist durable build orchestration
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
