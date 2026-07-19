@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `e476379` 2026-07-19 - feat: add project intake persistence
 - `58bdd1b` 2026-07-19 - feat: add safe initial project migration
 - `a245fe6` 2026-07-19 - feat: watch the project intake vault
 - `8ef1694` 2026-07-19 - docs: plan project intake autopilot
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `0c46772` 2026-07-19 - fix: omit deprecated Anthropic sampling params
 - `623ddac` 2026-07-19 - feat: verify Android install and launch locally
 - `0bfc54b` 2026-07-19 - feat: retry interrupted local build tasks
-- `14066c5` 2026-07-19 - fix: feed verifier evidence into local retries
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
