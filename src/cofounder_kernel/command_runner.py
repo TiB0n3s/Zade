@@ -147,6 +147,7 @@ class GovernedCommandRunner:
         policies: Mapping[str, CommandPolicy],
         artifact_root: Path | str,
         max_output_chars: int = 20_000,
+        max_log_bytes: int = 5_000_000,
         docker_probe: Callable[[str], bool] | None = None,
         audit: Callable[[dict[str, object]], None] | None = None,
     ):
@@ -154,6 +155,7 @@ class GovernedCommandRunner:
         self.artifact_root = Path(artifact_root).expanduser().resolve()
         self.artifact_root.mkdir(parents=True, exist_ok=True)
         self.max_output_chars = max(1, int(max_output_chars))
+        self.max_log_bytes = max(1, int(max_log_bytes))
         self.docker_probe = docker_probe or _docker_image_available
         self.audit = audit
         self._active: dict[str, _ActiveProcess] = {}
@@ -213,6 +215,16 @@ class GovernedCommandRunner:
             timeout_seconds=timeout,
             environment=environment,
         )
+
+    def register_policy(self, policy: CommandPolicy) -> None:
+        """Register a derived immutable policy without widening an existing id."""
+        with self._lock:
+            current = self.policies.get(policy.id)
+            if current is not None and current != policy:
+                raise CommandPolicyError(
+                    f"command profile {policy.id} is already registered differently"
+                )
+            self.policies[policy.id] = policy
 
     def run(self, request: CommandRequest) -> CommandResult:
         running = self.start(request)
@@ -313,6 +325,8 @@ class GovernedCommandRunner:
                 active.process.wait(timeout=2)
             active.stdout_handle.close()
             active.stderr_handle.close()
+            _bound_log(active.stdout_log, self.max_log_bytes)
+            _bound_log(active.stderr_log, self.max_log_bytes)
             duration = max(0.0, time.monotonic() - active.started_at)
             returncode = active.process.returncode
             result = CommandResult(
@@ -460,6 +474,17 @@ def _tail(path: Path, max_chars: int) -> str:
         handle.seek(max(0, size - (max_chars * 4)))
         text = handle.read().decode("utf-8", errors="replace")
     return text[-max_chars:]
+
+
+def _bound_log(path: Path, max_bytes: int) -> None:
+    size = path.stat().st_size
+    if size <= max_bytes:
+        return
+    with path.open("rb") as handle:
+        handle.seek(max(0, size - max_bytes))
+        tail = handle.read(max_bytes)
+    with path.open("wb") as handle:
+        handle.write(tail)
 
 
 def _redact_argv(argv: tuple[str, ...]) -> tuple[str, ...]:

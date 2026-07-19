@@ -264,3 +264,69 @@ def test_validate_steps_supports_secret_env_and_blocks_private_ip(tmp_path: Path
         assert False, "expected private host to be refused"
     except ValueError as exc:
         assert "private/internal" in str(exc)
+
+
+def test_read_only_build_verification_reuses_browser_execution_boundary(
+    tmp_path: Path,
+) -> None:
+    captured: dict = {}
+
+    def fake_runner(steps, *, options):
+        captured["steps"] = steps
+        captured["options"] = options
+        trace = Path(options["trace_path"])
+        trace.parent.mkdir(parents=True, exist_ok=True)
+        trace.write_bytes(b"trace")
+        screenshot = Path(steps[-1]["path"])
+        screenshot.parent.mkdir(parents=True, exist_ok=True)
+        screenshot.write_bytes(b"png")
+        return {
+            "ok": True,
+            "error": "",
+            "failed_step": None,
+            "steps": [
+                {"type": "navigate", "status": "ok"},
+                {"type": "screenshot", "status": "ok", "path": str(screenshot)},
+            ],
+            "pages": [],
+        }
+
+    service = BrowserService(
+        config=_config(tmp_path, allow_private=True),
+        db=None,
+        work_queue=None,
+        runner=fake_runner,
+    )
+    screenshot = tmp_path / "hot" / "Zade" / "build-browser-evidence" / "home.png"
+
+    result = service.run_verification_flow(
+        steps=[
+            {"type": "navigate", "url": "http://127.0.0.1:3000"},
+            {"type": "screenshot", "path": str(screenshot), "full_page": True},
+        ]
+    )
+
+    assert result["ok"] is True
+    assert result["screenshots"] == [str(screenshot.resolve())]
+    assert Path(result["trace"]).is_file()
+    assert captured["options"]["headless"] is True
+
+
+def test_build_verification_browser_flow_refuses_interactive_steps(tmp_path: Path) -> None:
+    service = BrowserService(
+        config=_config(tmp_path, allow_private=True),
+        db=None,
+        work_queue=None,
+        runner=lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    try:
+        service.run_verification_flow(
+            steps=[
+                {"type": "navigate", "url": "https://example.com"},
+                {"type": "click", "selector": "#submit"},
+            ]
+        )
+        assert False, "expected interactive build verification to be refused"
+    except ValueError as exc:
+        assert "read-only" in str(exc)

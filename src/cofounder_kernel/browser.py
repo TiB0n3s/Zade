@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import urllib.parse
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
@@ -203,6 +204,47 @@ class BrowserService:
             "pages": flow.get("pages", []),
         }
 
+    def run_verification_flow(
+        self,
+        *,
+        steps: list[dict[str, Any]],
+        trace_path: str = "",
+    ) -> dict[str, Any]:
+        """Run a read-only evidence flow locally without an external-action approval."""
+        if not self.config.browser.enabled:
+            raise ValueError("Browser automation is disabled (browser.enabled = false).")
+        normalized = self._validate_steps(steps)
+        if self._is_interactive(normalized):
+            raise ValueError("Build verification browser flows must be read-only.")
+        default_trace = (
+            self.config.paths.hot_root
+            / "Zade"
+            / "build-browser-evidence"
+            / f"trace-{uuid4().hex}.zip"
+        )
+        resolved_trace = _resolve_allowed_path(trace_path or str(default_trace), self.config)
+        if resolved_trace.suffix.lower() != ".zip":
+            raise ValueError("Browser verification trace path must end in .zip.")
+        resolved_trace.parent.mkdir(parents=True, exist_ok=True)
+        options = {
+            "headless": True,
+            "browser": self.config.browser.browser,
+            "nav_timeout_ms": int(self.config.browser.nav_timeout_seconds * 1000),
+            "action_timeout_ms": int(self.config.browser.action_timeout_seconds * 1000),
+            "trace_path": str(resolved_trace),
+        }
+        runner = self._runner or run_browser_flow
+        flow = runner(normalized, options=options)
+        screenshots = [
+            str(step.get("path"))
+            for step in flow.get("steps", [])
+            if isinstance(step, dict)
+            and step.get("type") == "screenshot"
+            and step.get("status") == "ok"
+            and step.get("path")
+        ]
+        return flow | {"screenshots": screenshots, "trace": str(resolved_trace)}
+
     # ---- validation ----
     def _validate_steps(self, steps: Any) -> list[dict[str, Any]]:
         if not isinstance(steps, list) or not steps:
@@ -345,8 +387,13 @@ def _execute_flow(steps: list[dict[str, Any]], options: dict[str, Any]) -> dict[
             raise BrowserNotAvailable(
                 f"Failed to launch {browser_name}: {exc}. Run: python -m playwright install {browser_name}"
             ) from exc
+        context = browser.new_context()
+        trace_path = str(options.get("trace_path") or "").strip()
+        if trace_path:
+            Path(trace_path).parent.mkdir(parents=True, exist_ok=True)
+            context.tracing.start(screenshots=True, snapshots=True, sources=True)
         try:
-            page = browser.new_page()
+            page = context.new_page()
             page.set_default_timeout(action_timeout)
             for index, step in enumerate(steps):
                 try:
@@ -359,9 +406,19 @@ def _execute_flow(steps: list[dict[str, Any]], options: dict[str, Any]) -> dict[
                     break
                 pages.append({"url": page.url, "title": _safe_title(page)})
         finally:
+            if trace_path:
+                context.tracing.stop(path=trace_path)
+            context.close()
             browser.close()
 
-    return {"ok": ok, "failed_step": failed_step, "error": error, "steps": step_logs, "pages": pages}
+    return {
+        "ok": ok,
+        "failed_step": failed_step,
+        "error": error,
+        "steps": step_logs,
+        "pages": pages,
+        "trace": trace_path,
+    }
 
 
 def _run_step(page: Any, step: dict[str, Any], *, nav_timeout: int, action_timeout: int) -> dict[str, Any]:

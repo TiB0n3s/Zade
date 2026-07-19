@@ -137,6 +137,24 @@ def test_output_tail_is_bounded_while_full_log_is_retained(tmp_path: Path) -> No
     assert len(result.stdout_log.read_text(encoding="utf-8")) > 400
 
 
+def test_retained_command_logs_have_a_disk_bound(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    policy = _python_policy()
+    runner = _runner(tmp_path, policy, max_log_bytes=128)
+
+    result = runner.run(
+        CommandRequest(
+            workspace=workspace,
+            profile_id=policy.id,
+            argv=("python", "-c", "print('x' * 500)"),
+        )
+    )
+
+    assert result.ok is True
+    assert result.stdout_log.stat().st_size <= 128
+
+
 def test_timeout_terminates_process_and_records_timeout(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -242,4 +260,3 @@ def test_request_timeout_cannot_exceed_policy_ceiling(tmp_path: Path) -> None:
                 timeout_seconds=6,
             )
         )
-

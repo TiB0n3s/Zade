@@ -129,6 +129,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `9505817` 2026-07-19 - feat: orchestrate durable local-first builds
 - `e16e913` 2026-07-19 - feat: persist durable build orchestration
 - `1dd6384` 2026-07-19 - feat: add governed build command runner
 - `1e78147` 2026-07-19 - docs: design durable product build orchestration
@@ -140,7 +141,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `d281196` 2026-07-18 - feat: expose budgeted build sessions
 - `365701e` 2026-07-18 - feat: orchestrate approved hybrid builds
 - `805b4f7` 2026-07-18 - Enable OpenClaw bridge; fix connect enums and subscription
-- `9efb717` 2026-07-18 - feat: add budgeted Anthropic build adapter
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
