@@ -1,7 +1,8 @@
+import json
 from pathlib import Path
 
 from cofounder_kernel.config import AppConfig, IdentityConfig, KernelConfig, OllamaConfig, PathConfig, ensure_local_paths
-from cofounder_kernel.db import KernelDatabase
+from cofounder_kernel.db import KernelDatabase, utc_now
 from cofounder_kernel.founder import FounderService
 
 
@@ -315,6 +316,93 @@ def test_strategy_objects_goals_tasks_integrity_and_kill_criteria(tmp_path: Path
     assert kill.record["threshold"] == "< 20%"
     assert integrity["count"] >= 3
     assert {item["warning_type"] for item in integrity["warnings"]} >= {"missing_owner", "missing_metric"}
+
+
+def test_integrity_warnings_auto_resolve_when_condition_clears(tmp_path: Path) -> None:
+    """Open warnings whose condition no longer holds are resolved by the next
+    check; warnings whose condition persists are deduped, not duplicated; and
+    warnings of types the check does not compute are left untouched."""
+    founder = make_founder(tmp_path)
+    goal = founder.create_goal(
+        {
+            "name": "Validate the wedge",
+            "owner": "Ellie",
+            "metric": "paying pilots",
+            "target": "3 pilots",
+            "evidence_ids": [1],
+        }
+    )
+    initiative = founder.create_initiative(
+        {"objective": "Ship the pilot", "blockers": ["waiting on vendor quote"]}
+    )
+
+    first = founder.run_integrity_check()
+    first_keys = {(item["warning_type"], item["subject_type"], item["subject_id"]) for item in first["warnings"]}
+    assert ("blocker_present", "initiative", initiative.id) in first_keys
+    assert ("initiative_without_goal", "initiative", initiative.id) in first_keys
+    assert first["resolved"] == []
+
+    second = founder.run_integrity_check()
+    assert second["resolved"] == []
+    assert sorted(item["id"] for item in second["warnings"]) == sorted(item["id"] for item in first["warnings"])
+
+    with founder.db.connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO integrity_warnings (created_at, warning_type, subject_type, subject_id, message, status)
+            VALUES (?, 'manual_note', 'initiative', ?, 'Founder-raised concern.', 'open')
+            """,
+            (utc_now(), initiative.id),
+        )
+        manual_id = int(cur.lastrowid)
+        conn.execute(
+            "UPDATE founder_initiatives SET blockers_json = '[]', metadata_json = ? WHERE id = ?",
+            (json.dumps({"goal_id": goal.id}), initiative.id),
+        )
+
+    third = founder.run_integrity_check()
+    resolved_by_key = {
+        (item["warning_type"], item["subject_id"]): item
+        for item in founder.list_integrity_warnings(status="resolved", limit=50)
+    }
+    open_by_id = {item["id"]: item for item in founder.list_integrity_warnings(status="open", limit=50)}
+    blocker_row = resolved_by_key[("blocker_present", initiative.id)]
+
+    assert blocker_row["id"] in third["resolved"]
+    assert resolved_by_key[("initiative_without_goal", initiative.id)]["id"] in third["resolved"]
+    assert blocker_row["metadata"]["resolution"] == "condition_cleared"
+    assert manual_id in open_by_id
+    assert manual_id not in third["resolved"]
+    with founder.db.connect() as conn:
+        audits = conn.execute(
+            "SELECT * FROM audit_events WHERE action = 'founder.integrity.auto_resolve'"
+        ).fetchall()
+    assert len(audits) == 1
+
+
+def test_weak_evidence_warning_is_not_swept_by_integrity_check(tmp_path: Path) -> None:
+    """weak_evidence resolution belongs to teaching's credibility-bar resolver;
+    merely attaching evidence must not clear it through the integrity sweep."""
+    founder = make_founder(tmp_path)
+    goal = founder.create_goal(
+        {"name": "Prove retention", "owner": "Ellie", "metric": "week-4 retention", "target": "40%"}
+    )
+
+    first = founder.run_integrity_check()
+    assert ("weak_evidence", "goal", goal.id) in {
+        (item["warning_type"], item["subject_type"], item["subject_id"]) for item in first["warnings"]
+    }
+
+    with founder.db.connect() as conn:
+        conn.execute("UPDATE founder_goals SET evidence_ids_json = '[1]' WHERE id = ?", (goal.id,))
+
+    second = founder.run_integrity_check()
+    still_open = {
+        (item["warning_type"], item["subject_id"])
+        for item in founder.list_integrity_warnings(status="open", limit=50)
+    }
+    assert second["resolved"] == []
+    assert ("weak_evidence", goal.id) in still_open
 
 
 def test_active_objective_and_decision_engine_create_operating_objects(tmp_path: Path) -> None:

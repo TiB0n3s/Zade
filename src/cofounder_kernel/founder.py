@@ -79,6 +79,24 @@ DEFAULT_CONTRARIAN_ROLES = {
 }
 
 
+# Warning types run_integrity_check regenerates on every run. An open warning of
+# one of these types that a run does NOT regenerate has had its condition clear,
+# so the run auto-resolves it. Scoping to this tuple keeps manually created or
+# externally owned warnings untouched. 'weak_evidence' is deliberately absent:
+# teaching.py resolves it only when attached evidence clears the credibility bar,
+# so mere attachment must not silently clear it here.
+_AUTO_RESOLVE_WARNING_TYPES = (
+    "missing_owner",
+    "missing_metric",
+    "deadline_passed",
+    "orphan_initiative",
+    "initiative_without_goal",
+    "blocker_present",
+    "task_without_strategy",
+    "task_without_value",
+)
+
+
 @dataclass(frozen=True)
 class InsertResult:
     id: int
@@ -1449,7 +1467,8 @@ class FounderService:
                 warnings.append(self._integrity_warning("task_without_strategy", "task", task["id"], task["title"], "Task has activity but no strategic value link.", "yellow", "Link to a goal or initiative."))
             if not task.get("strategic_value"):
                 warnings.append(self._integrity_warning("task_without_value", "task", task["id"], task["title"], "Task lacks stated strategic value.", "yellow", "Add strategic value or close it."))
-        return {"warnings": warnings, "count": len(warnings)}
+        resolved = self._resolve_cleared_integrity_warnings(warnings)
+        return {"warnings": warnings, "count": len(warnings), "resolved": resolved}
 
     def list_integrity_warnings(self, *, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         return self._list("integrity_warnings", INTEGRITY_WARNING_JSON_FIELDS, status=status, limit=limit)
@@ -1911,6 +1930,37 @@ class FounderService:
             )
             item_id = int(cur.lastrowid)
         return self.get_record("integrity_warnings", item_id, INTEGRITY_WARNING_JSON_FIELDS)
+
+    def _resolve_cleared_integrity_warnings(self, current_warnings: list[dict[str, Any]]) -> list[int]:
+        """Resolve open warnings whose condition no longer holds.
+
+        ``run_integrity_check`` regenerates (or dedupes onto) every open warning
+        whose condition still holds, so an open row of a checked type absent from
+        ``current_warnings`` has cleared.
+        """
+        still_open = {int(item["id"]) for item in current_warnings}
+        resolved_ids: list[int] = []
+        placeholders = ", ".join("?" for _ in _AUTO_RESOLVE_WARNING_TYPES)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, metadata_json FROM integrity_warnings WHERE status = 'open' AND warning_type IN ({placeholders})",
+                _AUTO_RESOLVE_WARNING_TYPES,
+            ).fetchall()
+            for row in rows:
+                warning_id = int(row["id"])
+                if warning_id in still_open:
+                    continue
+                metadata = json.loads(row["metadata_json"] or "{}")
+                metadata["resolution"] = "condition_cleared"
+                metadata["resolved_at"] = utc_now()
+                conn.execute(
+                    "UPDATE integrity_warnings SET status = 'resolved', metadata_json = ? WHERE id = ?",
+                    (_json(metadata), warning_id),
+                )
+                resolved_ids.append(warning_id)
+        if resolved_ids:
+            self._audit("founder.integrity.auto_resolve", "integrity_warnings", "ok", {"warning_ids": resolved_ids, "resolution": "condition_cleared"})
+        return resolved_ids
 
     def _insert_reflection(
         self,
