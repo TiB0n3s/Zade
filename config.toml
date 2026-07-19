@@ -33,16 +33,15 @@ coding_agent_model = "qwen3:14b"
 request_timeout_seconds = 600
 
 [delegation]
-# Hybrid builds assess and work locally first. Any Anthropic source-code turn
-# requires a project-scoped, expiring lease approved with the typed phrase and
-# is constrained by the configured token/dollar/turn ceilings. There is no paid
-# retry, provider fallback, standing source-code grant, or automatic tier raise.
-engine = "hybrid"
+# Intake builds execute inline through Zade's local coding agent. Cloud build
+# leases and external coding-agent paths remain available through their explicit
+# governed routes, but are never an automatic fallback for project intake.
+engine = "native"
 # Local compatibility bridge CLI (used only when engine = "bridge").
 # Full path: Windows CreateProcess can't resolve the bare npm "claude" shim.
 agent_command = ["C:\\Users\\TiBon\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe", "-p", "--permission-mode", "acceptEdits"]
 # Delegated builds run HERE, never inside the kernel repo.
-workspace_root = "C:\\Users\\TiBon\\ZadeWorkspace"
+workspace_root = "C:\\AI Brain\\project-intake"
 # Real builds need more than 10 minutes.
 timeout_seconds = 1800
 max_output_chars = 40000
