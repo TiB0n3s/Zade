@@ -13,6 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cloud = [
+  "anthropic>=0.117,<0.118",
+]
 dev = [
   "httpx>=0.28",
   "PyYAML>=6.0",

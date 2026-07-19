@@ -165,6 +165,39 @@ def test_coding_loop_uses_injected_model_client_with_same_local_tools(
     assert {call["model"] for call in cloud.calls} == {"cloud-test"}
 
 
+def test_coding_loop_preserves_provider_tool_call_ids(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    cfg = _config(tmp_path, fixture_repo)
+    local = ScriptedOllama(cfg.ollama, [])
+    cloud = ScriptedModelClient(
+        [
+            {
+                "tool_calls": [
+                    {"id": "toolu_123", **_call("read_file", path="calc.py")}
+                ]
+            },
+            {"content": "done"},
+        ]
+    )
+    service = CodingAgentService(
+        config=cfg,
+        db=_db(tmp_path),
+        ollama=local,
+        model_client=cloud,
+        inventory=_StubInventory(),
+    )
+
+    service.run(task="Review calc.py", workspace=fixture_repo, model="cloud-test")
+
+    tool_messages = [
+        message
+        for message in cloud.calls[1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert tool_messages[0]["tool_call_id"] == "toolu_123"
+
+
 # 17-19. message discipline and real tool schemas -----------------------------------
 
 def test_build_profile_is_system_message_and_task_is_user_role(tmp_path: Path, fixture_repo: Path) -> None:

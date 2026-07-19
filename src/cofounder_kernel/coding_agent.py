@@ -279,9 +279,14 @@ class CodingAgentService:
                             "round": state["rounds"],
                         }
                     )
-                    messages.append(
-                        {"role": "tool", "tool_name": name, "content": _render_result(result)}
-                    )
+                    tool_message = {
+                        "role": "tool",
+                        "tool_name": name,
+                        "content": _render_result(result),
+                    }
+                    if call.get("id"):
+                        tool_message["tool_call_id"] = str(call["id"])
+                    messages.append(tool_message)
                 if question_box.get("question"):
                     # The model raised a genuine founder decision: stop cleanly.
                     # The delegation layer files the question; nothing is guessed.

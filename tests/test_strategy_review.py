@@ -7,14 +7,11 @@ even after approval, and the returned review is filed through the governed path.
 """
 from __future__ import annotations
 
-import io
-import json
-import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-import cofounder_kernel.anthropic_client as anthropic_module
 from cofounder_kernel.anthropic_client import (
     AnthropicClient,
     AnthropicNotConfigured,
@@ -46,12 +43,20 @@ class FakeAnthropic:
         return self.reply
 
 
-class _FakeResp(io.BytesIO):
-    def __enter__(self):
-        return self
+class _FakeSDKMessages:
+    def __init__(self):
+        self.calls: list[dict] = []
 
-    def __exit__(self, *args):
-        return False
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="here is the review")]
+        )
+
+
+class _FakeSDK:
+    def __init__(self):
+        self.messages = _FakeSDKMessages()
 
 
 # --------------------------------------------------------------------------
@@ -76,23 +81,42 @@ def test_client_refuses_without_key(monkeypatch) -> None:
         client.review(prompt="hi")
 
 
+def test_client_refuses_tampered_endpoint_before_sdk_construction(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    factory_calls: list[dict] = []
+    client = AnthropicClient(
+        AnthropicConfig(enabled=True, base_url="https://example.com/v1/messages"),
+        provider_policy="local_preferred",
+        sdk_factory=lambda **kwargs: factory_calls.append(kwargs),
+    )
+
+    with pytest.raises(AnthropicPolicyError, match="expected https://api.anthropic.com"):
+        client.review(prompt="hi")
+
+    assert factory_calls == []
+
+
 def test_client_sends_and_parses(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    calls: list = []
+    fake = _FakeSDK()
+    factory_calls: list[dict] = []
 
-    def fake_urlopen(request, timeout=120):
-        calls.append(request)
-        assert "api.anthropic.com" in request.full_url
-        return _FakeResp(json.dumps({"content": [{"type": "text", "text": "here is the review"}]}).encode("utf-8"))
+    def factory(**kwargs):
+        factory_calls.append(kwargs)
+        return fake
 
-    monkeypatch.setattr(anthropic_module.urllib.request, "urlopen", fake_urlopen)
-    client = AnthropicClient(AnthropicConfig(enabled=True, model="claude-opus-4-8"), provider_policy="local_preferred")
+    client = AnthropicClient(
+        AnthropicConfig(enabled=True, model="claude-opus-4-8"),
+        provider_policy="local_preferred",
+        sdk_factory=factory,
+    )
     out = client.review(prompt="assess this", system="be direct")
 
     assert out == "here is the review"
-    req = calls[0]
-    assert req.get_header("X-api-key") == "sk-ant-test"
-    body = json.loads(req.data.decode("utf-8"))
+    assert factory_calls[0]["api_key"] == "sk-ant-test"
+    assert factory_calls[0]["base_url"] == "https://api.anthropic.com"
+    assert factory_calls[0]["max_retries"] == 0
+    body = fake.messages.calls[0]
     assert body["model"] == "claude-opus-4-8"
     assert body["messages"][0]["content"] == "assess this"
     assert body["system"] == "be direct"

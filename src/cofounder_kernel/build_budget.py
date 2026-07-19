@@ -187,6 +187,24 @@ class BuildBudgetService:
             raise BuildBudgetExceeded("lease", "no approved lease")
         return lease
 
+    def preflight(self, session_id: int) -> BuildLease:
+        now = self._now()
+        self._validate_pricing(now.date())
+        lease = self.active_lease(session_id)
+        if lease.state not in {"active", "warning"}:
+            raise BuildBudgetExceeded("lease_state", lease.state)
+        expires_at = datetime.fromisoformat(lease.expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if now >= expires_at.astimezone(UTC):
+            self.store.expire_lease(lease.id)
+            raise BuildBudgetExceeded("expiration", "lease expired")
+        if lease.provider != self.pricing.provider or lease.model != self.pricing.model:
+            raise BuildBudgetExceeded(
+                "pricing_model", "pricing snapshot does not match the approved lease"
+            )
+        return lease
+
     def request_upgrade_summary(self, session_id: int, reason: str) -> dict[str, object]:
         lease = self.active_lease(session_id)
         return {

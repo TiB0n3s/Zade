@@ -1,26 +1,16 @@
-"""Anthropic Messages API client — the first non-local inference client.
+"""Checked, lazy Anthropic SDK construction and strategic review client."""
 
-Deliberately minimal and dependency-free (urllib, like the voice cloud client):
-one call, one governed egress host, key from the environment. It is NOT a general
-cloud escape hatch — nothing here decides *whether* to call Anthropic. That is the
-egress gate's job (a per-request ``founder_brief → anthropic`` grant); this client
-only performs the send once a caller has been authorized, and refuses at the
-transport under ``provider_policy = local_only`` as defense in depth.
-
-Every request funnels through ``netguard`` (https + a one-host allowlist) so a
-tampered base_url cannot redirect the payload elsewhere. The API key is read from
-the configured env var and never stored in config or the database.
-"""
 from __future__ import annotations
 
-import json
-import socket
-import urllib.error
+import os
 import urllib.parse
-import urllib.request
+from typing import Any, Callable, Mapping, Sequence
 
 from . import netguard
 from .config import AnthropicConfig
+
+
+_ANTHROPIC_HOST = "api.anthropic.com"
 
 
 class AnthropicError(RuntimeError):
@@ -28,32 +18,81 @@ class AnthropicError(RuntimeError):
 
 
 class AnthropicNotConfigured(AnthropicError):
-    """Anthropic is disabled, or its API key/env is not set."""
+    """Anthropic is disabled, missing its SDK, or missing its API key."""
 
 
 class AnthropicPolicyError(AnthropicError):
-    """A cloud inference call was refused by provider policy at the transport,
-    before any bytes left the process — never a silent send."""
+    """Cloud inference was refused before the SDK could send bytes."""
 
 
-def _allowed_host(base_url: str) -> frozenset[str]:
-    host = (urllib.parse.urlparse(base_url).hostname or "").lower()
-    return frozenset({host}) if host else frozenset()
+def create_sdk_client(
+    config: AnthropicConfig,
+    *,
+    provider_policy: str,
+    sdk_factory: Callable[..., Any] | None = None,
+) -> Any:
+    """Construct a no-retry SDK client after transport policy validation."""
+    policy = (provider_policy or "local_only").strip().lower()
+    if not config.enabled:
+        raise AnthropicNotConfigured("Anthropic is disabled ([anthropic] enabled = false).")
+    if policy == "local_only":
+        raise AnthropicPolicyError(
+            "provider_policy is local_only: cloud inference is refused at the transport. "
+            "No request was sent."
+        )
+    parsed = urllib.parse.urlparse(config.base_url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https" or host != _ANTHROPIC_HOST:
+        raise AnthropicPolicyError(
+            f"Refused Anthropic endpoint {config.base_url!r}; expected https://{_ANTHROPIC_HOST}. "
+            "No request was sent."
+        )
+    try:
+        netguard.assert_allowed(
+            config.base_url,
+            require_https=True,
+            allowed_hosts=frozenset({_ANTHROPIC_HOST}),
+        )
+    except netguard.EgressError as exc:
+        raise AnthropicPolicyError(str(exc)) from exc
+    api_key = os.environ.get(config.api_key_env, "").strip()
+    if not api_key:
+        raise AnthropicNotConfigured(
+            f"Anthropic API key env var is not set: {config.api_key_env}"
+        )
+    if sdk_factory is None:
+        try:
+            from anthropic import Anthropic as sdk_factory
+        except ImportError as exc:
+            raise AnthropicNotConfigured(
+                'Anthropic SDK is not installed; install the "cloud" project extra.'
+            ) from exc
+    return sdk_factory(
+        api_key=api_key,
+        base_url=f"https://{_ANTHROPIC_HOST}",
+        timeout=config.timeout_seconds,
+        max_retries=0,
+    )
 
 
 class AnthropicClient:
-    def __init__(self, config: AnthropicConfig, *, provider_policy: str = "local_only"):
+    def __init__(
+        self,
+        config: AnthropicConfig,
+        *,
+        provider_policy: str = "local_only",
+        sdk_factory: Callable[..., Any] | None = None,
+    ):
         self.config = config
         self.provider_policy = (provider_policy or "local_only").strip().lower()
+        self._sdk_factory = sdk_factory
+        self._sdk_client: Any | None = None
 
     def available(self) -> bool:
         return bool(self.config.enabled)
 
     def provider_info(self) -> dict[str, object]:
-        """Redacted descriptor for telemetry — no prompt, no key."""
         parsed = urllib.parse.urlparse(self.config.base_url)
-        import os
-
         return {
             "provider": "anthropic",
             "enabled": bool(self.config.enabled),
@@ -61,76 +100,57 @@ class AnthropicClient:
             "endpoint_host": (parsed.hostname or "").lower(),
             "provider_policy": self.provider_policy,
             "key_present": bool(os.environ.get(self.config.api_key_env)),
+            "sdk_retries": 0,
         }
 
-    def review(self, *, prompt: str, system: str = "", max_tokens: int | None = None) -> str:
-        """Send one message and return the assistant's text. The caller MUST have
-        already cleared the egress gate — this method assumes authorization and
-        only re-checks the transport-level policy invariant."""
-        if not self.config.enabled:
-            raise AnthropicNotConfigured("Anthropic is disabled ([anthropic] enabled = false).")
-        if self.provider_policy == "local_only":
-            raise AnthropicPolicyError(
-                "provider_policy is local_only: cloud inference is refused at the transport. "
-                "No request was sent."
+    def sdk_client(self) -> Any:
+        if self._sdk_client is None:
+            self._sdk_client = create_sdk_client(
+                self.config,
+                provider_policy=self.provider_policy,
+                sdk_factory=self._sdk_factory,
             )
-        import os
+        return self._sdk_client
 
-        api_key = os.environ.get(self.config.api_key_env, "").strip()
-        if not api_key:
-            raise AnthropicNotConfigured(
-                f"Anthropic API key env var is not set: {self.config.api_key_env}"
-            )
-        body: dict[str, object] = {
+    def review(
+        self,
+        *,
+        prompt: str,
+        system: str = "",
+        max_tokens: int | None = None,
+    ) -> str:
+        """Send one already-authorized strategic review request."""
+        request: dict[str, Any] = {
             "model": self.config.model,
             "max_tokens": max_tokens or self.config.max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
         if system:
-            body["system"] = system
-        request = urllib.request.Request(
-            self.config.base_url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": self.config.anthropic_version,
-                "content-type": "application/json",
-            },
-            method="POST",
-        )
-        raw = self._http_call(request)
-        return _extract_text(raw)
-
-    def _http_call(self, request: urllib.request.Request) -> dict[str, object]:
-        netguard.assert_allowed(
-            request.full_url, require_https=True, allowed_hosts=_allowed_host(self.config.base_url)
-        )
+            request["system"] = system
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:  # noqa: S310 - allowlisted https endpoint
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")[:300]
-            except Exception:
-                detail = ""
-            raise AnthropicError(f"Anthropic request failed (HTTP {exc.code}): {detail}") from exc
-        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            response = self.sdk_client().messages.create(**request)
+        except (AnthropicNotConfigured, AnthropicPolicyError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalize SDK transport errors
             raise AnthropicError(f"Anthropic request failed: {exc}") from exc
-        except json.JSONDecodeError as exc:
-            raise AnthropicError("Anthropic returned invalid JSON.") from exc
+        return _extract_text(response)
 
 
-def _extract_text(raw: dict[str, object]) -> str:
-    """Pull the text out of a Messages API response, tolerant of shape drift."""
-    content = raw.get("content")
-    if isinstance(content, list):
+def _extract_text(raw: Any) -> str:
+    content = _value(raw, "content", None)
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
         parts = [
-            str(block.get("text", ""))
+            str(_value(block, "text", ""))
             for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
+            if str(_value(block, "type", "")) == "text"
         ]
         text = "".join(parts).strip()
         if text:
             return text
-    raise AnthropicError(f"Anthropic response had no text content: {json.dumps(raw)[:200]}")
+    raise AnthropicError("Anthropic response had no text content.")
+
+
+def _value(value: Any, name: str, default: Any) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
