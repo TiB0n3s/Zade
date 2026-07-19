@@ -16,6 +16,7 @@ from .build_types import (
     CloudUsageEvent,
     LeaseLimits,
     PricingSnapshot,
+    UsageReservation,
 )
 from .db import KernelDatabase, utc_now
 
@@ -29,6 +30,13 @@ _PHASES = {
     "review",
     "complete",
 }
+
+
+class BuildReservationRejected(ValueError):
+    def __init__(self, field: str, detail: str = ""):
+        self.field = field
+        self.detail = detail
+        super().__init__(f"{field}: {detail}" if detail else field)
 
 
 class BuildStore:
@@ -221,9 +229,373 @@ class BuildStore:
             ).fetchall()
         return [_usage_from_row(row) for row in rows]
 
+    def get_reservation(self, reservation_id: int) -> UsageReservation | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM cloud_usage_events WHERE id = ?", (reservation_id,)
+            ).fetchone()
+        return _reservation_from_row(row) if row else None
+
+    def create_reservation(
+        self,
+        session_id: int,
+        *,
+        request_id: str,
+        input_upper_tokens: int,
+        max_output_tokens: int,
+        reserved_microdollars: int,
+        cache_mode: str,
+        pricing: PricingSnapshot,
+        warning_percent: int,
+        now: str,
+    ) -> UsageReservation:
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM cloud_usage_events WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if existing:
+                existing_lease = connection.execute(
+                    "SELECT session_id FROM build_leases WHERE id = ?",
+                    (int(existing["lease_id"]),),
+                ).fetchone()
+                if (
+                    existing_lease
+                    and int(existing_lease["session_id"]) == session_id
+                    and str(existing["status"]) == "reserved"
+                ):
+                    return _reservation_from_row(existing)
+                raise BuildReservationRejected(
+                    "request_id", "already used; paid requests are not retried automatically"
+                )
+
+            lease_row = connection.execute(
+                """
+                SELECT * FROM build_leases
+                WHERE session_id = ? AND state IN ('active', 'warning', 'paused')
+                ORDER BY version DESC LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+            if lease_row is None:
+                raise BuildReservationRejected("lease", "no approved lease")
+            if str(lease_row["state"]) not in {"active", "warning"}:
+                raise BuildReservationRejected("lease_state", str(lease_row["state"]))
+            if (
+                str(lease_row["provider"]) != pricing.provider
+                or str(lease_row["model"]) != pricing.model
+            ):
+                raise BuildReservationRejected(
+                    "pricing_model", "pricing snapshot does not match the approved lease"
+                )
+            if datetime.fromisoformat(now) >= datetime.fromisoformat(str(lease_row["expires_at"])):
+                connection.execute(
+                    "UPDATE build_leases SET state = 'expired' WHERE id = ?",
+                    (int(lease_row["id"]),),
+                )
+                raise BuildReservationRejected("expiration", "lease expired")
+
+            limits = LeaseLimits(**json.loads(lease_row["limits_json"]))
+            checks = {
+                "input_tokens": (
+                    int(lease_row["actual_input_tokens"])
+                    + int(lease_row["reserved_input_tokens"])
+                    + input_upper_tokens,
+                    limits.input_tokens,
+                ),
+                "output_tokens": (
+                    int(lease_row["actual_output_tokens"])
+                    + int(lease_row["reserved_output_tokens"])
+                    + max_output_tokens,
+                    limits.output_tokens,
+                ),
+                "microdollars": (
+                    int(lease_row["actual_microdollars"])
+                    + int(lease_row["reserved_microdollars"])
+                    + reserved_microdollars,
+                    limits.dollar_micro,
+                ),
+                "cloud_turns": (int(lease_row["cloud_turns"]) + 1, limits.cloud_turns),
+            }
+            for field, (requested, ceiling) in checks.items():
+                if requested > ceiling:
+                    raise BuildReservationRejected(
+                        field, f"requested total {requested} exceeds {ceiling}"
+                    )
+
+            turn_number = int(lease_row["cloud_turns"]) + 1
+            cursor = connection.execute(
+                """
+                INSERT INTO cloud_usage_events (
+                  lease_id, request_id, turn_number, status, cache_mode,
+                  input_upper_tokens, max_output_tokens, reserved_microdollars,
+                  pricing_json, created_at
+                )
+                VALUES (?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(lease_row["id"]),
+                    request_id,
+                    turn_number,
+                    cache_mode,
+                    input_upper_tokens,
+                    max_output_tokens,
+                    reserved_microdollars,
+                    _dumps(_pricing_dict(pricing)),
+                    now,
+                ),
+            )
+            totals = {
+                "input": int(lease_row["actual_input_tokens"])
+                + int(lease_row["reserved_input_tokens"])
+                + input_upper_tokens,
+                "output": int(lease_row["actual_output_tokens"])
+                + int(lease_row["reserved_output_tokens"])
+                + max_output_tokens,
+                "dollars": int(lease_row["actual_microdollars"])
+                + int(lease_row["reserved_microdollars"])
+                + reserved_microdollars,
+                "turns": turn_number,
+            }
+            state = (
+                "warning"
+                if _at_warning(totals, limits, warning_percent)
+                else str(lease_row["state"])
+            )
+            connection.execute(
+                """
+                UPDATE build_leases
+                SET reserved_input_tokens = reserved_input_tokens + ?,
+                    reserved_output_tokens = reserved_output_tokens + ?,
+                    reserved_microdollars = reserved_microdollars + ?,
+                    cloud_turns = ?, state = ?
+                WHERE id = ?
+                """,
+                (
+                    input_upper_tokens,
+                    max_output_tokens,
+                    reserved_microdollars,
+                    turn_number,
+                    state,
+                    int(lease_row["id"]),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cloud_usage_events WHERE id = ?", (int(cursor.lastrowid),)
+            ).fetchone()
+        return _reservation_from_row(row)
+
+    def settle_reservation(
+        self,
+        reservation_id: int,
+        *,
+        input_tokens: int,
+        cache_write_5m_tokens: int,
+        cache_write_1h_tokens: int,
+        cache_read_tokens: int,
+        output_tokens: int,
+        settled_microdollars: int,
+        status: str,
+        warning_percent: int,
+        now: str,
+        pause_lease: bool = False,
+    ) -> CloudUsageEvent:
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            event = connection.execute(
+                "SELECT * FROM cloud_usage_events WHERE id = ?", (reservation_id,)
+            ).fetchone()
+            if event is None:
+                raise ValueError(f"Usage reservation not found: {reservation_id}")
+            if str(event["status"]) not in {"reserved", "uncertain_spend"}:
+                return _usage_from_row(event)
+            lease = connection.execute(
+                "SELECT * FROM build_leases WHERE id = ?", (int(event["lease_id"]),)
+            ).fetchone()
+            if lease is None:
+                raise ValueError(f"Build lease not found: {event['lease_id']}")
+            actual_input = (
+                input_tokens
+                + cache_write_5m_tokens
+                + cache_write_1h_tokens
+                + cache_read_tokens
+            )
+            limits = LeaseLimits(**json.loads(lease["limits_json"]))
+            totals = {
+                "input": int(lease["actual_input_tokens"]) + actual_input,
+                "output": int(lease["actual_output_tokens"]) + output_tokens,
+                "dollars": int(lease["actual_microdollars"]) + settled_microdollars,
+                "turns": int(lease["cloud_turns"]),
+            }
+            state = str(lease["state"])
+            if pause_lease:
+                state = "paused"
+            elif state != "paused" and _at_warning(totals, limits, warning_percent):
+                state = "warning"
+            connection.execute(
+                """
+                UPDATE cloud_usage_events
+                SET status = ?, input_tokens = ?, cache_write_5m_tokens = ?,
+                    cache_write_1h_tokens = ?, cache_read_tokens = ?, output_tokens = ?,
+                    settled_microdollars = ?, settled_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    input_tokens,
+                    cache_write_5m_tokens,
+                    cache_write_1h_tokens,
+                    cache_read_tokens,
+                    output_tokens,
+                    settled_microdollars,
+                    now,
+                    reservation_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE build_leases
+                SET reserved_input_tokens = MAX(0, reserved_input_tokens - ?),
+                    reserved_output_tokens = MAX(0, reserved_output_tokens - ?),
+                    reserved_microdollars = MAX(0, reserved_microdollars - ?),
+                    actual_input_tokens = actual_input_tokens + ?,
+                    actual_output_tokens = actual_output_tokens + ?,
+                    actual_microdollars = actual_microdollars + ?,
+                    state = ?
+                WHERE id = ?
+                """,
+                (
+                    int(event["input_upper_tokens"]),
+                    int(event["max_output_tokens"]),
+                    int(event["reserved_microdollars"]),
+                    actual_input,
+                    output_tokens,
+                    settled_microdollars,
+                    state,
+                    int(event["lease_id"]),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM cloud_usage_events WHERE id = ?", (reservation_id,)
+            ).fetchone()
+        return _usage_from_row(row)
+
+    def release_reservation(self, reservation_id: int) -> None:
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            event = connection.execute(
+                "SELECT * FROM cloud_usage_events WHERE id = ?", (reservation_id,)
+            ).fetchone()
+            if event is None:
+                return
+            if str(event["status"]) != "reserved":
+                raise ValueError("Only a proven-unsent reservation can be released")
+            connection.execute(
+                """
+                UPDATE build_leases
+                SET reserved_input_tokens = MAX(0, reserved_input_tokens - ?),
+                    reserved_output_tokens = MAX(0, reserved_output_tokens - ?),
+                    reserved_microdollars = MAX(0, reserved_microdollars - ?),
+                    cloud_turns = MAX(0, cloud_turns - 1),
+                    state = CASE WHEN state = 'warning' THEN 'active' ELSE state END
+                WHERE id = ?
+                """,
+                (
+                    int(event["input_upper_tokens"]),
+                    int(event["max_output_tokens"]),
+                    int(event["reserved_microdollars"]),
+                    int(event["lease_id"]),
+                ),
+            )
+            connection.execute(
+                "DELETE FROM cloud_usage_events WHERE id = ?", (reservation_id,)
+            )
+
+    def mark_reservation_uncertain(
+        self, reservation_id: int, *, reason: str
+    ) -> CloudUsageEvent:
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            event = connection.execute(
+                "SELECT * FROM cloud_usage_events WHERE id = ?", (reservation_id,)
+            ).fetchone()
+            if event is None:
+                raise ValueError(f"Usage reservation not found: {reservation_id}")
+            if str(event["status"]) == "reserved":
+                connection.execute(
+                    "UPDATE cloud_usage_events SET status = 'uncertain_spend', error = ? WHERE id = ?",
+                    (reason, reservation_id),
+                )
+                connection.execute(
+                    "UPDATE build_leases SET state = 'paused' WHERE id = ?",
+                    (int(event["lease_id"]),),
+                )
+            row = connection.execute(
+                "SELECT * FROM cloud_usage_events WHERE id = ?", (reservation_id,)
+            ).fetchone()
+        return _usage_from_row(row)
+
+    def pause_lease(self, lease_id: int) -> BuildLease:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE build_leases SET state = 'paused'
+                WHERE id = ? AND state IN ('active', 'warning')
+                """,
+                (lease_id,),
+            )
+            if cursor.rowcount == 0:
+                row = connection.execute(
+                    "SELECT * FROM build_leases WHERE id = ?", (lease_id,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Build lease not found: {lease_id}")
+            row = connection.execute(
+                "SELECT * FROM build_leases WHERE id = ?", (lease_id,)
+            ).fetchone()
+        return _lease_from_row(row)
+
+    def expire_lease(self, lease_id: int) -> BuildLease:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE build_leases SET state = 'expired'
+                WHERE id = ? AND state IN ('active', 'warning', 'paused')
+                """,
+                (lease_id,),
+            )
+            if cursor.rowcount == 0:
+                row = connection.execute(
+                    "SELECT * FROM build_leases WHERE id = ?", (lease_id,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Build lease not found: {lease_id}")
+            row = connection.execute(
+                "SELECT * FROM build_leases WHERE id = ?", (lease_id,)
+            ).fetchone()
+        return _lease_from_row(row)
+
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _pricing_dict(pricing: PricingSnapshot) -> dict[str, str]:
+    return {key: str(value) for key, value in asdict(pricing).items()}
+
+
+def _at_warning(
+    totals: dict[str, int], limits: LeaseLimits, warning_percent: int
+) -> bool:
+    ceilings = {
+        "input": limits.input_tokens,
+        "output": limits.output_tokens,
+        "dollars": limits.dollar_micro,
+        "turns": limits.cloud_turns,
+    }
+    return any(
+        totals[key] * 100 >= ceilings[key] * warning_percent for key in ceilings
+    )
 
 
 def _assessment_from_row(row: sqlite3.Row) -> BuildAssessment:
@@ -305,4 +677,19 @@ def _usage_from_row(row: sqlite3.Row) -> CloudUsageEvent:
         pricing=pricing,
         created_at=str(row["created_at"]),
         settled_at=str(row["settled_at"]) if row["settled_at"] else None,
+    )
+
+
+def _reservation_from_row(row: sqlite3.Row) -> UsageReservation:
+    return UsageReservation(
+        id=int(row["id"]),
+        lease_id=int(row["lease_id"]),
+        request_id=str(row["request_id"]),
+        turn_number=int(row["turn_number"]),
+        input_upper_tokens=int(row["input_upper_tokens"]),
+        max_output_tokens=int(row["max_output_tokens"]),
+        reserved_microdollars=int(row["reserved_microdollars"]),
+        pricing=PricingSnapshot(**json.loads(row["pricing_json"])),
+        status=str(row["status"]),
+        created_at=str(row["created_at"]),
     )

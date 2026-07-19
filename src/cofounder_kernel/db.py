@@ -3435,6 +3435,7 @@ CREATE TABLE IF NOT EXISTS cloud_usage_events (
   request_id TEXT NOT NULL,
   turn_number INTEGER NOT NULL,
   status TEXT NOT NULL,
+  cache_mode TEXT NOT NULL DEFAULT 'none',
   input_upper_tokens INTEGER NOT NULL DEFAULT 0,
   max_output_tokens INTEGER NOT NULL DEFAULT 0,
   input_tokens INTEGER NOT NULL DEFAULT 0,
