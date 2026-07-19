@@ -2,6 +2,7 @@ from pathlib import Path
 
 from cofounder_kernel.config import KernelConfig, PathConfig, ProjectIntakeConfig
 from cofounder_kernel.db import KernelDatabase
+import cofounder_kernel.project_intake as project_intake_module
 from cofounder_kernel.project_intake import ProjectIntakeService, parse_project_decision_reply
 
 
@@ -23,7 +24,26 @@ class FakeDelegation:
 
     def queue_delegation(self, **kwargs):
         self.calls.append(kwargs)
-        return {"item_id": None, "status": "approved", "auto_invoked": True, "dispatch": {"ok": True}}
+        return {
+            "item_id": None,
+            "status": "approved",
+            "auto_invoked": True,
+            "dispatch": {"ok": True, "auto_verification": {"ok": True}},
+        }
+
+
+class UnverifiedDelegation:
+    def queue_delegation(self, **kwargs):
+        return {
+            "item_id": None,
+            "status": "approved",
+            "auto_invoked": True,
+            "dispatch": {
+                "ok": True,
+                "status": "ok",
+                "auto_verification": {"ok": False, "output": "typecheck failed"},
+            },
+        }
 
 
 class BlockingDelegation:
@@ -61,7 +81,12 @@ class FakeApprovals:
         self.calls.append((item_id, kwargs))
         return {
             "dispatch": "dispatched",
-            "dispatch_result": {"ok": True, "status": "ok", "artifact": "scaffold complete"},
+            "dispatch_result": {
+                "ok": True,
+                "status": "ok",
+                "artifact": "scaffold complete",
+                "auto_verification": {"ok": True},
+            },
         }
 
 
@@ -141,6 +166,43 @@ def test_documentation_only_project_initializes_git_and_routes_scaffold(tmp_path
     assert "mobile application" in delegation.calls[0]["task"]
     assert "Google Play" in delegation.calls[0]["acceptance"]
     assert "Apple App Store" in delegation.calls[0]["acceptance"]
+
+
+def test_scaffold_context_reports_available_mobile_tooling(tmp_path: Path, monkeypatch) -> None:
+    delegation = FakeDelegation()
+    monkeypatch.setattr(
+        project_intake_module.shutil,
+        "which",
+        lambda name: f"C:/tools/{name}.exe" if name in {"node", "npm", "java"} else None,
+    )
+    service, config, _db = make_service(tmp_path, delegation=delegation)
+    project = config.paths.project_intake_dir / "Same Ground"
+    project.mkdir(parents=True)
+    (project / "project.md").write_text(MOBILE_MANIFEST, encoding="utf-8")
+
+    service.scan(auto_run=True)
+
+    context = delegation.calls[0]["context"]
+    assert "node: available" in context
+    assert "npm: available" in context
+    assert "flutter: unavailable" in context
+    assert "Do not choose a framework whose required local toolchain is unavailable" in context
+
+
+def test_failed_kernel_verification_blocks_project_and_notifies(tmp_path: Path) -> None:
+    bus = FakeBus()
+    service, config, _db = make_service(
+        tmp_path, delegation=UnverifiedDelegation(), bus=bus
+    )
+    project = config.paths.project_intake_dir / "Same Ground"
+    project.mkdir(parents=True)
+    (project / "project.md").write_text(MOBILE_MANIFEST, encoding="utf-8")
+
+    stored = service.scan(auto_run=True)["projects"][0]
+
+    assert stored["lifecycle_state"] == "blocked"
+    assert stored["metadata"]["blocked_reason"] == "kernel auto-verification did not pass"
+    assert bus.calls[0]["topic"] == "project.build_blocked"
 
 
 def test_reconciliation_scan_does_not_restart_a_completed_scaffold(tmp_path: Path) -> None:

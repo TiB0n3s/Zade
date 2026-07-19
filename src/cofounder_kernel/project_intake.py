@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -88,7 +89,7 @@ class ProjectIntakeService:
             self.db.append_project_event(project_id, event_type="repository_initialized")
         if self.delegation is None:
             return self._set_state(project, manifest, "blocked", {"reason": "delegation unavailable"})
-        context = self._documentation_context(root)
+        context = f"{self._documentation_context(root)}\n\n{self._mobile_tooling_context()}".strip()
         result = self.delegation.queue_delegation(
             task=(
                 f"Create and build the initial {manifest.product_type.replace('_', ' ')} "
@@ -184,6 +185,7 @@ class ProjectIntakeService:
         approval_request_id = _positive_int(dispatch.get("approval_request_id"))
         metadata_update: dict[str, Any] = {"last_build_route": result}
         notification_id: int | None = None
+        verification_blocked = False
 
         if dispatch_status == "needs_decision":
             state = "blocked"
@@ -198,7 +200,11 @@ class ProjectIntakeService:
         elif dispatch_status == "approval_required":
             state = "blocked"
             metadata_update["approval_request_id"] = approval_request_id
-        elif bool(result.get("auto_invoked")) and bool(dispatch.get("ok")):
+        elif (
+            bool(result.get("auto_invoked"))
+            and bool(dispatch.get("ok"))
+            and _dispatch_verified(dispatch)
+        ):
             state = "verified"
             metadata_update.update(
                 {
@@ -207,6 +213,10 @@ class ProjectIntakeService:
                     "approval_request_id": None,
                 }
             )
+        elif bool(result.get("auto_invoked")) and bool(dispatch.get("ok")):
+            state = "blocked"
+            verification_blocked = True
+            metadata_update["blocked_reason"] = _verification_block_reason(dispatch)
         else:
             state = "blocked"
             metadata_update["blocked_reason"] = str(
@@ -218,6 +228,8 @@ class ProjectIntakeService:
             notification_id = self._notify_founder_decision(updated, decision_id, dispatch)
         elif dispatch_status == "approval_required" and approval_request_id is not None:
             notification_id = self._notify_approval_required(updated, approval_request_id)
+        elif verification_blocked:
+            notification_id = self._notify_build_blocked(updated)
 
         self.db.append_project_event(
             project["id"],
@@ -275,6 +287,27 @@ class ProjectIntakeService:
         )
         return _positive_int(notification.get("id"))
 
+    def _notify_build_blocked(self, project: dict[str, Any]) -> int | None:
+        if self.bus is None:
+            return None
+        reason = str(
+            (project.get("metadata") or {}).get("blocked_reason")
+            or "verification did not pass"
+        )
+        notification = self.bus.notify(
+            topic="project.build_blocked",
+            title=f"{project['name']} scaffold needs attention",
+            body=(
+                f"Zade created project files, but did not mark them verified: {reason}. "
+                "The project remains paused until a real local check passes."
+            ),
+            severity="warning",
+            source="project_intake",
+            dedupe_key=f"project:{project['id']}:build-blocked:{project['repo_fingerprint']}",
+            metadata={"project_id": project["id"], "reason": reason},
+        )
+        return _positive_int(notification.get("id"))
+
     def _register(
         self, root: Path, *, prior: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -306,7 +339,30 @@ class ProjectIntakeService:
                 metadata={"prior_fingerprint": prior.get("repo_fingerprint"), "fingerprint": fingerprint},
             )
         self._ingest_documentation(project_id, root)
-        return self.get(project_id)
+        registered = self.get(project_id)
+        route = (registered.get("metadata") or {}).get("last_build_route")
+        route = route if isinstance(route, dict) else {}
+        dispatch = route.get("dispatch") if isinstance(route.get("dispatch"), dict) else {}
+        if (
+            prior is not None
+            and registered["lifecycle_state"] == "verified"
+            and dispatch.get("ok")
+            and not _dispatch_verified(dispatch)
+        ):
+            registered = self._set_state(
+                registered,
+                manifest,
+                "blocked",
+                {"blocked_reason": _verification_block_reason(dispatch)},
+            )
+            notification_id = self._notify_build_blocked(registered)
+            self.db.append_project_event(
+                project_id,
+                event_type="verification_state_corrected",
+                notification_id=notification_id,
+                metadata={"state": "blocked"},
+            )
+        return registered
 
     def _ingest_documentation(self, project_id: int, root: Path) -> None:
         if self.ingestion is None:
@@ -343,6 +399,19 @@ class ProjectIntakeService:
         for path in sorted(root.glob("*.md")):
             sections.append(f"## {path.name}\n{path.read_text(encoding='utf-8-sig', errors='replace')[:12000]}")
         return "\n\n".join(sections)[:30000]
+
+    @staticmethod
+    def _mobile_tooling_context() -> str:
+        tool_names = ("node", "npm", "npx", "java", "gradle", "adb", "flutter", "dart")
+        lines = [
+            "## Verified local mobile tooling",
+            "Do not choose a framework whose required local toolchain is unavailable.",
+        ]
+        for name in tool_names:
+            resolved = shutil.which(name)
+            state = f"available ({resolved})" if resolved else "unavailable"
+            lines.append(f"- {name}: {state}")
+        return "\n".join(lines)
 
     @staticmethod
     def _fingerprint(root: Path) -> str:
@@ -400,3 +469,23 @@ def _positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _dispatch_verified(dispatch: dict[str, Any]) -> bool:
+    verification = dispatch.get("auto_verification")
+    if not isinstance(verification, dict) or verification.get("ok") is not True:
+        return False
+    verifier = dispatch.get("verifier_review")
+    if isinstance(verifier, dict) and str(verifier.get("verdict") or "").lower() == "fail":
+        return False
+    return True
+
+
+def _verification_block_reason(dispatch: dict[str, Any]) -> str:
+    verifier = dispatch.get("verifier_review")
+    if isinstance(verifier, dict) and str(verifier.get("verdict") or "").lower() == "fail":
+        return "fresh-context verifier failed"
+    verification = dispatch.get("auto_verification")
+    if isinstance(verification, dict) and verification.get("ok") is False:
+        return "kernel auto-verification did not pass"
+    return "no runnable verification passed"
