@@ -174,6 +174,20 @@ lease exists. Sessions support synchronous `run-next`, bounded background
 workers, pause, resume, cancellation, interrupted-run recovery, artifacts, and
 advisory estimate calibration.
 
+The configured delegation workspace is treated as a project container unless
+it is itself a Git repository. New sessions must target one project directory
+below that container; paths outside it and a non-repository container root are
+rejected before assessment. Requirements, architecture, and planning runs have
+tool-enforced write contracts and may only update their declared
+`.zade/build/*.md` artifact. Product-code writes are reserved for implementation.
+
+Task advancement is evidence-gated. A failed kernel check, an unavailable
+required implementation check, a failed fresh-context verifier, a missing phase
+artifact, or an out-of-contract write prevents dependent tasks from starting.
+Failed local tasks receive only their configured bounded retries; cloud failures
+never retry automatically. A quarantined session retains its full audit history,
+stops execution, and pauses active paid-provider leases.
+
 Commands are generated from Python SaaS, Node SaaS, Flutter mobile, or generic
 profiles. They use argv execution without a shell, resolve only approved
 executables and argument shapes, remain inside the assessed workspace, strip
@@ -203,8 +217,8 @@ dispatch or remote cancellation requires a fresh typed external-action
 authorization. The configured iOS workflow supplies hosted Xcode evidence; it
 does not grant release authority.
 
-OpenAI review is optional and independent of Anthropic. It is disabled by
-default, uses the Responses API with `store=false` and no hosted tools, and
+OpenAI review is optional and independent of Anthropic. It uses the Responses
+API with `store=false` and no hosted tools, and
 requires the optional SDK, `OPENAI_API_KEY`, current pricing, and its own Small
 lease. No provider can become another provider's fallback. Anthropic Managed
 Agents remain readiness-only and have no execution path.

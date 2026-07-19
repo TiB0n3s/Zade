@@ -11,6 +11,7 @@ from cofounder_kernel.build_types import (
     BuildTaskKind,
     BuildTaskStatus,
     BuildTier,
+    LeaseLimits,
 )
 from cofounder_kernel.db import KernelDatabase, SCHEMA_VERSION
 
@@ -171,6 +172,40 @@ def test_artifacts_and_terminal_run_results_round_trip(tmp_path: Path) -> None:
     assert store.list_artifacts(session.id) == [artifact]
 
 
+def test_failed_local_run_requeues_until_attempt_limit_but_cloud_never_retries(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    session = create_session(store)
+    local_task = store.create_task(
+        session.id,
+        phase="implementation",
+        kind=BuildTaskKind.AGENT,
+        title="Implement locally",
+        idempotency_key="local-retry",
+        max_attempts=2,
+    )
+    first = store.claim_task(local_task.id, worker_id="worker", backend="local")
+    store.finish_task_run(first.id, status=BuildTaskStatus.FAILED, error="verify failed")
+
+    assert store.get_task(local_task.id).status is BuildTaskStatus.PENDING
+    second = store.claim_task(local_task.id, worker_id="worker", backend="local")
+    store.finish_task_run(second.id, status=BuildTaskStatus.FAILED, error="verify failed again")
+    assert store.get_task(local_task.id).status is BuildTaskStatus.FAILED
+
+    cloud_task = store.create_task(
+        session.id,
+        phase="review",
+        kind=BuildTaskKind.REVIEW,
+        title="Review in cloud",
+        idempotency_key="cloud-no-retry",
+        max_attempts=2,
+    )
+    cloud = store.claim_task(cloud_task.id, worker_id="worker", backend="cloud")
+    store.finish_task_run(cloud.id, status=BuildTaskStatus.FAILED, error="provider failed")
+    assert store.get_task(cloud_task.id).status is BuildTaskStatus.FAILED
+
+
 def test_session_pause_resume_and_cancel_are_durable(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     session = create_session(store)
@@ -224,6 +259,31 @@ def test_restart_recovery_requeues_retryable_runs_and_fails_exhausted_runs(
     reopened = make_store(tmp_path)
     assert reopened.get_task(retryable.id).status is BuildTaskStatus.PENDING
     assert reopened.get_task(exhausted.id).status is BuildTaskStatus.FAILED
+
+
+def test_quarantine_preserves_audit_state_and_pauses_active_lease(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    session = create_session(store)
+    lease = store.create_lease(
+        session.id,
+        BuildTier.SMALL,
+        LeaseLimits(1_000_000, 120_000, 12_000, 6, 7_200),
+        provider="anthropic",
+        model="claude-opus-4-8",
+        approval_request_id=47,
+    )
+
+    quarantined = store.quarantine_session(
+        session.id,
+        reason="Workspace container was assessed instead of a project root.",
+        actor="founder",
+    )
+
+    assert quarantined.status == "quarantined"
+    assert quarantined.checkpoint["quarantine"]["reason"].startswith("Workspace container")
+    assert quarantined.checkpoint["quarantine"]["actor"] == "founder"
+    assert store.get_lease(lease.id).state == "paused"
+    assert store.ready_tasks(session.id) == []
 
 
 def test_restart_recovery_never_retries_interrupted_cloud_run(tmp_path: Path) -> None:

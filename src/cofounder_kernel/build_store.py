@@ -29,7 +29,14 @@ from .db import KernelDatabase, utc_now
 
 
 _PHASES = set(BUILD_PHASES)
-_SESSION_STATUSES = {"active", "paused", "cancelling", "cancelled", "complete"}
+_SESSION_STATUSES = {
+    "active",
+    "paused",
+    "cancelling",
+    "cancelled",
+    "quarantined",
+    "complete",
+}
 _RUN_TERMINAL_STATUSES = {
     BuildTaskStatus.SUCCEEDED,
     BuildTaskStatus.FAILED,
@@ -468,12 +475,14 @@ class BuildStore:
                     run_id,
                 ),
             )
-            task_status = (
-                BuildTaskStatus.PENDING
-                if run_status is BuildTaskStatus.INTERRUPTED
+            retryable_local_failure = (
+                run_status in {BuildTaskStatus.FAILED, BuildTaskStatus.INTERRUPTED}
+                and str(run["backend"]) != "cloud"
                 and int(run["attempt_number"])
                 < self._task_max_attempts(connection, int(run["task_id"]))
-                else run_status
+            )
+            task_status = (
+                BuildTaskStatus.PENDING if retryable_local_failure else run_status
             )
             connection.execute(
                 """
@@ -561,6 +570,52 @@ class BuildStore:
 
     def resume_session(self, session_id: int) -> BuildSession:
         return self._set_session_status(session_id, "active", allowed={"paused"})
+
+    def quarantine_session(
+        self, session_id: int, *, reason: str, actor: str = "founder"
+    ) -> BuildSession:
+        clean_reason = " ".join(reason.split())
+        clean_actor = " ".join(actor.split())
+        if not clean_reason:
+            raise ValueError("Quarantine reason is required")
+        if not clean_actor:
+            raise ValueError("Quarantine actor is required")
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM build_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Build session not found: {session_id}")
+            status = str(row["status"])
+            if status in {"complete", "cancelled"}:
+                raise ValueError(f"Cannot quarantine a {status} build session")
+            checkpoint = json.loads(str(row["checkpoint_json"] or "{}"))
+            checkpoint["quarantine"] = {
+                "reason": clean_reason[:2000],
+                "actor": clean_actor[:200],
+                "at": now,
+            }
+            connection.execute(
+                """
+                UPDATE build_sessions
+                SET status = 'quarantined', checkpoint_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (_dumps(checkpoint), now, session_id),
+            )
+            connection.execute(
+                """
+                UPDATE build_leases SET state = 'paused'
+                WHERE session_id = ? AND state IN ('active', 'warning')
+                """,
+                (session_id,),
+            )
+            updated = connection.execute(
+                "SELECT * FROM build_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        return _session_from_row(updated)
 
     def cancel_session(self, session_id: int) -> BuildSession:
         now = utc_now()

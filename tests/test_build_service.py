@@ -36,20 +36,27 @@ class FakeCodingAgent:
 
     def run(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
+        write_allowlist = tuple(kwargs.get("write_allowlist") or ())
+        workspace = Path(str(kwargs.get("workspace") or ""))
+        changed = list(write_allowlist[:1])
+        if changed:
+            target = workspace / changed[0]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("# Test build artifact\n", encoding="utf-8")
         return {
             "ok": self.ok,
             "status": "ok" if self.ok else "model_error",
             "error": "" if self.ok else "failed",
             "model": kwargs.get("model") or "local-coder",
             "provider": {"provider": self.provider, "fallback_attempted": False},
-            "workspace": str(kwargs.get("workspace") or ""),
+            "workspace": str(workspace),
             "rounds": 1,
             "used_tools": False,
             "steps": [],
-            "changed_files": [],
-            "workspace_changes": {"added": [], "modified": [], "deleted": []},
+            "changed_files": changed,
+            "workspace_changes": {"added": changed, "modified": [], "deleted": []},
             "auto_verification": {"ok": True, "command": ["pytest"]},
-            "verifier_review": None,
+            "verifier_review": {"verdict": "pass", "notes": ""},
             "progress_notes": [],
             "response": "Completed and verified.",
         }

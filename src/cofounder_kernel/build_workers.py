@@ -38,7 +38,7 @@ class BuildExecutionManager:
             raise ValueError(f"Build session not found: {session_id}")
         if self._stopping.is_set():
             return {"started": False, "status": "stopped", "session_id": session_id}
-        if session.status in {"cancelled", "complete"}:
+        if session.status in {"cancelled", "quarantined", "complete"}:
             return {"started": False, "status": session.status, "session_id": session_id}
         if session.status == "paused":
             session = self.store.resume_session(session_id)

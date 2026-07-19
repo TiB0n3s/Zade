@@ -168,6 +168,7 @@ class CodingAgentService:
         max_rounds: int | None = None,
         model: str | None = None,
         verify_always: bool = False,
+        write_allowlist: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Run the coding loop. Returns a structured result; raises only on
         programmer error. Model/tool failures come back as status fields so the
@@ -192,7 +193,10 @@ class CodingAgentService:
         question_box: dict[str, Any] = {}
         progress_notes: list[str] = []
         tools = self._build_tools(
-            root, question_box=question_box, progress_notes=progress_notes
+            root,
+            question_box=question_box,
+            progress_notes=progress_notes,
+            write_allowlist=write_allowlist,
         )
         schemas = _tool_schemas(tools)
         messages: list[dict[str, Any]] = [
@@ -775,11 +779,37 @@ class CodingAgentService:
         *,
         question_box: dict[str, Any] | None = None,
         progress_notes: list[str] | None = None,
+        write_allowlist: tuple[str, ...] | None = None,
     ) -> dict[str, AgentTool]:
         tools: dict[str, AgentTool] = {}
+        allowed_writes = (
+            {
+                str(self._resolve_in_workspace(root, item).relative_to(root)).replace("\\", "/")
+                for item in write_allowlist
+            }
+            if write_allowlist is not None
+            else None
+        )
 
         def add(tool: AgentTool) -> None:
             tools[tool.name] = tool
+
+        def guarded_write(
+            handler: Callable[[dict[str, Any]], dict[str, Any]],
+            args: dict[str, Any],
+        ) -> dict[str, Any]:
+            if allowed_writes is not None:
+                try:
+                    target = self._resolve_in_workspace(root, str(args.get("path") or ""))
+                    relative = str(target.relative_to(root)).replace("\\", "/")
+                except (OSError, ValueError) as exc:
+                    return {"ok": False, "error": str(exc)}
+                if relative not in allowed_writes:
+                    return {
+                        "ok": False,
+                        "error": f"{relative} is not allowed by this build phase",
+                    }
+            return handler(args)
 
         if progress_notes is not None:
             add(
@@ -891,7 +921,9 @@ class CodingAgentService:
                     },
                     "required": ["path", "content"],
                 },
-                handler=lambda args: self._tool_write_file(root, args),
+                handler=lambda args: guarded_write(
+                    lambda values: self._tool_write_file(root, values), args
+                ),
                 writes=True,
             )
         )
@@ -904,7 +936,9 @@ class CodingAgentService:
                     "properties": {"path": {"type": "string"}},
                     "required": ["path"],
                 },
-                handler=lambda args: self._tool_delete_file(root, args),
+                handler=lambda args: guarded_write(
+                    lambda values: self._tool_delete_file(root, values), args
+                ),
                 writes=True,
             )
         )
@@ -924,33 +958,36 @@ class CodingAgentService:
                     },
                     "required": ["path", "old_text", "new_text"],
                 },
-                handler=lambda args: self._tool_replace(root, args),
-                writes=True,
-            )
-        )
-        add(
-            AgentTool(
-                name="run_command",
-                description=(
-                    "Run an allowlisted local command inside the workspace (argv array, no shell). "
-                    f"Allowed programs: {', '.join(COMMAND_ALLOWLIST)}. Use this to run tests "
-                    "(e.g. [\"python\", \"-m\", \"pytest\", \"tests/test_x.py\", \"-q\"])."
+                handler=lambda args: guarded_write(
+                    lambda values: self._tool_replace(root, values), args
                 ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "argv": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Command as an argv array, e.g. [\"python\",\"-m\",\"pytest\",\"-q\"].",
-                        }
-                    },
-                    "required": ["argv"],
-                },
-                handler=lambda args: self._tool_run_command(root, args),
                 writes=True,
             )
         )
+        if allowed_writes is None:
+            add(
+                AgentTool(
+                    name="run_command",
+                    description=(
+                        "Run an allowlisted local command inside the workspace (argv array, no shell). "
+                        f"Allowed programs: {', '.join(COMMAND_ALLOWLIST)}. Use this to run tests "
+                        "(e.g. [\"python\", \"-m\", \"pytest\", \"tests/test_x.py\", \"-q\"])."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "argv": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Command as an argv array, e.g. [\"python\",\"-m\",\"pytest\",\"-q\"].",
+                            }
+                        },
+                        "required": ["argv"],
+                    },
+                    handler=lambda args: self._tool_run_command(root, args),
+                    writes=True,
+                )
+            )
         add(
             AgentTool(
                 name="git_status",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .build_routing import BuildRouter, BuildStep, LocalAttempt, RouteDecision
@@ -90,6 +91,9 @@ class BuildPlanner:
             "acceptance": assessment.acceptance,
             "toolchain_profile": profile_id,
         }
+        requirements_contract = _output_contract("requirements.md")
+        architecture_contract = _output_contract("architecture.md")
+        planning_contract = _output_contract("plan.md")
         implementation_step = {
             "kind": "cross_cutting" if assessment.final_score >= 45 else "edit",
             "risk": "high" if assessment.final_score >= 45 else "medium",
@@ -108,7 +112,16 @@ class BuildPlanner:
                 "requirements",
                 BuildTaskKind.AGENT,
                 "Define product requirements and acceptance criteria",
-                shared | {"route": "local", "instructions": "Produce testable product requirements."},
+                shared
+                | {
+                    "route": "local",
+                    "instructions": (
+                        "Produce testable product requirements only in "
+                        ".zade/build/requirements.md. Do not edit product code."
+                    ),
+                    "output_contract": requirements_contract,
+                },
+                max_attempts=2,
             ),
             _TaskSpec(
                 "architecture",
@@ -124,6 +137,7 @@ class BuildPlanner:
                         "cross_module": assessment.dimensions.get("change_breadth", 0) >= 4,
                     },
                     "instructions": "Produce an implementation-ready architecture decision.",
+                    "output_contract": architecture_contract,
                 },
                 max_attempts=2,
             ),
@@ -131,7 +145,16 @@ class BuildPlanner:
                 "planning",
                 BuildTaskKind.AGENT,
                 "Create the phased implementation plan",
-                shared | {"route": "local", "instructions": "Create dependency-ordered build steps."},
+                shared
+                | {
+                    "route": "local",
+                    "instructions": (
+                        "Create dependency-ordered build steps only in "
+                        ".zade/build/plan.md. Do not edit product code."
+                    ),
+                    "output_contract": planning_contract,
+                },
+                max_attempts=2,
             ),
             _TaskSpec(
                 "implementation",
@@ -252,10 +275,12 @@ class BuildOrchestrator:
                 "error": str(exc),
                 "exception_type": type(exc).__name__,
             }
+        result = self._apply_evidence_gate(task, assessment, result)
         current_session = self.store.get_session(session_id)
         cancelled = current_session is not None and current_session.status in {
             "cancelling",
             "cancelled",
+            "quarantined",
         }
         succeeded = bool(result.get("ok")) and not cancelled
         terminal = (
@@ -380,17 +405,98 @@ class BuildOrchestrator:
         if executor is not None:
             return executor(task, assessment)
         if task.kind in {BuildTaskKind.AGENT, BuildTaskKind.REVIEW}:
+            instructions = str(task.payload.get("instructions") or "").strip()
             return self.local_agent.run(
-                task=f"{task.title}\n\nProduct objective: {assessment.task}",
+                task=(
+                    f"{task.title}\n\nProduct objective: {assessment.task}"
+                    + (f"\n\nTask instructions: {instructions}" if instructions else "")
+                ),
                 workspace=assessment.workspace,
                 context=self._task_context(task, assessment),
                 verify_always=task.phase == "implementation",
+                write_allowlist=_write_allowlist(task),
             )
         return {
             "ok": False,
             "status": "handler_unavailable",
             "error": f"No executor is configured for {task.kind.value} tasks",
         }
+
+    @staticmethod
+    def _apply_evidence_gate(
+        task: BuildTask, assessment: BuildAssessment, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not bool(result.get("ok")):
+            return result
+        if task.kind not in {BuildTaskKind.AGENT, BuildTaskKind.REVIEW}:
+            return result
+
+        gated = dict(result)
+        contract = task.payload.get("output_contract")
+        if isinstance(contract, dict):
+            allowed = {
+                _normalize_relative_path(item)
+                for item in contract.get("allowed_write_paths", [])
+            }
+            required = {
+                _normalize_relative_path(item)
+                for item in contract.get("required_artifacts", [])
+            }
+            actual = _result_change_paths(result)
+            unexpected = sorted(actual - allowed)
+            missing = sorted(
+                item
+                for item in required
+                if not (Path(assessment.workspace) / Path(item)).is_file()
+            )
+            if unexpected or missing:
+                gated.update(
+                    {
+                        "ok": False,
+                        "status": "phase_contract_failed",
+                        "error": "Build phase output contract was not satisfied.",
+                        "evidence_gate": {
+                            "unexpected_changes": unexpected,
+                            "missing_artifacts": missing,
+                            "allowed_write_paths": sorted(allowed),
+                        },
+                    }
+                )
+                return gated
+
+        verification = result.get("auto_verification")
+        if isinstance(verification, dict) and verification.get("ok") is False:
+            gated.update(
+                {
+                    "ok": False,
+                    "status": "verification_failed",
+                    "error": "Kernel mechanical verification failed.",
+                }
+            )
+            return gated
+        if task.phase == "implementation" and not (
+            isinstance(verification, dict) and verification.get("ok") is True
+        ):
+            gated.update(
+                {
+                    "ok": False,
+                    "status": "verification_required",
+                    "error": "Implementation requires a positive kernel mechanical verification result.",
+                }
+            )
+            return gated
+
+        verifier = result.get("verifier_review")
+        if isinstance(verifier, dict) and str(verifier.get("verdict") or "").lower() == "fail":
+            notes = str(verifier.get("notes") or "Fresh-context verification failed.")
+            gated.update(
+                {
+                    "ok": False,
+                    "status": "verifier_rejected",
+                    "error": notes[:2000],
+                }
+            )
+        return gated
 
     def _local_attempts(self, task: BuildTask) -> tuple[LocalAttempt, ...]:
         return tuple(
@@ -448,3 +554,37 @@ def _critical_domains(task: str) -> tuple[str, ...]:
         "security",
     )
     return tuple(item for item in domains if item in lowered)
+
+
+def _output_contract(filename: str) -> dict[str, list[str]]:
+    path = f".zade/build/{filename}"
+    return {"required_artifacts": [path], "allowed_write_paths": [path]}
+
+
+def _normalize_relative_path(value: Any) -> str:
+    normalized = str(value or "").replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    path = PurePosixPath(normalized)
+    if not normalized or path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"Invalid build output path: {value!r}")
+    return path.as_posix()
+
+
+def _result_change_paths(result: dict[str, Any]) -> set[str]:
+    raw: list[Any] = list(result.get("changed_files") or [])
+    changes = result.get("workspace_changes")
+    if isinstance(changes, dict):
+        for key in ("added", "modified", "deleted"):
+            raw.extend(changes.get(key) or [])
+    return {_normalize_relative_path(item) for item in raw}
+
+
+def _write_allowlist(task: BuildTask) -> tuple[str, ...] | None:
+    contract = task.payload.get("output_contract")
+    if not isinstance(contract, dict):
+        return None
+    return tuple(
+        _normalize_relative_path(item)
+        for item in contract.get("allowed_write_paths", [])
+    )

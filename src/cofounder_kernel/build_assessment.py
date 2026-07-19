@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 from .build_types import BuildAssessment, BuildTier
+from .build_workspace import BuildWorkspacePolicy
 from .db import utc_now
 from .ollama import OllamaError
 
@@ -139,8 +140,14 @@ class _LocalAdjustment:
 class BuildAssessmentService:
     """Assess build scope from local evidence without authorizing cloud use."""
 
-    def __init__(self, *, local_client: LocalAssessmentClient | None = None):
+    def __init__(
+        self,
+        *,
+        local_client: LocalAssessmentClient | None = None,
+        workspace_policy: BuildWorkspacePolicy | None = None,
+    ):
         self._local_client = local_client
+        self._workspace_policy = workspace_policy
 
     def assess(
         self,
@@ -151,7 +158,11 @@ class BuildAssessmentService:
     ) -> BuildAssessment:
         normalized_task = " ".join(task.split())
         normalized_acceptance = " ".join(acceptance.split())
-        root = Path(workspace).resolve()
+        root = (
+            self._workspace_policy.validate(workspace)
+            if self._workspace_policy is not None
+            else Path(workspace).resolve()
+        )
         evidence = self._scan(root)
         dimensions, floors = self._score(
             normalized_task, normalized_acceptance, evidence

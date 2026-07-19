@@ -414,6 +414,10 @@ class BuildLeaseDenyRequest(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
+class BuildQuarantineRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class BuildPlanRequest(BaseModel):
     profile_id: str | None = Field(
         default=None,

@@ -434,6 +434,18 @@ class BuildService:
             return {"status": session.status, "session_id": session_id}
         return self.execution_manager.cancel(session_id)
 
+    def quarantine(self, session_id: int, *, reason: str) -> dict[str, Any]:
+        if self.orchestrator is not None:
+            self.orchestrator.cancel(session_id)
+        session = self.store.quarantine_session(
+            session_id, reason=reason, actor="founder"
+        )
+        return {
+            "status": session.status,
+            "session": _session_dict(session),
+            "lease": _lease_dict(self.store.get_active_lease(session_id)),
+        }
+
     def execute_cloud_task(
         self,
         task: Any,
@@ -457,6 +469,11 @@ class BuildService:
             context=_render_context(assessment, selected),
             model=lease.model,
             verify_always=task.phase == "implementation",
+            write_allowlist=(
+                tuple(task.payload["output_contract"].get("allowed_write_paths", []))
+                if isinstance(task.payload.get("output_contract"), dict)
+                else None
+            ),
         )
 
     def review_context(self, session_id: int) -> str:
