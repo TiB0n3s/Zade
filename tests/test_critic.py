@@ -86,13 +86,12 @@ def test_recommendation_message_triggers_contrarian_pass(tmp_path: Path, monkeyp
     assert calls[1]["think"] is True
     assert "attack it first" in calls[1]["prompt"]
     assert "Prioritize evidence intake." in calls[1]["prompt"]
-    # The challenge is attached visibly, never silently rewritten.
-    assert payload["response"].startswith("Prioritize evidence intake.")
-    assert "Contrarian check (reasoning-model red team):" in payload["response"]
-    assert "- Verdict: proceed_with_changes" in payload["response"]
-    assert "- Weakest assumption: Manual habits stick" in payload["response"]
-    assert "- Confidence adjustment: -15" in payload["response"]
-    assert "contrarian_pass_applied" in payload["governor"]["applied_rules"]
+    # Auto-triggered pass: the reply stays in Zade's voice — no memo block
+    # bolted on — while the review persists to the founder layer below.
+    assert payload["response"] == "Prioritize evidence intake."
+    assert "Contrarian check" not in payload["response"]
+    assert "contrarian_pass_persisted_silently" in payload["governor"]["applied_rules"]
+    assert "contrarian_pass_applied" not in payload["governor"]["applied_rules"]
     assert payload["contrarian"]["status"] == "ok"
     assert payload["contrarian"]["verdict"] == "proceed_with_changes"
     assert payload["contrarian"]["review_id"] > 0
@@ -183,7 +182,7 @@ def test_critic_failure_is_non_blocking(tmp_path: Path, monkeypatch) -> None:
     assert error_calls.json()["items"][0]["operation"] == "runtime.contrarian"
 
 
-def test_unparseable_critique_attaches_raw_text(tmp_path: Path, monkeypatch) -> None:
+def test_unparseable_critique_attaches_raw_text_when_explicitly_requested(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     calls: list[dict] = []
     patch_ollama_model(monkeypatch, _generate_stub("The draft is directionally fine but thin on retention proof.", calls))
@@ -191,7 +190,11 @@ def test_unparseable_critique_attaches_raw_text(tmp_path: Path, monkeypatch) -> 
 
     response = client.post(
         "/runtime/respond",
-        json={"message": "Should we prioritize evidence intake next?", "use_semantic_memory": False},
+        json={
+            "message": "Should we prioritize evidence intake next?",
+            "contrarian": True,
+            "use_semantic_memory": False,
+        },
     )
 
     assert response.status_code == 200
@@ -200,6 +203,26 @@ def test_unparseable_critique_attaches_raw_text(tmp_path: Path, monkeypatch) -> 
     assert "- Verdict: unstructured response; treat as proceed_with_changes until rerun" in payload["response"]
     assert "- Critique: The draft is directionally fine but thin on retention proof." in payload["response"]
     assert "- Confidence adjustment: -10" in payload["response"]
+
+
+def test_auto_triggered_pass_keeps_reply_clean_but_persists_review(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    calls: list[dict] = []
+    patch_ollama_model(monkeypatch, _generate_stub(CRITIC_JSON, calls))
+    client = TestClient(create_app(_config(tmp_path)))
+
+    response = client.post(
+        "/runtime/respond",
+        json={"message": "Which option should we bet on for onboarding?", "use_semantic_memory": False},
+    )
+    reviews = client.get("/founder/contrarian-reviews")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response"] == "Prioritize evidence intake."
+    assert payload["contrarian"]["status"] == "ok"
+    assert payload["contrarian"]["review_id"] > 0
+    assert reviews.json()["items"][0]["metadata"]["auto"] is True
 
 
 def test_empty_unparseable_critique_is_not_attached_to_response(tmp_path: Path, monkeypatch) -> None:

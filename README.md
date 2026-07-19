@@ -1004,10 +1004,11 @@ Recommendation-shaped questions get an automatic red-team pass before the answer
 
 The pass is non-blocking pushback:
 
-- the challenge is attached visibly under a `Contrarian check` section; the draft is never silently rewritten
-- every pass persists as a contrarian review (`subject_type = runtime_event`) in the founder operating layer
+- every pass persists as a contrarian review (`subject_type = runtime_event`) in the founder operating layer; the draft is never silently rewritten
+- auto-triggered passes keep the reply in Zade's voice — no visible block is appended; the review lands in the founder layer
+- when the pass is explicitly requested (`contrarian = $true`), the challenge is attached visibly under a `Contrarian check` section
 - if the reasoning model is unavailable, the response returns unchallenged with a governor note
-- if the critique cannot be parsed, the raw critique text is attached instead of being dropped
+- if an explicitly requested critique cannot be parsed, the raw critique text is attached instead of being dropped
 
 Control it per request with the `contrarian` flag (`$true` forces the pass, `$false` suppresses it, omit for auto-detection):
 
@@ -1685,7 +1686,7 @@ Implemented:
 - selectable Zade prompt profiles with embedded runtime assets, request/session/config precedence, exact placeholder binding, and local tool-compatibility adaptation
 - episodic conversation memory with durable threads, turn history, prompt continuity, and bounded rolling summaries
 - proactive surfacing layer with deterministic attention scanning, ranked initiated briefs, since-last-brief deltas, and cadence integration
-- automatic contrarian pass that red-teams recommendation-shaped responses through the reasoning model, attaches the challenge visibly, and persists it as a contrarian review
+- automatic contrarian pass that red-teams recommendation-shaped responses through the reasoning model and persists the review to the founder layer; the visible challenge block attaches only on explicit request so the reply stays in Zade's voice
 - eval harness with a golden founder-scenario set, deterministic graders, persisted runs, and regression comparison across model/prompt changes
 - hybrid retrieval with keyword+vector reciprocal rank fusion, per-hit ranking provenance, keyword degradation when embeddings are down, and embedding-based skill routing with failure backoff
 - structured authority evaluation (policy v2) with action-token deny taxonomy, deny-before-allow ordering, and metadata excluded from the decision surface

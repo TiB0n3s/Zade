@@ -182,10 +182,10 @@ def test_converse_runs_governed_loop_with_memory_and_contrarian(tmp_path: Path, 
     assert converse.status_code == 200
     payload = converse.json()
     assert payload["transcript"] == "what should we prioritize next"
-    # "prioritize" triggers the contrarian pass; the text response carries it...
-    assert "Contrarian check" in payload["response"]
+    # "prioritize" auto-triggers the contrarian pass; the review persists to the
+    # founder layer but the reply stays in Zade's voice — no visible memo block.
+    assert "Contrarian check" not in payload["response"]
     assert payload["contrarian"]["verdict"] == "proceed_with_changes"
-    # ...but the spoken audio does not read the red-team block aloud.
     assert "Contrarian check" not in payload["spoken_text"]
     spoken_audio = base64.b64decode(payload["speech"]["audio_base64"]).decode("utf-8")
     assert spoken_audio == "FAKEWAV:Prioritize evidence intake this week."
@@ -297,7 +297,7 @@ def test_converse_speak_full_includes_contrarian_block(tmp_path: Path, monkeypat
 
     converse = client.post(
         "/voice/converse",
-        json={"audio_base64": FAKE_AUDIO, "speak_full": True, "use_semantic_memory": False},
+        json={"audio_base64": FAKE_AUDIO, "speak_full": True, "contrarian": True, "use_semantic_memory": False},
     )
 
     assert converse.status_code == 200

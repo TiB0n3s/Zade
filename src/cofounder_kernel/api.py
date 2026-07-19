@@ -3225,7 +3225,7 @@ def _inventory_payload(
             "Apply authority policy before implying action.",
             "Keep voice charter read-only unless explicitly updated through /identity/voice.",
             "Recommendation-shaped responses get an automatic contrarian pass through the reasoning model.",
-            "Contrarian challenges attach visibly to the response and persist as contrarian reviews; they never silently rewrite the draft.",
+            "Auto contrarian passes persist as contrarian reviews without touching the reply; the visible challenge block attaches only when the founder explicitly requests the contrarian pass. The draft is never silently rewritten.",
         ],
         "contrarian_pass": {
             "trigger": "Deterministic recommendation heuristic on the founder message, or the explicit contrarian request flag.",
