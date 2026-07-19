@@ -82,6 +82,10 @@ class ChannelMessageRequest(BaseModel):
     channel: str = Field(min_length=1, max_length=60)
     external_id: str = Field(min_length=1, max_length=200)
     text: str = Field(min_length=1, max_length=8000)
+    # HMAC fields — required only when the binding carries a signing key.
+    # ts is the sender's unix timestamp as the literal string that was signed.
+    ts: str = Field(default="", max_length=32)
+    signature: str = Field(default="", max_length=128)
 
 
 class ApprovalDeferRequest(BaseModel):

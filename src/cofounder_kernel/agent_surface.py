@@ -50,6 +50,7 @@ WRITE = "write"
 EXPOSED: dict[str, str] = {
     "memory.search": READ,
     "audit.recent": READ,
+    "work.status": READ,
     "memory.write": WRITE,
     # memory.forget — deliberately NOT exposed (destructive: deletes founder memory)
 }
@@ -77,6 +78,17 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
+            },
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    },
+    "work.status": {
+        "description": "Read Zade's work queue: status counts and recent item titles/states. Read-only; no item bodies.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Filter to one status (e.g. pending, done)."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
             },
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},

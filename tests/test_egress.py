@@ -212,11 +212,11 @@ def test_authorization_does_not_leak_across_vendor() -> None:
     assert decision.verdict is Verdict.AUTH_REQUIRED
 
 
-# ---- Standing grants (the voice lanes) ------------------------------------
+# ---- Standing grants (the research lane) -----------------------------------
 def test_standing_grant_required_for_standing_cell() -> None:
-    # (FOUNDER_AUDIO, deepgram) is a STANDING cell; without the grant enabled it denies.
+    # (PUBLIC_DERIVED, public_web) is a STANDING cell; without the grant enabled it denies.
     gate = EgressPolicy(provider_policy="local_preferred")
-    decision = gate.decide(_req(DataClass.FOUNDER_AUDIO, "deepgram"))
+    decision = gate.decide(_req(DataClass.PUBLIC_DERIVED, "public_web"))
     assert decision.verdict is Verdict.DENY
     assert decision.matched_rule == "matrix.standing_missing"
 
@@ -224,11 +224,28 @@ def test_standing_grant_required_for_standing_cell() -> None:
 def test_standing_grant_allows_when_enabled() -> None:
     gate = EgressPolicy(
         provider_policy="local_preferred",
-        standing_grants=frozenset({(DataClass.FOUNDER_AUDIO, "deepgram")}),
+        standing_grants=frozenset({(DataClass.PUBLIC_DERIVED, "public_web")}),
     )
-    decision = gate.decide(_req(DataClass.FOUNDER_AUDIO, "deepgram"))
+    decision = gate.decide(_req(DataClass.PUBLIC_DERIVED, "public_web"))
     assert decision.verdict is Verdict.ALLOW
     assert decision.matched_rule == "matrix.standing_grant"
+
+
+def test_cloud_voice_cells_are_forbidden_even_with_standing_grants() -> None:
+    """Voice went actually-local 2026-07-17; the dead cloud lanes are now
+    FORBIDDEN at the matrix, so a leftover (or re-added) standing grant in
+    config can no longer resurrect Deepgram STT / ElevenLabs TTS. Reverting is
+    a deliberate two-step: flip the cell AND re-grant."""
+    gate = EgressPolicy(
+        provider_policy="cloud_allowed",
+        standing_grants=frozenset(
+            {(DataClass.FOUNDER_AUDIO, "deepgram"), (DataClass.REPLY_TEXT, "elevenlabs")}
+        ),
+    )
+    for data_class, vendor in ((DataClass.FOUNDER_AUDIO, "deepgram"), (DataClass.REPLY_TEXT, "elevenlabs")):
+        decision = gate.decide(_req(data_class, vendor))
+        assert decision.verdict is Verdict.DENY, vendor
+        assert decision.matched_rule == "matrix.forbidden"
 
 
 def test_forbidden_cell_cannot_be_unlocked() -> None:
@@ -294,13 +311,15 @@ def test_from_config_reads_policy_and_grants() -> None:
 
     config = KernelConfig(
         ollama=OllamaConfig(provider_policy="local_preferred"),
-        egress=EgressConfig(standing_grants=("founder_audio:deepgram",)),
+        egress=EgressConfig(standing_grants=("public_derived:public_web", "founder_audio:deepgram")),
     )
     gate = EgressPolicy.from_config(config)
     # the standing grant is live...
-    assert gate.decide(_req(DataClass.FOUNDER_AUDIO, "deepgram")).verdict is Verdict.ALLOW
-    # ...but an ungranted standing cell is not
-    assert gate.decide(_req(DataClass.REPLY_TEXT, "elevenlabs")).verdict is Verdict.DENY
+    assert gate.decide(_req(DataClass.PUBLIC_DERIVED, "public_web")).verdict is Verdict.ALLOW
+    # ...a per-request cell is untouched by standing grants...
+    assert gate.decide(_req(DataClass.OPERATIONAL, "public_web")).verdict is Verdict.AUTH_REQUIRED
+    # ...and a grant naming a FORBIDDEN cell (the dead cloud-voice lane) is inert
+    assert gate.decide(_req(DataClass.FOUNDER_AUDIO, "deepgram")).verdict is Verdict.DENY
 
 
 def test_from_config_default_is_local_only_and_inert() -> None:

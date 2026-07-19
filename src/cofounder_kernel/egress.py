@@ -155,14 +155,21 @@ DEFAULT_MATRIX: dict[DataClass, dict[VendorTier, Disposition]] = {
         VendorTier.LAN: Disposition.STANDING,
         VendorTier.PUBLIC_WEB: Disposition.FORBIDDEN,
         VendorTier.CLOUD_MODEL: Disposition.PER_REQUEST,
-        VendorTier.CLOUD_SERVICE: Disposition.STANDING,   # TTS (ElevenLabs) rides a standing voice grant
+        # Was STANDING for cloud TTS (ElevenLabs). Voice went actually-local
+        # (whisper.cpp + piper) on 2026-07-17; the cloud voice lane is dead code
+        # and its cell is now FORBIDDEN — a standing grant in config can no
+        # longer resurrect it. Reverting cloud voice is a deliberate two-step:
+        # flip this cell back AND re-add the grant.
+        VendorTier.CLOUD_SERVICE: Disposition.FORBIDDEN,
         VendorTier.CHANNEL: Disposition.PER_REQUEST,
     },
     DataClass.FOUNDER_AUDIO: {
         VendorTier.LAN: Disposition.PER_REQUEST,
         VendorTier.PUBLIC_WEB: Disposition.FORBIDDEN,
         VendorTier.CLOUD_MODEL: Disposition.PER_REQUEST,
-        VendorTier.CLOUD_SERVICE: Disposition.STANDING,   # STT (Deepgram) rides a standing voice grant
+        # Was STANDING for cloud STT (Deepgram) — same teardown as REPLY_TEXT
+        # above: the founder's voice never rides to a cloud service.
+        VendorTier.CLOUD_SERVICE: Disposition.FORBIDDEN,
         VendorTier.CHANNEL: Disposition.FORBIDDEN,
     },
     DataClass.SCREEN_PIXELS: {
@@ -600,6 +607,86 @@ def consume_grant(db: Any, request: EgressRequest) -> bool:
             )
             return True
     return False
+
+
+def egress_ledger(db: Any, *, limit: int = 500) -> dict[str, Any]:
+    """Founder-facing rollup of everything the egress gate has decided: what left
+    the machine, to whom, under which grant — and what the gate stopped.
+
+    Every row already exists in audit_events (each decision/grant transition is
+    audited, redacted); this view only aggregates. It answers the three founder
+    questions the raw ledger buries: (1) has anything actually left, (2) was every
+    send covered by a live authorization, (3) what tried to leave and was refused.
+    Payloads are never stored in audit rows, so none can appear here."""
+    events = db.audit_events_by_action_prefix("egress.", limit=limit)
+    events.reverse()  # chronological
+
+    sends: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    awaiting: list[dict[str, Any]] = []
+    by_vendor: dict[str, dict[str, int]] = {}
+    for e in events:
+        details = e.get("details") or {}
+        vendor = str(e.get("target") or details.get("vendor") or "?")
+        action = str(e.get("action"))
+        if action == "egress.decision":
+            verdict = str(details.get("verdict", e.get("status", "?")))
+            counts = by_vendor.setdefault(vendor, {})
+            counts[verdict] = counts.get(verdict, 0) + 1
+            entry = {
+                "at": e.get("created_at"),
+                "vendor": vendor,
+                "data_class": details.get("data_class"),
+                "rule": details.get("matched_rule"),
+                "reason": details.get("reason"),
+            }
+            if verdict == "allow":
+                sends.append(entry)
+            elif verdict in {"deny", "forbidden"}:
+                blocked.append(entry | {"verdict": verdict})
+            elif verdict == "auth_required":
+                awaiting.append(entry)
+        elif action == "egress.grant.consumed":
+            # tie the consumption to the most recent ALLOW for the same vendor,
+            # so a send row shows which grant covered it
+            for entry in reversed(sends):
+                if entry["vendor"] == vendor and "grant_request_id" not in entry:
+                    entry["grant_request_id"] = details.get("approval_request_id")
+                    break
+
+    grants: list[dict[str, Any]] = []
+    for r in db.list_approval_requests(status=None, limit=limit):
+        if r.source_type != GRANT_SOURCE_TYPE:
+            continue
+        m = r.metadata or {}
+        grants.append(
+            {
+                "approval_request_id": r.id,
+                "status": "consumed" if m.get("consumed") else r.status,
+                "vendor": m.get("vendor"),
+                "data_class": m.get("data_class"),
+                "requested_at": r.created_at,
+                "resolved_by": r.resolved_by or None,
+                "preview": r.detail or "",
+            }
+        )
+
+    return {
+        "summary": {
+            "decisions_by_vendor": by_vendor,
+            "left_the_machine": len(sends),
+            "blocked": len(blocked),
+            "grants_total": len(grants),
+            "grants_pending": sum(1 for g in grants if g["status"] == "pending"),
+            "note": "Counts cover the audit window scanned, not all time."
+            if len(events) >= limit
+            else "Counts cover the full audit history for egress actions.",
+        },
+        "left_the_machine": sends,
+        "blocked": blocked,
+        "awaiting_authorization": awaiting[-10:],
+        "grants": grants,
+    }
 
 
 def authorize_egress(db: Any, policy: EgressPolicy, request: EgressRequest, *, preview: str = "") -> EgressDecision:

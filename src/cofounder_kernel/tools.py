@@ -76,6 +76,14 @@ class ToolRegistry:
                 handler=self._audit_recent,
             )
         )
+        self.register(
+            ToolDefinition(
+                name="work.status",
+                description="Read the work queue: status counts and recent items. Read-only.",
+                permission_tier=PermissionTier.READ,
+                handler=self._work_status,
+            )
+        )
 
     def register(self, tool: ToolDefinition) -> None:
         self._tools[tool.name] = tool
@@ -229,6 +237,25 @@ class ToolRegistry:
             str(args["query"]), int(args.get("limit", 8)), shareable_only=bool(args.get("shareable_only"))
         )
         return ToolResult(ok=True, data={"matches": [record.__dict__ for record in records]})
+
+    def _work_status(self, args: dict[str, Any]) -> ToolResult:
+        """Work-queue readout: status counts + recent items. Read-only, no
+        payload bodies — titles and states only, so an external reader learns
+        what work exists and where it stands, not its contents."""
+        limit = max(1, min(int(args.get("limit", 10)), 50))
+        status = str(args.get("status") or "").strip() or None
+        items = [
+            {
+                "id": item.id,
+                "created_at": item.created_at,
+                "kind": item.kind,
+                "title": item.title,
+                "status": item.status,
+                "priority": item.priority,
+            }
+            for item in self.db.list_work_items(status=status, limit=limit)
+        ]
+        return ToolResult(ok=True, data={"counts": self.db.work_queue_counts(), "items": items})
 
     def _audit_recent(self, args: dict[str, Any]) -> ToolResult:
         # 'audit_scope_actor' is a caller-set control: the agent surface pins it to

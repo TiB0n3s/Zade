@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 # Column additions to EXISTING tables, applied idempotently by migrate() on every
 # start (CREATE ... IF NOT EXISTS only creates whole tables, never new columns).
@@ -34,6 +34,15 @@ COLUMN_PATCHES: tuple[tuple[str, str, str], ...] = (
     # read. Private-by-default (0): the founder's memory is NOT visible to a
     # connected agent until the founder marks a specific record shareable (1).
     ("memories", "shareable", "shareable INTEGER NOT NULL DEFAULT 0"),
+    # v28: channel ingress hardening. conversation_id gives a binding a durable
+    # thread (channel messages were standalone turns with no continuity);
+    # hmac_key, when set, REQUIRES each inbound message from that binding to be
+    # signed (adapters/bots that can sign); last_ts enforces strictly-increasing
+    # message timestamps per binding so a captured signed message cannot be
+    # replayed.
+    ("channel_bindings", "conversation_id", "conversation_id INTEGER"),
+    ("channel_bindings", "hmac_key", "hmac_key TEXT"),
+    ("channel_bindings", "last_ts", "last_ts REAL NOT NULL DEFAULT 0"),
 )
 
 
@@ -1367,6 +1376,17 @@ class KernelDatabase:
                     "SELECT * FROM audit_events ORDER BY id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
+            return [dict(row) | {"details": json.loads(row["details_json"] or "{}")} for row in rows]
+
+    def audit_events_by_action_prefix(self, prefix: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Audit rows whose action starts with ``prefix``, newest first. Lets a
+        rollup view (e.g. the egress ledger) see its full action-family history
+        instead of whatever survives in the recent-N window."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM audit_events WHERE action LIKE ? ORDER BY id DESC LIMIT ?",
+                (prefix.replace("%", "") + "%", limit),
+            ).fetchall()
             return [dict(row) | {"details": json.loads(row["details_json"] or "{}")} for row in rows]
 
     def record_model_call(

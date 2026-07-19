@@ -320,134 +320,32 @@ class FakeHttpResponse(io.BytesIO):
         return False
 
 
-def test_cloud_engines_report_status_and_missing_keys(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
-    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-    client = TestClient(create_app(_cloud_ready_config(tmp_path, _cloud_voice_config())))
-
-    status = client.get("/voice/status")
-    transcribe = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
-    speak = client.post("/voice/speak", json={"text": "hello"})
-
-    payload = status.json()
-    assert payload["ready"] is True
-    assert payload["cloud_engines_in_use"] is True
-    assert payload["stt"]["engine"] == "deepgram"
-    assert payload["stt"]["credential_env"] == "DEEPGRAM_API_KEY"
-    assert payload["stt"]["credential_set"] is False
-    assert payload["tts"]["engine"] == "elevenlabs"
-    assert payload["tts"]["credential_set"] is False
-    # Missing keys fail loudly with the exact env var to set.
-    assert transcribe.status_code == 503
-    assert "DEEPGRAM_API_KEY" in transcribe.json()["detail"]
-    assert speak.status_code == 503
-    assert "ELEVENLABS_API_KEY" in speak.json()["detail"]
-
-
-def test_deepgram_and_elevenlabs_adapters(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-key")
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
-    calls = {}
-
-    def fake_urlopen(request, timeout=120):
-        calls.setdefault("requests", []).append(request)
-        if "api.deepgram.com" in request.full_url:
-            body = {"results": {"channels": [{"alternatives": [{"transcript": "what should we prioritize next"}]}]}}
-            return FakeHttpResponse(json.dumps(body).encode("utf-8"))
-        if "api.elevenlabs.io" in request.full_url:
-            return FakeHttpResponse(b"MP3FAKE-AUDIO-BYTES")
-        raise AssertionError(f"Unexpected URL: {request.full_url}")
-
-    monkeypatch.setattr(voice_module.urllib.request, "urlopen", fake_urlopen)
-    client = TestClient(create_app(_cloud_ready_config(tmp_path, _cloud_voice_config())))
-
-    transcribed = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
-    spoken = client.post("/voice/speak", json={"text": "Evidence first."})
-
-    assert transcribed.status_code == 200
-    assert transcribed.json()["text"] == "what should we prioritize next"
-    assert transcribed.json()["engine"] == "deepgram"
-    assert Path(transcribed.json()["transcript_path"]).read_text(encoding="utf-8") == "what should we prioritize next"
-    assert spoken.status_code == 200
-    assert spoken.json()["engine"] == "elevenlabs"
-    assert spoken.json()["format"] == "mp3"
-    assert base64.b64decode(spoken.json()["audio_base64"]) == b"MP3FAKE-AUDIO-BYTES"
-    assert Path(spoken.json()["audio_path"]).suffix == ".mp3"
-
-    deepgram_request = calls["requests"][0]
-    assert "model=nova-2" in deepgram_request.full_url
-    assert deepgram_request.get_header("Authorization") == "Token dg-key"
-    assert deepgram_request.get_header("Content-type") == "audio/wav"  # default mime
-    assert deepgram_request.data == base64.b64decode(FAKE_AUDIO)
-    elevenlabs_request = calls["requests"][1]
-    assert "/v1/text-to-speech/voice123" in elevenlabs_request.full_url
-    assert elevenlabs_request.get_header("Xi-api-key") == "el-key"
-    assert json.loads(elevenlabs_request.data.decode("utf-8"))["text"] == "Evidence first."
-
-
-def test_browser_webm_mime_reaches_deepgram(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(OllamaClient, "health", fake_health)
-    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-key")
-    seen = {}
-
-    def fake_urlopen(request, timeout=120):
-        seen["content_type"] = request.get_header("Content-type")
-        body = {"results": {"channels": [{"alternatives": [{"transcript": "hello from the browser"}]}]}}
-        return FakeHttpResponse(json.dumps(body).encode("utf-8"))
-
-    monkeypatch.setattr(voice_module.urllib.request, "urlopen", fake_urlopen)
-    cfg = _cloud_ready_config(tmp_path, VoiceConfig(stt_engine="deepgram", tts_engine="elevenlabs"))
-    client = TestClient(create_app(cfg))
-
-    # The browser's MediaRecorder produces webm/opus; the codecs suffix is stripped.
-    result = client.post(
-        "/voice/transcribe",
-        json={"audio_base64": FAKE_AUDIO, "audio_mime": "audio/webm;codecs=opus"},
-    )
-
-    assert result.status_code == 200
-    assert result.json()["text"] == "hello from the browser"
-    assert result.json()["audio_mime"] == "audio/webm;codecs=opus"
-    assert seen["content_type"] == "audio/webm"
-    # The saved input artifact carries the right extension for the format.
-    assert Path(result.json()["audio_path"]).suffix == ".webm"
-
-
-def test_cloud_converse_end_to_end_and_http_errors(tmp_path: Path, monkeypatch) -> None:
+def test_cloud_voice_lane_is_dead_no_bytes_can_leave(tmp_path: Path, monkeypatch) -> None:
+    """The cloud voice lane is torn down at the egress matrix: FOUNDER_AUDIO and
+    REPLY_TEXT × cloud_service are FORBIDDEN. Even the strongest possible
+    opt-in — cloud engines configured, BOTH standing grants present, API keys
+    set — must refuse every voice operation WITHOUT attempting a network call.
+    (Voice went actually-local 2026-07-17; the adapters are dead code until
+    their stage-2 removal, and dead code must not be reachable.)"""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
     patch_ollama_model(monkeypatch, fake_generate)
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-key")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
 
-    def fake_urlopen(request, timeout=120):
-        if "api.deepgram.com" in request.full_url:
-            body = {"results": {"channels": [{"alternatives": [{"transcript": "summarize the current memory state"}]}]}}
-            return FakeHttpResponse(json.dumps(body).encode("utf-8"))
-        return FakeHttpResponse(b"MP3FAKE")
+    def forbidden_urlopen(request, timeout=120):
+        raise AssertionError(f"cloud voice attempted a network call: {request.full_url}")
 
-    monkeypatch.setattr(voice_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(voice_module.urllib.request, "urlopen", forbidden_urlopen)
     client = TestClient(create_app(_cloud_ready_config(tmp_path, _cloud_voice_config())))
 
+    transcribe = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
+    speak = client.post("/voice/speak", json={"text": "hello"})
     converse = client.post("/voice/converse", json={"audio_base64": FAKE_AUDIO, "use_semantic_memory": False})
 
-    assert converse.status_code == 200
-    assert converse.json()["transcript"] == "summarize the current memory state"
-    assert converse.json()["speech"]["format"] == "mp3"
-    assert converse.json()["response"]
-
-    # Cloud HTTP failures come back as loud 400s with the status code.
-    import urllib.error
-
-    def failing_urlopen(request, timeout=120):
-        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b"invalid api key"))
-
-    monkeypatch.setattr(voice_module.urllib.request, "urlopen", failing_urlopen)
-    failed = client.post("/voice/transcribe", json={"audio_base64": FAKE_AUDIO})
-    assert failed.status_code == 400
-    assert "HTTP 401" in failed.json()["detail"]
-    assert "invalid api key" in failed.json()["detail"]
+    # every operation refuses loudly; forbidden_urlopen proves zero bytes left
+    assert transcribe.status_code == 503
+    assert speak.status_code == 503
+    assert converse.status_code == 503
 
 
 def test_engine_failure_and_tts_degradation_are_handled(tmp_path: Path, monkeypatch) -> None:

@@ -74,3 +74,16 @@ standing_grants = ["public_derived:public_web"]
 # per-request founder grant (typed-phrase approval of a specific review). Raw
 # founder_state remains FORBIDDEN by the egress matrix regardless of this flag.
 enabled = true
+
+[openclaw]
+# Channel-gateway bridge. Connects to the LOCAL OpenClaw gateway's WebSocket as
+# an operator client, routes inbound channel messages (Telegram, etc.) through
+# the governed /channels/message flow (channel auth + capped authority + HMAC),
+# and sends Zade's reply back. Enabled 2026-07-18. The gateway token is read from
+# OPENCLAW_GATEWAY_TOKEN (never written here). Loopback-only unless
+# allow_remote_gateway is set. A channel must still be connected on the OpenClaw
+# side (`openclaw channels add --channel telegram --token <bot-token>`) before
+# any real message flows — the bridge is the transport, not the channel account.
+enabled = true
+ws_url = "ws://127.0.0.1:18789"
+token_env = "OPENCLAW_GATEWAY_TOKEN"

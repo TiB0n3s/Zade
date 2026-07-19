@@ -28,6 +28,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 | `memory.forget` | memory | `L1_MEMORY_WRITE` | Delete a local memory record and its search-index entry at the founder's request. |
 | `memory.search` | memory | `L0_READ` | Search local memory using SQLite FTS. |
 | `memory.write` | memory | `L1_MEMORY_WRITE` | Write a local memory record to SQLite. |
+| `work.status` | work | `L0_READ` | Read the work queue: status counts and recent items. Read-only. |
 <!-- AUTO-END: capabilities -->
 
 ## Approved Action Handlers
@@ -127,6 +128,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `d281196` 2026-07-18 - feat: expose budgeted build sessions
 - `365701e` 2026-07-18 - feat: orchestrate approved hybrid builds
 - `9efb717` 2026-07-18 - feat: add budgeted Anthropic build adapter
 - `075c481` 2026-07-18 - refactor: make coding model provider neutral
@@ -138,7 +140,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `76c09e1` 2026-07-18 - feat: define build lease policy
 - `5d6684e` 2026-07-18 - chore: ignore local worktrees
 - `341143f` 2026-07-18 - docs: plan token-budgeted build delegation
-- `b9a03eb` 2026-07-18 - docs: design token-budgeted build delegation
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

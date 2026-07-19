@@ -48,7 +48,7 @@ def _pending_write_requests(db: KernelDatabase, status: str = "pending") -> list
 def test_manifest_exposes_curated_allowlist_only(tmp_path: Path) -> None:
     surface, _db, _ing = _surface(tmp_path)
     names = {t.name for t in surface.manifest()}
-    assert names == {"memory.search", "audit.recent", "memory.write"}
+    assert names == {"memory.search", "audit.recent", "work.status", "memory.write"}
     assert "memory.forget" not in names
 
 

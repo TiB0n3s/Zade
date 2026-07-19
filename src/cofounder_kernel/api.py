@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import atexit
 import hmac
 import logging
+import os
 import secrets
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,7 @@ from .build_routing import BuildRouter
 from .build_service import BuildService
 from .build_store import BuildStore
 from .channel_auth import ChannelAuth, ChannelAuthError, parse_bind_command
+from .openclaw_bridge import InboundMessage, OpenClawBridge, OpenClawBridgeError
 from .founder import FounderService
 from .strategy_review import StrategyReviewService
 from .handlers import ActionHandlerRegistry
@@ -1661,6 +1664,15 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
 
         return {"pending": list_pending_grants(db)}
 
+    @app.get("/egress/ledger")
+    def egress_ledger_view(limit: int = 500) -> dict[str, Any]:
+        """Founder-facing rollup: what left the machine, to whom, under which
+        grant — and what the gate refused. Aggregates existing audit rows only;
+        payloads are never stored, so none can appear here."""
+        from .egress import egress_ledger
+
+        return egress_ledger(db, limit=max(50, min(limit, 2000)))
+
     @app.post("/egress/grants/{request_id}/approve")
     def egress_approve_grant(request_id: int, payload: ApprovalResolveRequest | None = None) -> dict[str, Any]:
         from .egress import approve_egress_grant
@@ -1750,15 +1762,15 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         except ChannelAuthError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post("/channels/message")
-    def channel_message(payload: ChannelMessageRequest) -> dict[str, Any]:
-        """Channel-adapter ingress. A local adapter (OpenClaw / a native bridge)
-        POSTs inbound messages here — the endpoint is mutation-token gated, so
-        only the trusted local adapter can inject them. A '/bind <code>' message
-        completes an enrollment; otherwise the identity is authenticated and, ONLY
-        if bound, routed into the runtime with its authority ceiling. Unbound
-        identities are refused — they never reach the authority-bearing runtime."""
-        channel, external_id, text = payload.channel, payload.external_id, payload.text
+    def handle_channel_message(
+        *, channel: str, external_id: str, text: str, ts: str = "", signature: str = ""
+    ) -> dict[str, Any]:
+        """The governed channel-message flow, shared by the HTTP endpoint and the
+        in-process OpenClaw bridge. A '/bind <code>' message completes an
+        enrollment; otherwise the identity is authenticated (with the binding's
+        HMAC policy) and, ONLY if bound, routed into the runtime capped at its
+        authority ceiling on a durable per-binding thread. Unbound identities are
+        refused — they never reach the authority-bearing runtime."""
         code = parse_bind_command(text)
         if code is not None:
             try:
@@ -1770,7 +1782,9 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
                 "max_tier": identity.max_tier, "reply": "This channel is now bound to the founder.",
             }
 
-        identity = channel_auth.authenticate(channel, external_id)
+        identity = channel_auth.authenticate_message(
+            channel, external_id, text=text, ts=ts, signature=signature
+        )
         if not identity.authenticated:
             return {
                 "status": "unauthenticated", "authenticated": False,
@@ -1778,17 +1792,99 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
                           "then send '/bind <code>' here to confirm."),
             }
 
+        # Per-binding conversation continuity: messages from a bound identity share
+        # one durable thread instead of arriving as standalone amnesiac turns. If a
+        # distillation sweep has since finalized the stored thread, a fresh one is
+        # bound — continuity resets rather than piling onto an ended conversation.
+        assert identity.binding_id is not None
+        conversation_id = channel_auth.conversation_id_for(identity.binding_id)
+        if conversation_id is not None:
+            existing = db.get_conversation(conversation_id)
+            if not existing or existing.get("status") != "active":
+                conversation_id = None
+        if conversation_id is None:
+            created = conversations.create(
+                title=f"channel: {channel} · {identity.label or external_id}",
+                metadata={"channel": channel, "external_id": external_id, "binding_id": identity.binding_id},
+            )
+            conversation_id = int(created["id"])
+            channel_auth.set_conversation_id(identity.binding_id, conversation_id)
+
         # Bound founder identity — route into the runtime, capped at its ceiling.
         result = runtime.respond(
             message=text,
             authority_ceiling=identity.max_tier,
+            conversation_id=conversation_id,
             use_tools=False,  # like voice: answer from context, no per-message tool loop
         )
         return {
             "status": "ok", "authenticated": True, "max_tier": identity.max_tier,
             "channel_capped": result.get("channel_capped"),
+            "conversation_id": conversation_id,
             "reply": result["response"], "event_id": result["event_id"],
         }
+
+    @app.post("/channels/message")
+    def channel_message(payload: ChannelMessageRequest) -> dict[str, Any]:
+        """Channel-adapter ingress over HTTP. Mutation-token gated, so only the
+        trusted local adapter can inject messages. Delegates to the shared
+        governed flow."""
+        return handle_channel_message(
+            channel=payload.channel,
+            external_id=payload.external_id,
+            text=payload.text,
+            ts=payload.ts,
+            signature=payload.signature,
+        )
+
+    # OpenClaw channel-gateway bridge (external transport). Off unless
+    # [openclaw] enabled + a token is set. It routes inbound channel messages
+    # through the SAME governed flow above (in-process, so channel auth + capped
+    # authority + HMAC all apply), and sends Zade's reply back via the gateway.
+    def _route_openclaw(inbound: InboundMessage) -> dict[str, Any]:
+        return handle_channel_message(
+            channel=inbound.channel, external_id=inbound.external_id, text=inbound.text
+        )
+
+    openclaw_bridge = OpenClawBridge(cfg.openclaw, route_message=_route_openclaw)
+    app.state.openclaw_bridge = openclaw_bridge
+    # Started below only under serving-boot (run_boot_maintenance), so merely
+    # constructing the app for introspection never opens a gateway socket.
+    if run_boot_maintenance and cfg.openclaw.enabled:
+        try:
+            openclaw_bridge.start()
+            atexit.register(openclaw_bridge.stop)
+        except OpenClawBridgeError:
+            # Misconfiguration (no token, remote gateway without opt-in) must not
+            # block kernel startup — the bridge simply stays down and /status
+            # shows it. Everything else in the kernel runs local-only regardless.
+            pass
+
+    @app.get("/channels/openclaw/status")
+    def openclaw_status() -> dict[str, Any]:
+        return {
+            "enabled": cfg.openclaw.enabled,
+            "ws_url": cfg.openclaw.ws_url,
+            "token_present": bool(os.getenv(cfg.openclaw.token_env, "")),
+            "connected": bool(getattr(openclaw_bridge, "_ws", None) is not None),
+        }
+
+    @app.post("/channels/bindings/{binding_id}/hmac")
+    def channel_issue_hmac(binding_id: int) -> dict[str, Any]:
+        """Issue (or rotate) a per-binding signing key — for adapters/bots that can
+        sign each message. Returned ONCE; from then on every inbound message from
+        the binding must carry ts + HMAC-SHA256(key, f"{ts}\\n{text}")."""
+        try:
+            return channel_auth.issue_hmac_key(binding_id)
+        except ChannelAuthError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/channels/bindings/{binding_id}/hmac/clear")
+    def channel_clear_hmac(binding_id: int) -> dict[str, Any]:
+        try:
+            return channel_auth.clear_hmac_key(binding_id)
+        except ChannelAuthError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/experiments")
     def list_experiments(status: str | None = None, limit: int = 50) -> dict[str, Any]:

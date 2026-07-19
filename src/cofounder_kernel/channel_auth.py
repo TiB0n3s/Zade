@@ -31,13 +31,21 @@ is no adapter wired yet. Only the code's hash is stored, never the raw code.
 from __future__ import annotations
 
 import hashlib
+import hmac as hmac_mod
 import re
 import secrets
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .db import KernelDatabase, utc_now
+
+# Signed-message freshness window. A signature older (or newer — clock skew)
+# than this is refused even if valid, bounding how long a captured frame stays
+# usable; strictly-increasing per-binding timestamps close replay inside the
+# window.
+HMAC_MAX_SKEW_SECONDS = 300.0
 
 _BIND_RE = re.compile(r"^\s*/?bind\s+(\S+)\s*$", re.IGNORECASE)
 
@@ -195,6 +203,116 @@ class ChannelAuth:
         if row is None:
             return ChannelIdentity(authenticated=False, channel=channel, external_id=external_id)
         return self._identity(row)
+
+    def authenticate_message(
+        self,
+        channel: str,
+        external_id: str,
+        *,
+        text: str,
+        ts: str = "",
+        signature: str = "",
+    ) -> ChannelIdentity:
+        """Authenticate an inbound message, enforcing the binding's HMAC policy.
+
+        A binding WITHOUT a key behaves exactly like ``authenticate`` (the human
+        /bind path — a person typing into a chat app cannot sign). A binding
+        WITH a key demands a valid signature on EVERY message: signature =
+        HMAC-SHA256(key, f"{ts}\\n{text}") hex, where ts is the sender's unix
+        timestamp as the literal string signed. Freshness is bounded by
+        HMAC_MAX_SKEW_SECONDS and ts must be strictly greater than the last
+        accepted ts for the binding — so a captured frame cannot be replayed,
+        even inside the window. All failures are fail-closed AND audited: a
+        signature failure on a bound identity is exactly the event worth seeing.
+        """
+        identity = self.authenticate(channel, external_id)
+        if not identity.authenticated:
+            return identity
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT id, hmac_key, last_ts FROM channel_bindings WHERE id=?", (identity.binding_id,)
+            ).fetchone()
+        key = str(row["hmac_key"] or "") if row is not None else ""
+        if not key:
+            return identity
+        denial = self._hmac_denial(key=key, last_ts=float(row["last_ts"] or 0.0), text=text, ts=ts, signature=signature)
+        if denial:
+            self.db.audit(
+                actor="channel", action="channel.hmac.denied", target=f"{channel}:{external_id}",
+                permission_tier="L1_MEMORY_WRITE", status="denied",
+                details={"binding_id": identity.binding_id, "reason": denial},
+            )
+            return ChannelIdentity(authenticated=False, channel=channel, external_id=external_id)
+        with self.db.connect() as conn:
+            conn.execute("UPDATE channel_bindings SET last_ts=? WHERE id=?", (float(ts), identity.binding_id))
+        return identity
+
+    def _hmac_denial(self, *, key: str, last_ts: float, text: str, ts: str, signature: str) -> str | None:
+        """Reason this signed-message attempt is refused, or None if valid."""
+        if not ts or not signature:
+            return "signature_required"
+        try:
+            ts_value = float(ts)
+        except ValueError:
+            return "bad_timestamp"
+        if abs(time.time() - ts_value) > HMAC_MAX_SKEW_SECONDS:
+            return "stale_timestamp"
+        if ts_value <= last_ts:
+            return "replayed_timestamp"
+        expected = hmac_mod.new(key.encode("utf-8"), f"{ts}\n{text}".encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac_mod.compare_digest(expected, str(signature).strip().lower()):
+            return "bad_signature"
+        return None
+
+    def issue_hmac_key(self, binding_id: int) -> dict[str, Any]:
+        """Generate (or rotate) the signing key for a binding and return it ONCE.
+
+        The founder hands it to the adapter/bot; from then on every inbound
+        message from that binding MUST be signed. The key is stored to verify
+        against (HMAC verification needs the key itself); it never appears in
+        audit rows. Rotating replaces the old key immediately."""
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT * FROM channel_bindings WHERE id=?", (binding_id,)).fetchone()
+            if row is None:
+                raise ChannelAuthError(f"Channel binding not found: {binding_id}")
+            key = secrets.token_hex(32)
+            conn.execute("UPDATE channel_bindings SET hmac_key=?, last_ts=0 WHERE id=?", (key, binding_id))
+        self.db.audit(
+            actor="founder", action="channel.hmac.issue", target=f"{row['channel']}:{row['external_id']}",
+            permission_tier="L1_MEMORY_WRITE", status="ok",
+            details={"binding_id": binding_id, "rotated": bool(row["hmac_key"])},  # never the key
+        )
+        return {
+            "binding_id": binding_id,
+            "hmac_key": key,
+            "sign": "HMAC-SHA256(key, f'{unix_ts}\\n{text}') hex; send ts + signature with each message",
+            "note": "Shown once. Every inbound message from this binding now requires a valid signature.",
+        }
+
+    def clear_hmac_key(self, binding_id: int) -> dict[str, Any]:
+        """Drop the signing requirement (back to the unsigned human-/bind/ path)."""
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT * FROM channel_bindings WHERE id=?", (binding_id,)).fetchone()
+            if row is None:
+                raise ChannelAuthError(f"Channel binding not found: {binding_id}")
+            conn.execute("UPDATE channel_bindings SET hmac_key=NULL, last_ts=0 WHERE id=?", (binding_id,))
+        self.db.audit(
+            actor="founder", action="channel.hmac.clear", target=f"{row['channel']}:{row['external_id']}",
+            permission_tier="L1_MEMORY_WRITE", status="ok", details={"binding_id": binding_id},
+        )
+        return {"binding_id": binding_id, "hmac_required": False}
+
+    # -- conversation continuity ------------------------------------------
+    def conversation_id_for(self, binding_id: int) -> int | None:
+        """The binding's stored conversation id, if any. The caller owns liveness
+        (a distillation sweep may have finalized the thread) and re-binding."""
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT conversation_id FROM channel_bindings WHERE id=?", (binding_id,)).fetchone()
+        return int(row["conversation_id"]) if row and row["conversation_id"] is not None else None
+
+    def set_conversation_id(self, binding_id: int, conversation_id: int) -> None:
+        with self.db.connect() as conn:
+            conn.execute("UPDATE channel_bindings SET conversation_id=? WHERE id=?", (conversation_id, binding_id))
 
     def caps(self, identity: ChannelIdentity, requested_tier: str) -> bool:
         """Would this identity be permitted to act AUTONOMOUSLY at requested_tier?
