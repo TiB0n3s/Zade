@@ -203,6 +203,7 @@ from .models import (
 from .ollama import OllamaClient, OllamaError
 from .ops import KernelOpsService
 from .prompts import PromptProfileRegistry
+from .project_intake import ProjectIntakeService, parse_project_decision_reply
 from .actions import ActionPipelineService
 from .commitments import CommitmentLedger
 from .notify import NotificationBus
@@ -406,7 +407,14 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         db=db,
         assessor=BuildAssessmentService(
             local_client=ollama,
-            workspace_policy=BuildWorkspacePolicy(cfg.delegation.workspace_root),
+            workspace_policy=BuildWorkspacePolicy(
+                cfg.delegation.workspace_root,
+                registered_project_predicate=(
+                    (lambda path: db.find_project_by_path(str(path)) is not None)
+                    if cfg.project_intake.enabled
+                    else None
+                ),
+            ),
         ),
         store=build_store,
         budget=build_budget,
@@ -530,6 +538,14 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     # Let the chat runtime route founder build commands ("build this out for me")
     # into a gated delegation brief instead of a text-only architecture outline.
     runtime.delegation = delegation
+    project_intake = ProjectIntakeService(
+        config=cfg,
+        db=db,
+        ingestion=ingestion,
+        delegation=delegation,
+        bus=bus,
+        approvals=approvals,
+    )
     screen = ScreenService(config=cfg, db=db)
 
     # Serving-boot maintenance. Skipped for read-only introspection builds so
@@ -613,6 +629,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     app.state.research = research
     app.state.roles = roles
     app.state.delegation = delegation
+    app.state.project_intake = project_intake
     app.state.build = build_service
     app.state.build_store = build_store
     app.state.build_budget = build_budget
@@ -937,6 +954,43 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     @app.get("/self-inventory")
     def self_inventory() -> dict[str, Any]:
         return _inventory_payload(cfg, authority, tools, db, founder)
+
+    @app.post("/project-intake/scan")
+    def scan_project_intake() -> dict[str, Any]:
+        return project_intake.scan(auto_run=cfg.project_intake.scaffold_on_intake)
+
+    @app.get("/project-intake/projects")
+    def list_project_intake(lifecycle_state: str | None = None, limit: int = 500) -> dict[str, Any]:
+        return {"items": db.list_projects(lifecycle_state=lifecycle_state, limit=min(max(limit, 1), 500))}
+
+    @app.get("/project-intake/projects/{project_id}")
+    def get_project_intake(project_id: int) -> dict[str, Any]:
+        try:
+            return {"project": project_intake.get(project_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/project-intake/projects/{project_id}/run")
+    def run_project_intake(project_id: int) -> dict[str, Any]:
+        try:
+            return {"project": project_intake.run_until_blocked(project_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/project-intake/decisions/{decision_id}/resolve")
+    def resolve_project_intake_decision(
+        decision_id: int, payload: ApprovalResolveRequest
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "project": project_intake.resolve_decision(
+                    decision_id,
+                    payload.note,
+                    resolved_by=payload.resolved_by,
+                )
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/identity/charter")
     def get_identity_charter() -> dict[str, Any]:
@@ -2427,6 +2481,32 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
                 "reply": ("This channel is not authorized. The founder can enroll it from Zade, "
                           "then send '/bind <code>' here to confirm."),
             }
+
+        if channel == "telegram":
+            project_decision = parse_project_decision_reply(text)
+            if project_decision is not None:
+                decision_id, answer = project_decision
+                try:
+                    project = project_intake.resolve_decision(
+                        decision_id,
+                        answer,
+                        resolved_by="founder.telegram",
+                    )
+                except ValueError as exc:
+                    return {
+                        "status": "project_decision_failed",
+                        "authenticated": True,
+                        "reply": f"I could not resume that project decision: {exc}",
+                    }
+                return {
+                    "status": "project_decision_resolved",
+                    "authenticated": True,
+                    "project_id": project["id"],
+                    "reply": (
+                        f"Decision recorded for {project['name']}. The build resumed; "
+                        f"current state: {project['lifecycle_state']}."
+                    ),
+                }
 
         # Per-binding conversation continuity: messages from a bound identity share
         # one durable thread instead of arriving as standalone amnesiac turns. If a
@@ -4081,6 +4161,38 @@ def _inventory_payload(
             "GitHub reads use the governed gh client and every workflow dispatch or cancellation requires fresh typed external-action authorization.",
             "OpenAI is optional, disabled by default, store=false, tool-free, and independently lease-budgeted for advisory review only.",
             "Managed Agents expose readiness gates only; no managed execution path exists.",
+        ],
+    }
+    projects = db.list_projects(limit=500)
+    inventory["project_intake_layer"] = {
+        "root": str(cfg.paths.project_intake_dir),
+        "enabled": cfg.project_intake.enabled,
+        "scaffold_on_intake": cfg.project_intake.scaffold_on_intake,
+        "watcher_debounce_seconds": cfg.project_intake.watcher_debounce_seconds,
+        "project_count": len(projects),
+        "projects": [
+            {
+                "id": project["id"],
+                "name": project["name"],
+                "product_type": project["product_type"],
+                "distribution_targets": project["distribution_targets"],
+                "lifecycle_state": project["lifecycle_state"],
+                "canonical_path": project["canonical_path"],
+            }
+            for project in projects
+        ],
+        "routes": [
+            "POST /project-intake/scan",
+            "GET /project-intake/projects",
+            "GET /project-intake/projects/{project_id}",
+            "POST /project-intake/projects/{project_id}/run",
+            "POST /project-intake/decisions/{decision_id}/resolve",
+        ],
+        "operating_rules": [
+            "Only real, registered direct-child project roots can receive build execution.",
+            "Project manifests and durable project records are authoritative over stale historical build claims.",
+            "Documentation-only intake can initialize Git and route an initial scaffold automatically.",
+            "Founder decisions are notified through the notification bus and explicit Telegram decision replies resume the paused work item.",
         ],
     }
     inventory["screen_layer"] = {

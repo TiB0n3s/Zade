@@ -926,8 +926,31 @@ class RuntimeService:
         if mode in {"slim", "full"}:
             rendered = render_prompt_self_knowledge(mode=mode)
             if rendered:
-                return rendered
-        return self._render_runtime_self_inventory()
+                project_portfolio = self._render_project_portfolio()
+                return f"{rendered}\n\n{project_portfolio}" if project_portfolio else rendered
+        rendered = self._render_runtime_self_inventory()
+        project_portfolio = self._render_project_portfolio()
+        return f"{rendered}\n\n{project_portfolio}" if project_portfolio else rendered
+
+    def _render_project_portfolio(self) -> str:
+        """Render the current project registry as authoritative prompt context."""
+        try:
+            projects = self.db.list_projects(limit=50)
+        except Exception:
+            return ""
+        if not projects:
+            return ""
+        lines = [
+            "Live project portfolio (authoritative over stale historical build claims):"
+        ]
+        for project in projects:
+            targets = ", ".join(str(item) for item in project.get("distribution_targets", []))
+            lines.append(
+                f"- {project['name']} [{project['product_type']}]; "
+                f"state={project['lifecycle_state']}; targets={targets}; "
+                f"root={project['canonical_path']}"
+            )
+        return "\n".join(lines)
 
     def _render_runtime_self_inventory(self) -> str:
         """A compact, auto-generated self-inventory (Tier 2): identity, models,

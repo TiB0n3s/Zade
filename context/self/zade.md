@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `8f47750` 2026-07-19 - feat: notify founders through Telegram
 - `e70745a` 2026-07-19 - feat: confine builds to registered intake projects
 - `8c9dd87` 2026-07-19 - feat: discover and route project intake
 - `e476379` 2026-07-19 - feat: add project intake persistence
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `92cd8bb` 2026-07-19 - docs: design project intake autopilot
 - `8741571` 2026-07-19 - fix: auto-resolve cleared integrity warnings in run_integrity_check
 - `4f197bb` 2026-07-19 - feat: require fresh approval for renewed build leases
-- `0c46772` 2026-07-19 - fix: omit deprecated Anthropic sampling params
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

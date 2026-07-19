@@ -2,7 +2,7 @@ from pathlib import Path
 
 from cofounder_kernel.config import KernelConfig, PathConfig, ProjectIntakeConfig
 from cofounder_kernel.db import KernelDatabase
-from cofounder_kernel.project_intake import ProjectIntakeService
+from cofounder_kernel.project_intake import ProjectIntakeService, parse_project_decision_reply
 
 
 MOBILE_MANIFEST = """---
@@ -26,7 +26,46 @@ class FakeDelegation:
         return {"item_id": None, "status": "approved", "auto_invoked": True, "dispatch": {"ok": True}}
 
 
-def make_service(tmp_path: Path, *, delegation=None):
+class BlockingDelegation:
+    def queue_delegation(self, **kwargs):
+        return {
+            "item_id": None,
+            "status": "approved",
+            "auto_invoked": True,
+            "dispatch": {
+                "ok": True,
+                "status": "needs_decision",
+                "decision_item_id": 91,
+                "founder_question": {
+                    "question": "Which local database should the app use?",
+                    "options": ["SQLite", "Realm"],
+                },
+            },
+        }
+
+
+class FakeBus:
+    def __init__(self):
+        self.calls = []
+
+    def notify(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"status": "delivered"}
+
+
+class FakeApprovals:
+    def __init__(self):
+        self.calls = []
+
+    def approve_work_item(self, item_id, **kwargs):
+        self.calls.append((item_id, kwargs))
+        return {
+            "dispatch": "dispatched",
+            "dispatch_result": {"ok": True, "status": "ok", "artifact": "scaffold complete"},
+        }
+
+
+def make_service(tmp_path: Path, *, delegation=None, bus=None, approvals=None):
     hot = tmp_path / "brain"
     config = KernelConfig(
         paths=PathConfig(hot_root=hot, cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -34,7 +73,17 @@ def make_service(tmp_path: Path, *, delegation=None):
     )
     db = KernelDatabase(config.paths.database_path)
     db.migrate()
-    return ProjectIntakeService(config=config, db=db, delegation=delegation), config, db
+    return (
+        ProjectIntakeService(
+            config=config,
+            db=db,
+            delegation=delegation,
+            bus=bus,
+            approvals=approvals,
+        ),
+        config,
+        db,
+    )
 
 
 def test_scan_accepts_only_qualifying_direct_children(tmp_path: Path) -> None:
@@ -92,3 +141,78 @@ def test_documentation_only_project_initializes_git_and_routes_scaffold(tmp_path
     assert "mobile application" in delegation.calls[0]["task"]
     assert "Google Play" in delegation.calls[0]["acceptance"]
     assert "Apple App Store" in delegation.calls[0]["acceptance"]
+
+
+def test_needs_decision_blocks_project_and_notifies_with_resume_command(tmp_path: Path) -> None:
+    bus = FakeBus()
+    service, config, _db = make_service(tmp_path, delegation=BlockingDelegation(), bus=bus)
+    project = config.paths.project_intake_dir / "Same Ground"
+    project.mkdir(parents=True)
+    (project / "project.md").write_text(MOBILE_MANIFEST, encoding="utf-8")
+
+    result = service.scan(auto_run=True)
+    assert not result["errors"], result["errors"]
+    stored = result["projects"][0]
+
+    assert stored["lifecycle_state"] == "blocked"
+    assert stored["metadata"]["decision_id"] == 91
+    assert stored["metadata"]["founder_question"]["question"].startswith("Which local")
+    assert bus.calls[0]["topic"] == "project.decision_required"
+    assert "decision 91: <your answer>" in bus.calls[0]["body"]
+    assert bus.calls[0]["dedupe_key"] == "project:1:decision:91"
+
+
+def test_resolve_decision_injects_answer_into_paused_work_item_and_resumes(tmp_path: Path) -> None:
+    approvals = FakeApprovals()
+    service, config, db = make_service(tmp_path, approvals=approvals)
+    project_root = config.paths.project_intake_dir / "Same Ground"
+    project_root.mkdir(parents=True)
+    (project_root / "project.md").write_text(MOBILE_MANIFEST, encoding="utf-8")
+    project = service.scan(auto_run=False)["projects"][0]
+    decision_id, _created = db.enqueue_work_item(
+        kind="founder_decision",
+        title="Decision needed",
+        detail="Choose storage",
+        action="external.delegation.run",
+        target="native-coding-agent",
+        permission_tier="L3_EXTERNAL_ACTION",
+        metadata={
+            "task": "Build Same Ground",
+            "brief": "Resume the initial scaffold.",
+            "workspace": str(project_root.resolve()),
+            "founder_decision": True,
+        },
+    )
+    db.upsert_project(
+        canonical_path=project["canonical_path"],
+        name=project["name"],
+        product_type=project["product_type"],
+        distribution_targets=project["distribution_targets"],
+        lifecycle_state="blocked",
+        repo_fingerprint=project["repo_fingerprint"],
+        metadata={**project["metadata"], "decision_id": decision_id},
+    )
+
+    resumed = service.resolve_decision(decision_id, "Use SQLite and keep all data local.")
+    updated_item = db.get_work_item(decision_id)
+
+    assert resumed["lifecycle_state"] == "verified"
+    assert "decision_id" not in resumed["metadata"]
+    assert "Use SQLite and keep all data local." in updated_item.metadata["brief"]
+    assert approvals.calls == [
+        (
+            decision_id,
+            {
+                "resolved_by": "founder.telegram",
+                "note": "Use SQLite and keep all data local.",
+                "dispatch": True,
+                "typed_confirmation": "",
+            },
+        )
+    ]
+
+
+def test_parse_project_decision_reply_requires_explicit_decision_id() -> None:
+    assert parse_project_decision_reply("decision 42: Use SQLite") == (42, "Use SQLite")
+    assert parse_project_decision_reply("/decision #17 - Choose option B") == (17, "Choose option B")
+    assert parse_project_decision_reply("Use SQLite") is None
