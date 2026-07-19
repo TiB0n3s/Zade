@@ -987,6 +987,24 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.post("/connectors/{name}/oauth/begin")
+    def begin_connector_oauth(name: str) -> dict[str, Any]:
+        """Start Microsoft device-code enrollment for an xoauth2 IMAP connector.
+        The founder types the returned user_code at the verification URI; the
+        kernel polls in the background and caches tokens on success."""
+        try:
+            return {"flow": connectors.begin_oauth(name)}
+        except ValueError as exc:
+            status = 404 if "not found" in str(exc).lower() else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    @app.get("/connectors/{name}/oauth/status")
+    def connector_oauth_status(name: str) -> dict[str, Any]:
+        try:
+            return connectors.oauth_status(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.post("/connectors/{name}/update")
     def update_connector(name: str, payload: ConnectorUpdate) -> dict[str, Any]:
         try:
