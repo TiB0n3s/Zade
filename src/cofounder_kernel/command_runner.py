@@ -162,6 +162,7 @@ _CODING_COMMAND_PREFIXES: dict[str, tuple[tuple[str, ...], ...]] = {
         ("exec", "--no", "--", "tsc", "--noEmit"),
     ),
     "node": (("--version",), ("--test",), ("--check",)),
+    "flutter": (("analyze", "--no-pub"), ("test", "--no-pub")),
 }
 
 
@@ -182,9 +183,22 @@ def normalize_coding_agent_command(argv: tuple[str, ...]) -> tuple[str, tuple[st
             if name == "pytest"
             else (sys.executable, *tail)
         )
-    elif name in {"uv", "git", "npm", "node"}:
+    elif name in {"uv", "git", "npm", "node", "flutter"}:
         profile = name
         located = shutil.which(argv[0]) or shutil.which(name)
+        if located is None and name == "flutter":
+            flutter_home = os.environ.get("FLUTTER_HOME", "").strip()
+            candidates = tuple(
+                candidate
+                for candidate in (
+                    Path(flutter_home) / "bin" / "flutter.bat"
+                    if flutter_home
+                    else None,
+                    Path(r"C:\tools\flutter\bin\flutter.bat"),
+                )
+                if candidate is not None and candidate.is_file()
+            )
+            located = str(candidates[0]) if candidates else None
         normalized = (located or argv[0], *tail)
     else:
         allowed = ", ".join(sorted(_CODING_COMMAND_PREFIXES))
@@ -210,6 +224,21 @@ def coding_agent_command_policies() -> dict[str, CommandPolicy]:
         "git": tuple(filter(None, (shutil.which("git"), "git"))),
         "npm": tuple(filter(None, (shutil.which("npm"), "npm", "npm.cmd"))),
         "node": tuple(filter(None, (shutil.which("node"), "node"))),
+        "flutter": tuple(
+            filter(
+                None,
+                (
+                    shutil.which("flutter"),
+                    shutil.which("flutter.bat"),
+                    str(Path(os.environ["FLUTTER_HOME"]) / "bin" / "flutter.bat")
+                    if os.environ.get("FLUTTER_HOME")
+                    else None,
+                    r"C:\tools\flutter\bin\flutter.bat",
+                    "flutter",
+                    "flutter.bat",
+                ),
+            )
+        ),
     }
     aliases = {
         "python": ("python", "python3", "py", "python.exe", Path(sys.executable).name),
@@ -217,8 +246,13 @@ def coding_agent_command_policies() -> dict[str, CommandPolicy]:
         "git": ("git", "git.exe"),
         "npm": ("npm", "npm.cmd"),
         "node": ("node", "node.exe"),
+        "flutter": ("flutter", "flutter.bat"),
     }
-    images = {"python": "python:3.12-local", "npm": "node:22-local", "node": "node:22-local"}
+    images = {
+        "python": "python:3.12-local",
+        "npm": "node:22-local",
+        "node": "node:22-local",
+    }
     return {
         f"coding-agent:{program}": CommandPolicy(
             id=f"coding-agent:{program}",

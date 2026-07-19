@@ -701,6 +701,24 @@ def test_verification_plan_adds_tsc_for_typescript_workspaces(tmp_path: Path) ->
     assert unchecked == ["notes.txt"]
 
 
+def test_verification_plan_uses_offline_flutter_checks(tmp_path: Path) -> None:
+    flutter_ws = tmp_path / "flutter-ws"
+    (flutter_ws / "lib").mkdir(parents=True)
+    (flutter_ws / "pubspec.yaml").write_text("name: canary\n", encoding="utf-8")
+    svc, _ = _service(tmp_path, flutter_ws, [])
+
+    mode, checks, unchecked = svc._verification_plan(
+        flutter_ws, ["lib/main.dart"]
+    )
+
+    assert mode == "tests"
+    assert checks == [
+        ["flutter", "analyze", "--no-pub"],
+        ["flutter", "test", "--no-pub"],
+    ]
+    assert unchecked == []
+
+
 def test_verify_always_checks_goal_state_on_no_change_runs(
     tmp_path: Path, fixture_repo: Path
 ) -> None:

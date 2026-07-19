@@ -66,10 +66,20 @@ MAX_SNAPSHOT_FILES = 5000
 MAX_VERIFY_TARGETS = 40
 
 # Allowlisted first-argv tokens for run_command. Deliberately small: enough to
-# run tests and inspect a Python or Node workspace. npx stays OFF the list —
+# run offline checks in Python, Node, and Flutter workspaces. npx stays OFF the list —
 # it executes arbitrary packages by design. Everything else is refused at the
 # execution boundary regardless of what the prompt or model claims.
-COMMAND_ALLOWLIST = ("python", "python3", "py", "pytest", "uv", "git", "npm", "node")
+COMMAND_ALLOWLIST = (
+    "python",
+    "python3",
+    "py",
+    "pytest",
+    "uv",
+    "git",
+    "npm",
+    "node",
+    "flutter",
+)
 
 _INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md", "Claude.md", "claude.md", "README.md")
 _MAX_INSTRUCTION_CHARS = 4000
@@ -577,6 +587,15 @@ class CodingAgentService:
         py_compile, .json via json.tool, .ts/.tsx via tsc). Files with no
         reliable checker come back as unchecked — they are reported as
         unverified, never silently passed."""
+        if (root / "pubspec.yaml").is_file() and (root / "lib").is_dir():
+            return (
+                "tests",
+                [
+                    ["flutter", "analyze", "--no-pub"],
+                    ["flutter", "test", "--no-pub"],
+                ],
+                [],
+            )
         argv = self._verification_argv(root)
         tsc_argv = self._typescript_check_argv(root)
         if argv is not None:

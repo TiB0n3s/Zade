@@ -14,6 +14,7 @@ from cofounder_kernel.command_runner import (
     CommandRequest,
     GovernedCommandRunner,
     coding_agent_command_policies,
+    normalize_coding_agent_command,
 )
 
 
@@ -345,3 +346,40 @@ def test_coding_agent_policies_allow_checks_but_not_install_or_payloads(
                 argv=(sys.executable, "-c", "print('no')"),
             )
         )
+
+
+def test_coding_agent_flutter_policy_is_offline_and_verification_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flutter = tmp_path / "flutter.bat"
+    flutter.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "cofounder_kernel.command_runner.shutil.which",
+        lambda name: str(flutter) if name in {"flutter", "flutter.bat"} else None,
+    )
+
+    profile_id, analyze = normalize_coding_agent_command(
+        ("flutter", "analyze", "--no-pub")
+    )
+    assert profile_id == "coding-agent:flutter"
+    assert analyze == (str(flutter), "analyze", "--no-pub")
+
+    policies = coding_agent_command_policies()
+    runner = GovernedCommandRunner(
+        policies=policies,
+        artifact_root=tmp_path / "artifacts",
+        docker_probe=lambda _image: False,
+    )
+    allowed = runner.preflight(
+        CommandRequest(
+            workspace=tmp_path,
+            profile_id=profile_id,
+            argv=analyze,
+        )
+    )
+    assert allowed.backend == "host"
+
+    with pytest.raises(CommandPolicyError, match="shape"):
+        normalize_coding_agent_command(("flutter", "pub", "get"))
+    with pytest.raises(CommandPolicyError, match="shape"):
+        normalize_coding_agent_command(("flutter", "build", "apk"))

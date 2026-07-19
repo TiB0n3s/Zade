@@ -133,6 +133,9 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `a027968` 2026-07-19 - Merge branch 'codex/build-runtime-enablement'
+- `10a1f38` 2026-07-19 - feat: harden durable build phase gates
+- `49900e9` 2026-07-19 - feat: governed design-update endpoint for experiments
 - `a3768ed` 2026-07-19 - feat: enable isolated build runners and shared lease approval
 - `429bd1d` 2026-07-19 - Docs: purge stale cloud-voice instructions; sync egress design + channel_auth docstring with shipped reality
 - `839fee9` 2026-07-19 - Merge branch 'main' into codex/durable-build-orchestration
@@ -142,9 +145,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `1455d76` 2026-07-19 - Connectors: in-place update endpoint (POST /connectors/{name}/update)
 - `8956197` 2026-07-19 - feat: add optional review and build calibration
 - `6abd2c9` 2026-07-19 - Ops scripts: bootstrap mutation token from /session/token; stable pwsh alias in tasks
-- `0ae740c` 2026-07-19 - feat: add governed GitHub build verification
-- `565c136` 2026-07-19 - feat: add product build verification profiles
-- `9505817` 2026-07-19 - feat: orchestrate durable local-first builds
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
