@@ -14,12 +14,15 @@ Model prose is never accepted as proof.
 
 from __future__ import annotations
 
+import copy
+import os
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .db import KernelDatabase, utc_now
-from .project_intake import _git_snapshot
+from .project_autonomy_store import ProjectAutonomyStore
 
 PHASES = (
     "planning",
@@ -31,6 +34,22 @@ PHASES = (
     "blocked",
     "mvp_complete",
 )
+
+ALLOWED_TRANSITIONS = {
+    "planning": {"building", "needs_decision", "blocked"},
+    "building": {"verifying", "needs_decision", "approval_required", "blocked"},
+    "verifying": {
+        "ready_for_next_increment",
+        "needs_decision",
+        "approval_required",
+        "blocked",
+    },
+    "ready_for_next_increment": {"building", "mvp_complete", "needs_decision", "blocked"},
+    "needs_decision": {"building", "blocked"},
+    "approval_required": {"building", "blocked"},
+    "blocked": {"planning", "building"},
+    "mvp_complete": set(),
+}
 
 PRIORITIES = ("low", "normal", "high", "urgent")
 
@@ -89,9 +108,16 @@ class ProjectAutonomyReporter:
     and the API, never a Telegram message.
     """
 
-    def __init__(self, *, db: KernelDatabase, bus: Any | None = None):
+    def __init__(
+        self,
+        *,
+        db: KernelDatabase,
+        bus: Any | None = None,
+        store: ProjectAutonomyStore | None = None,
+    ):
         self.db = db
         self.bus = bus
+        self.store = store or ProjectAutonomyStore(db)
 
     # ---- reads --------------------------------------------------------------
 
@@ -99,10 +125,11 @@ class ProjectAutonomyReporter:
         project = self.db.get_project(project_id)
         if project is None:
             raise ValueError(f"Project not found: {project_id}")
-        return project
+        return self._attach_state(project, self._state_for_project(project))
 
     def state(self, project_id: int) -> dict[str, Any]:
-        return _autonomy_state(self.get_project(project_id))
+        project = self.get_project(project_id)
+        return _autonomy_state(project)
 
     # ---- planning and increments (ledger-only, no founder notifications) ----
 
@@ -114,10 +141,17 @@ class ProjectAutonomyReporter:
         priority: str | None = None,
         next_action: str = "",
         external_boundaries: list[str] | None = None,
+        plan_revision: str | None = None,
     ) -> dict[str, Any]:
         project = self.get_project(project_id)
         if not criteria:
             raise ValueError("An MVP plan requires at least one documented criterion.")
+        prior = self._state_for_project(project)
+        prior_by_id = {
+            str(item.get("id")): item
+            for item in prior.get("mvp_criteria") or []
+            if isinstance(item, dict) and item.get("id")
+        }
         normalized: list[dict[str, Any]] = []
         seen: set[str] = set()
         for entry in criteria:
@@ -130,47 +164,75 @@ class ProjectAutonomyReporter:
             if criterion_id in seen:
                 raise ValueError(f"Duplicate MVP criterion id: {criterion_id}")
             seen.add(criterion_id)
-            normalized.append(
+            documented = {
+                key: copy.deepcopy(value)
+                for key, value in entry.items()
+                if key not in {"status", "verified_at", "commit", "verification", "blocked_reason"}
+            }
+            documented.update(
                 {
                     "id": criterion_id,
                     "title": title,
                     "required": bool(entry.get("required", True)),
-                    "status": "pending",
                 }
             )
+            existing = prior_by_id.get(criterion_id)
+            if existing is None:
+                documented["status"] = "pending"
+                normalized.append(documented)
+            else:
+                reconciled = copy.deepcopy(existing)
+                reconciled.update(documented)
+                normalized.append(reconciled)
         if priority is not None and priority not in PRIORITIES:
             raise ValueError(f"Priority must be one of: {', '.join(PRIORITIES)}")
-        prior = _autonomy_state(project)
-        state = _default_state()
+        if prior.get("mvp_complete") and normalized == prior.get("mvp_criteria"):
+            return project
+        state = copy.deepcopy(prior if prior.get("mvp_criteria") else _default_state())
+        if prior.get("mvp_complete"):
+            state = _default_state()
         state.update(
             {
-                "phase": "planning",
                 "priority": priority or prior.get("priority") or "normal",
                 "mvp_criteria": normalized,
-                "next_action": next_action,
-                "external_boundaries": [str(item) for item in (external_boundaries or [])],
+                "next_action": next_action or str(prior.get("next_action") or ""),
+                "external_boundaries": (
+                    [str(item) for item in external_boundaries]
+                    if external_boundaries is not None
+                    else list(prior.get("external_boundaries") or [])
+                ),
+                "plan_revision": (
+                    str(plan_revision).strip()
+                    if plan_revision is not None
+                    else str(prior.get("plan_revision") or "")
+                ),
             }
         )
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="autonomy_planned",
-            detail=next_action,
-            metadata={"phase": "planning", "criteria": [item["id"] for item in normalized]},
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "autonomy_planned",
+                "detail": next_action,
+                "metadata": {
+                    "phase": state["phase"],
+                    "criteria": [item["id"] for item in normalized],
+                    "plan_revision": state.get("plan_revision") or "",
+                },
+            },
         )
-        return project
 
     def set_priority(self, project_id: int, priority: str) -> dict[str, Any]:
         if priority not in PRIORITIES:
             raise ValueError(f"Priority must be one of: {', '.join(PRIORITIES)}")
         project = self.get_project(project_id)
-        state = _autonomy_state(project)
+        state = self._state_for_project(project)
         state["priority"] = priority
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id, event_type="priority_changed", metadata={"priority": priority}
+        return self._transition(
+            project,
+            state,
+            event={"event_type": "priority_changed", "metadata": {"priority": priority}},
         )
-        return project
 
     def begin_increment(
         self,
@@ -183,6 +245,12 @@ class ProjectAutonomyReporter:
     ) -> dict[str, Any]:
         project = self.get_project(project_id)
         state = self._mutable_state(project)
+        if state.get("phase") in {"needs_decision", "approval_required"}:
+            raise ValueError(
+                f"Cannot begin increment while project phase is {state.get('phase')}; "
+                "resolve the canonical UI boundary first."
+            )
+        self._require_transition(state, "building", operation="begin increment")
         criterion = _find_criterion(state, criterion_id)
         if criterion["status"] == "complete":
             raise ValueError(f"MVP criterion already complete: {criterion_id}")
@@ -199,33 +267,39 @@ class ProjectAutonomyReporter:
                 "blocking_reason": None,
             }
         )
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="increment_started",
-            detail=criterion["title"],
-            metadata={
-                "phase": "building",
-                "criterion_id": criterion_id,
-                "increment": state["current_increment"],
-                "run_id": state["active_run_id"],
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "increment_started",
+                "detail": criterion["title"],
+                "metadata": {
+                    "phase": "building",
+                    "criterion_id": criterion_id,
+                    "increment": state["current_increment"],
+                    "run_id": state["active_run_id"],
+                },
             },
         )
-        return project
 
     def begin_verification(self, project_id: int, *, run_id: int | None = None) -> dict[str, Any]:
         project = self.get_project(project_id)
         state = self._mutable_state(project)
+        self._require_transition(state, "verifying", operation="begin verification")
         state["phase"] = "verifying"
         if run_id is not None:
             state["active_run_id"] = _positive_int(run_id)
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="verification_started",
-            metadata={"phase": "verifying", "criterion_id": state.get("current_criterion_id")},
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "verification_started",
+                "metadata": {
+                    "phase": "verifying",
+                    "criterion_id": state.get("current_criterion_id"),
+                },
+            },
         )
-        return project
 
     def record_increment(
         self,
@@ -237,23 +311,36 @@ class ProjectAutonomyReporter:
         """Routine increment completion: ledger + API only, never Telegram."""
         project = self.get_project(project_id)
         state = self._mutable_state(project)
+        if state.get("phase") != "verifying":
+            raise ValueError(
+                f"Cannot record increment while phase is {state.get('phase')}; verifying is required."
+            )
+        snapshot = _validate_project_verification(
+            verification,
+            label="increment verification",
+            project=project,
+        )
+        self._require_transition(state, "ready_for_next_increment", operation="record increment")
         state["phase"] = "ready_for_next_increment"
         state["active_run_id"] = None
-        if isinstance(verification, dict) and verification.get("ok") is True:
-            state["last_verified_at"] = str(verification.get("checked_at") or utc_now())
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="increment_completed",
-            detail=summary[:400],
-            metadata={
-                "phase": "ready_for_next_increment",
-                "criterion_id": state.get("current_criterion_id"),
-                "increment": state.get("current_increment"),
-                "verified": bool(isinstance(verification, dict) and verification.get("ok") is True),
+        state["last_verified_at"] = str(verification.get("checked_at"))
+        state["repo_head"] = snapshot["head"]
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "increment_completed",
+                "detail": summary[:400],
+                "metadata": {
+                    "phase": "ready_for_next_increment",
+                    "criterion_id": state.get("current_criterion_id"),
+                    "increment": state.get("current_increment"),
+                    "verified": True,
+                    "repo_head": snapshot["head"],
+                    "verification": verification,
+                },
             },
         )
-        return project
 
     def complete_criterion(
         self,
@@ -273,18 +360,39 @@ class ProjectAutonomyReporter:
         project = self.get_project(project_id)
         state = self._mutable_state(project)
         criterion = _find_criterion(state, criterion_id)
-        _validate_verification(verification, label=f"criterion {criterion_id}")
         head = str(commit or "").strip()
         if not head:
             raise ValueError(
                 f"Criterion {criterion_id} cannot complete without the verified repository commit."
             )
+        if criterion.get("status") == "complete":
+            if criterion.get("commit") == head and (
+                (criterion.get("verification") or {}).get("repo_head") == head
+            ):
+                return project
+            raise ValueError(
+                f"Criterion {criterion_id} is already complete at a different commit."
+            )
+        if state.get("phase") != "verifying":
+            raise ValueError(
+                f"Cannot complete criterion while phase is {state.get('phase')}; verifying is required."
+            )
+        snapshot = _validate_project_verification(
+            verification,
+            label=f"criterion {criterion_id}",
+            project=project,
+            expected_commit=head,
+        )
+        self._require_transition(
+            state, "ready_for_next_increment", operation="complete criterion"
+        )
+        evidence_summary = _verification_summary(verification)
         criterion.update(
             {
                 "status": "complete",
                 "verified_at": str(verification.get("checked_at")),
                 "commit": head,
-                "verification": verification,
+                "verification": evidence_summary,
             }
         )
         criterion.pop("blocked_reason", None)
@@ -299,19 +407,21 @@ class ProjectAutonomyReporter:
                 "next_action": _next_pending_action(state),
             }
         )
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="criterion_completed",
-            detail=criterion["title"],
-            metadata={
-                "phase": "ready_for_next_increment",
-                "criterion_id": criterion_id,
-                "commit": head,
-                "checks": len(verification.get("checks") or []),
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "criterion_completed",
+                "detail": criterion["title"],
+                "metadata": {
+                    "phase": "ready_for_next_increment",
+                    "criterion_id": criterion_id,
+                    "commit": snapshot["head"],
+                    "checks": len(verification.get("checks") or []),
+                    "verification": verification,
+                },
             },
         )
-        return project
 
     # ---- founder boundaries (notify through the existing bus) ---------------
 
@@ -334,12 +444,14 @@ class ProjectAutonomyReporter:
         if not question or not recommendation:
             raise ValueError("A needs_decision report requires the exact question and a recommendation.")
         cleaned = _clean_options(options)
+        self._require_transition(state, "needs_decision", operation="request decision")
         state.update(
             {
                 "phase": "needs_decision",
                 "blocking_type": "decision",
                 "blocking_reason": question,
                 "decision_id": decision,
+                "active_run_id": None,
                 "next_action": f"waiting for founder decision {decision}",
             }
         )
@@ -365,18 +477,19 @@ class ProjectAutonomyReporter:
             },
         )
         state["last_notification_id"] = notification_id or state.get("last_notification_id")
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="decision_requested",
-            detail=question,
-            metadata={
-                "phase": "needs_decision",
-                "decision_id": decision,
-                "notification_id": notification_id,
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "decision_requested",
+                "detail": question,
+                "metadata": {
+                    "phase": "needs_decision",
+                    "decision_id": decision,
+                    "notification_id": notification_id,
+                },
             },
         )
-        return project
 
     def report_approval_required(
         self,
@@ -401,6 +514,7 @@ class ProjectAutonomyReporter:
             raise ValueError(
                 f"Authority boundary must be one of: {', '.join(APPROVAL_BOUNDARIES)}"
             )
+        self._require_transition(state, "approval_required", operation="request approval")
         hint = approve_hint.strip() or (
             f"Approve: POST /work/items/{approval}/approve — "
             f"Deny: POST /work/items/{approval}/deny"
@@ -411,6 +525,7 @@ class ProjectAutonomyReporter:
                 "blocking_type": "approval",
                 "blocking_reason": reason,
                 "approval_request_id": approval,
+                "active_run_id": None,
                 "next_action": f"waiting for founder approval {approval}",
             }
         )
@@ -433,19 +548,20 @@ class ProjectAutonomyReporter:
             },
         )
         state["last_notification_id"] = notification_id or state.get("last_notification_id")
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="approval_requested",
-            detail=action,
-            metadata={
-                "phase": "approval_required",
-                "boundary": boundary,
-                "approval_request_id": approval,
-                "notification_id": notification_id,
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "approval_requested",
+                "detail": action,
+                "metadata": {
+                    "phase": "approval_required",
+                    "boundary": boundary,
+                    "approval_request_id": approval,
+                    "notification_id": notification_id,
+                },
             },
         )
-        return project
 
     def report_blocked(
         self,
@@ -469,6 +585,7 @@ class ProjectAutonomyReporter:
             raise ValueError("A blocked report requires the concrete failure reason.")
         if severity not in BLOCKED_SEVERITIES:
             raise ValueError(f"Blocked severity must be one of: {', '.join(BLOCKED_SEVERITIES)}")
+        self._require_transition(state, "blocked", operation="report blocked")
         criterion_title = "project-level"
         if criterion_id:
             criterion = _find_criterion(state, criterion_id)
@@ -480,6 +597,7 @@ class ProjectAutonomyReporter:
                 "phase": "blocked",
                 "blocking_type": "error",
                 "blocking_reason": reason,
+                "active_run_id": None,
                 "next_action": needed or "founder or tooling intervention required",
             }
         )
@@ -502,20 +620,21 @@ class ProjectAutonomyReporter:
             },
         )
         state["last_notification_id"] = notification_id or state.get("last_notification_id")
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="build_blocked",
-            detail=reason,
-            metadata={
-                "phase": "blocked",
-                "criterion_id": criterion_id,
-                "attempts": int(attempts),
-                "severity": severity,
-                "notification_id": notification_id,
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "build_blocked",
+                "detail": reason,
+                "metadata": {
+                    "phase": "blocked",
+                    "criterion_id": criterion_id,
+                    "attempts": int(attempts),
+                    "severity": severity,
+                    "notification_id": notification_id,
+                },
             },
         )
-        return project
 
     # ---- resumption ---------------------------------------------------------
 
@@ -524,29 +643,37 @@ class ProjectAutonomyReporter:
         decision = _positive_int(decision_id)
         if decision is None:
             raise ValueError("A decision resolution requires a positive decision_id.")
-        for project in self.db.list_projects(limit=500):
-            state = _autonomy_state(project)
-            if _positive_int(state.get("decision_id")) != decision:
-                continue
-            criterion_id = state.get("current_criterion_id")
-            state.update(
-                {
+        project = self._find_waiting_project("decision_id", decision)
+        if project is None:
+            raise ValueError(f"No project is waiting on decision {decision}.")
+        state = self._state_for_project(project)
+        if state.get("phase") != "needs_decision":
+            raise ValueError(f"No project is waiting on decision {decision}.")
+        self._require_transition(state, "building", operation="resume after decision")
+        criterion_id = state.get("current_criterion_id")
+        state.update(
+            {
+                "phase": "building",
+                "blocking_type": None,
+                "blocking_reason": None,
+                "decision_id": None,
+                "next_action": f"apply founder decision {decision} and continue",
+            }
+        )
+        updated = self._transition(
+            project,
+            state,
+            event={
+                "event_type": "decision_applied",
+                "detail": answer.strip()[:400],
+                "metadata": {
                     "phase": "building",
-                    "blocking_type": None,
-                    "blocking_reason": None,
-                    "decision_id": None,
-                    "next_action": f"apply founder decision {decision} and continue",
-                }
-            )
-            updated = self._save(project, state)
-            self.db.append_project_event(
-                project["id"],
-                event_type="decision_applied",
-                detail=answer.strip()[:400],
-                metadata={"phase": "building", "decision_id": decision, "criterion_id": criterion_id},
-            )
-            return {"project": updated, "criterion_id": criterion_id, "decision_id": decision}
-        raise ValueError(f"No project is waiting on decision {decision}.")
+                    "decision_id": decision,
+                    "criterion_id": criterion_id,
+                },
+            },
+        )
+        return {"project": updated, "criterion_id": criterion_id, "decision_id": decision}
 
     def resume_after_approval(
         self, approval_request_id: int, *, approved: bool, note: str = ""
@@ -554,45 +681,54 @@ class ProjectAutonomyReporter:
         approval = _positive_int(approval_request_id)
         if approval is None:
             raise ValueError("An approval resolution requires a positive approval_request_id.")
-        for project in self.db.list_projects(limit=500):
-            state = _autonomy_state(project)
-            if _positive_int(state.get("approval_request_id")) != approval:
-                continue
-            criterion_id = state.get("current_criterion_id")
-            if approved:
-                state.update(
-                    {
-                        "phase": "building",
-                        "blocking_type": None,
-                        "blocking_reason": None,
-                        "approval_request_id": None,
-                        "next_action": f"continue with approved action {approval}",
-                    }
-                )
-            else:
-                state.update(
-                    {
-                        "phase": "blocked",
-                        "blocking_type": "error",
-                        "blocking_reason": note.strip() or f"founder denied approval {approval}",
-                        "approval_request_id": None,
-                        "next_action": "replan without the denied action",
-                    }
-                )
-            updated = self._save(project, state)
-            self.db.append_project_event(
-                project["id"],
-                event_type="approval_resolved",
-                detail=note.strip()[:400],
-                metadata={
+        project = self._find_waiting_project("approval_request_id", approval)
+        if project is None:
+            raise ValueError(f"No project is waiting on approval {approval}.")
+        state = self._state_for_project(project)
+        if state.get("phase") != "approval_required":
+            raise ValueError(f"No project is waiting on approval {approval}.")
+        target_phase = "building" if approved else "blocked"
+        self._require_transition(state, target_phase, operation="resume after approval")
+        criterion_id = state.get("current_criterion_id")
+        if approved:
+            state.update(
+                {
+                    "phase": "building",
+                    "blocking_type": None,
+                    "blocking_reason": None,
+                    "approval_request_id": None,
+                    "next_action": f"continue with approved action {approval}",
+                }
+            )
+        else:
+            state.update(
+                {
+                    "phase": "blocked",
+                    "blocking_type": "error",
+                    "blocking_reason": note.strip() or f"founder denied approval {approval}",
+                    "approval_request_id": None,
+                    "next_action": "replan without the denied action",
+                }
+            )
+        updated = self._transition(
+            project,
+            state,
+            event={
+                "event_type": "approval_resolved",
+                "detail": note.strip()[:400],
+                "metadata": {
                     "approval_request_id": approval,
                     "phase": state["phase"],
                     "approved": bool(approved),
                     "criterion_id": criterion_id,
                 },
-            )
-            return {"project": updated, "criterion_id": criterion_id, "approval_request_id": approval}
-        raise ValueError(f"No project is waiting on approval {approval}.")
+            },
+        )
+        return {
+            "project": updated,
+            "criterion_id": criterion_id,
+            "approval_request_id": approval,
+        }
 
     # ---- the MVP completion gate --------------------------------------------
 
@@ -606,7 +742,7 @@ class ProjectAutonomyReporter:
         less raises ValueError — scaffold 'verified' never satisfies this.
         """
         project = self.get_project(project_id)
-        state = _autonomy_state(project)
+        state = self._state_for_project(project)
         criteria = state.get("mvp_criteria") or []
         if not criteria:
             raise ValueError(
@@ -631,20 +767,15 @@ class ProjectAutonomyReporter:
                     f"MVP completion rejected: required criterion '{item['id']}' lacks "
                     "persisted verification evidence at a recorded commit."
                 )
-        _validate_verification(final_verification, label="final project-level verification")
-        root = Path(project["canonical_path"])
-        if not (root / ".git").is_dir():
-            raise ValueError("MVP completion rejected: the project has no git repository to attest.")
-        snapshot = _git_snapshot(root)
-        head = snapshot.get("head") or ""
-        if not head:
-            raise ValueError("MVP completion rejected: the repository has no commit to record.")
-        if snapshot.get("status"):
-            raise ValueError(
-                "MVP completion rejected: the repository is not clean at the recorded commit."
-            )
+        snapshot = _validate_project_verification(
+            final_verification,
+            label="final project-level verification",
+            project=project,
+        )
+        head = snapshot["head"]
         if state.get("mvp_complete") and state.get("mvp_completed_commit") == head:
             return project  # already attested at this exact commit; exactly-one notification holds
+        self._require_transition(state, "mvp_complete", operation="complete MVP")
         completed = sum(1 for item in criteria if item.get("status") == "complete")
         checks = final_verification.get("checks") or []
         boundaries = [str(item) for item in (state.get("external_boundaries") or [])] or [
@@ -658,7 +789,7 @@ class ProjectAutonomyReporter:
                 "mvp_completed_commit": head,
                 "repo_head": head,
                 "last_verified_at": str(final_verification.get("checked_at")),
-                "final_verification": final_verification,
+                "final_verification": _verification_summary(final_verification),
                 "active_run_id": None,
                 "blocking_type": None,
                 "blocking_reason": None,
@@ -681,35 +812,133 @@ class ProjectAutonomyReporter:
             force_channels=("telegram",),
         )
         state["last_notification_id"] = notification_id or state.get("last_notification_id")
-        project = self._save(project, state)
-        self.db.append_project_event(
-            project_id,
-            event_type="mvp_completed",
-            detail=f"{completed}/{len(criteria)} criteria complete at {head}",
-            metadata={
-                "phase": "mvp_complete",
-                "commit": head,
-                "checks": len(checks),
-                "notification_id": notification_id,
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "mvp_completed",
+                "detail": f"{completed}/{len(criteria)} criteria complete at {head}",
+                "metadata": {
+                    "phase": "mvp_complete",
+                    "commit": head,
+                    "checks": len(checks),
+                    "notification_id": notification_id,
+                    "verification": final_verification,
+                },
             },
         )
-        return project
 
     # ---- internals ----------------------------------------------------------
 
     def _mutable_state(self, project: dict[str, Any]) -> dict[str, Any]:
-        state = _autonomy_state(project)
+        state = self._state_for_project(project)
         if state.get("mvp_complete"):
             raise ValueError(
                 f"Project '{project['name']}' is already mvp_complete; re-plan a new scope first."
             )
         return state
 
-    def _save(self, project: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    def _transition(
+        self,
+        project: dict[str, Any],
+        state: dict[str, Any],
+        *,
+        event: dict[str, Any],
+        outbox: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         state["updated_at"] = utc_now()
         if state.get("phase") not in PHASES:
             raise ValueError(f"Phase must be one of: {', '.join(PHASES)}")
-        return self.db.update_project_metadata(project["id"], {"autonomy": state})
+        expected_version = int(state.get("_store_version") or 0)
+        persisted = {
+            key: copy.deepcopy(value)
+            for key, value in state.items()
+            if not key.startswith("_store_")
+        }
+        stored = self.store.transition(
+            project["id"],
+            expected_version=expected_version,
+            state=persisted,
+            event=event,
+            outbox=outbox,
+        )
+        current = self.db.get_project(project["id"])
+        if current is None:
+            raise RuntimeError(f"Project vanished during autonomy transition: {project['id']}")
+        return self._attach_state(current, self._state_from_store(stored))
+
+    def _state_for_project(self, project: dict[str, Any]) -> dict[str, Any]:
+        stored = self.store.get(project["id"])
+        if int(stored.get("version") or 0) > 0:
+            return self._state_from_store(stored)
+        legacy = _autonomy_state(project)
+        legacy["_store_version"] = 0
+        return legacy
+
+    @staticmethod
+    def _state_from_store(stored: dict[str, Any]) -> dict[str, Any]:
+        state = _default_state()
+        state.update(
+            {
+                key: copy.deepcopy(value)
+                for key, value in stored.items()
+                if key not in {"project_id", "created_at", "updated_at", "version"}
+            }
+        )
+        state["_store_version"] = int(stored.get("version") or 0)
+        state["_store_created_at"] = str(stored.get("created_at") or "")
+        state["_store_updated_at"] = str(stored.get("updated_at") or "")
+        return state
+
+    @staticmethod
+    def _attach_state(project: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        attached = copy.deepcopy(project)
+        metadata = dict(attached.get("metadata") or {})
+        metadata["autonomy"] = {
+            key: copy.deepcopy(value)
+            for key, value in state.items()
+            if not key.startswith("_store_")
+        }
+        attached["metadata"] = metadata
+        return attached
+
+    @staticmethod
+    def _require_transition(
+        state: dict[str, Any], target: str, *, operation: str
+    ) -> None:
+        current = str(state.get("phase") or "planning")
+        if target not in ALLOWED_TRANSITIONS.get(current, set()):
+            raise ValueError(
+                f"Cannot {operation} while project phase is {current}; "
+                f"transition to {target} is not allowed."
+            )
+
+    def _find_waiting_project(self, field: str, value: int) -> dict[str, Any] | None:
+        if field not in {"decision_id", "approval_request_id"}:
+            raise ValueError(f"Unsupported autonomy reference field: {field}")
+        json_path = f"$.{field}"
+        legacy_path = f"$.autonomy.{field}"
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.project_id AS project_id
+                FROM project_autonomy_states AS s
+                WHERE CAST(json_extract(s.state_json, ?) AS INTEGER) = ?
+                UNION ALL
+                SELECT p.id AS project_id
+                FROM projects AS p
+                LEFT JOIN project_autonomy_states AS s ON s.project_id = p.id
+                WHERE s.project_id IS NULL
+                  AND CAST(json_extract(p.metadata_json, ?) AS INTEGER) = ?
+                ORDER BY project_id
+                """,
+                (json_path, value, legacy_path, value),
+            ).fetchall()
+        for row in rows:
+            project = self.get_project(int(row["project_id"]))
+            if _positive_int(self._state_for_project(project).get(field)) == value:
+                return project
+        return None
 
     def _notify(self, **kwargs: Any) -> int | None:
         if self.bus is None:
@@ -848,6 +1077,7 @@ def _default_state() -> dict[str, Any]:
     return {
         "phase": "planning",
         "priority": "normal",
+        "plan_revision": "",
         "mvp_criteria": [],
         "current_criterion_id": None,
         "current_increment": 0,
@@ -898,7 +1128,7 @@ def _clean_options(options: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 
 def _validate_verification(verification: Any, *, label: str) -> None:
-    """Accept only fresh mechanical verification evidence, never prose."""
+    """Accept only fresh command evidence; repository binding is checked separately."""
     if not isinstance(verification, dict) or verification.get("ok") is not True:
         raise ValueError(f"Rejected: {label} did not pass (verification.ok must be True).")
     checks = verification.get("checks")
@@ -909,8 +1139,17 @@ def _validate_verification(verification: Any, *, label: str) -> None:
     for check in checks:
         if not isinstance(check, dict) or check.get("ok") is not True:
             raise ValueError(f"Rejected: {label} contains a failed or malformed check.")
-        if not (check.get("argv") or check.get("command") or check.get("name")):
+        argv = check.get("argv")
+        command = check.get("command")
+        has_argv = isinstance(argv, list) and bool(argv) and all(str(item).strip() for item in argv)
+        has_command = isinstance(command, str) and bool(command.strip())
+        if not (has_argv or has_command):
             raise ValueError(f"Rejected: {label} contains a check without a recorded command.")
+        returncode = check.get("returncode")
+        if isinstance(returncode, bool) or not isinstance(returncode, int) or returncode != 0:
+            raise ValueError(f"Rejected: {label} contains a check with a failing returncode.")
+        if not str(check.get("output") or "").strip():
+            raise ValueError(f"Rejected: {label} contains a check without captured output.")
     checked_at = str(verification.get("checked_at") or "").strip()
     if not checked_at:
         raise ValueError(f"Rejected: {label} has no checked_at timestamp.")
@@ -921,11 +1160,103 @@ def _validate_verification(verification: Any, *, label: str) -> None:
     if checked.tzinfo is None:
         checked = checked.replace(tzinfo=UTC)
     age = (datetime.now(UTC) - checked).total_seconds()
+    if age < -(5 * 60):
+        raise ValueError(f"Rejected: {label} checked_at is more than five minutes in the future.")
     if age > VERIFICATION_MAX_AGE_MINUTES * 60:
         raise ValueError(
             f"Rejected: {label} is stale (older than {VERIFICATION_MAX_AGE_MINUTES} minutes); "
             "run a fresh verification."
         )
+
+
+def _validate_project_verification(
+    verification: Any,
+    *,
+    label: str,
+    project: dict[str, Any],
+    expected_commit: str | None = None,
+) -> dict[str, str]:
+    _validate_verification(verification, label=label)
+    assert isinstance(verification, dict)
+    root = Path(str(project.get("canonical_path") or ""))
+    expected_path = _normalized_path(root)
+    evidence_path = str(verification.get("project_path") or "").strip()
+    if not evidence_path or _normalized_path(Path(evidence_path)) != expected_path:
+        raise ValueError(
+            f"Rejected: {label} project_path does not match the registered project root."
+        )
+    snapshot = _git_state(root)
+    evidence_head = str(verification.get("repo_head") or "").strip()
+    if not evidence_head or evidence_head != snapshot["head"]:
+        raise ValueError(
+            f"Rejected: {label} repo_head does not match the current repository commit."
+        )
+    if expected_commit is not None and str(expected_commit).strip() != evidence_head:
+        raise ValueError(
+            f"Rejected: {label} commit does not match the mechanically verified repo_head."
+        )
+    evidence_status = verification.get("repo_status")
+    if not isinstance(evidence_status, str) or evidence_status != snapshot["status"]:
+        raise ValueError(
+            f"Rejected: {label} repo_status does not match the live git status."
+        )
+    if snapshot["status"]:
+        raise ValueError(f"Rejected: {label} repository is not clean at the recorded commit.")
+    return snapshot
+
+
+def _git_state(root: Path) -> dict[str, str]:
+    inside = _run_git(root, "rev-parse", "--is-inside-work-tree")
+    if inside.returncode != 0 or inside.stdout.strip().lower() != "true":
+        raise ValueError(
+            "MVP evidence rejected: the registered project root is not a git worktree."
+        )
+    head_result = _run_git(root, "rev-parse", "HEAD")
+    if head_result.returncode != 0 or not head_result.stdout.strip():
+        raise ValueError("MVP evidence rejected: git rev-parse HEAD failed.")
+    status_result = _run_git(root, "status", "--porcelain")
+    if status_result.returncode != 0:
+        detail = status_result.stderr.strip() or "unknown error"
+        raise ValueError(f"MVP evidence rejected: git status failed: {detail}")
+    return {"head": head_result.stdout.strip(), "status": status_result.stdout.strip()}
+
+
+def _run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return subprocess.CompletedProcess(
+            ["git", *args],
+            1,
+            "",
+            f"{type(exc).__name__}: {exc}",
+        )
+
+
+def _verification_summary(verification: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "checked_at": str(verification.get("checked_at") or ""),
+        "project_path": str(verification.get("project_path") or ""),
+        "repo_head": str(verification.get("repo_head") or ""),
+        "repo_status": str(verification.get("repo_status") or ""),
+        "checks_count": len(verification.get("checks") or []),
+    }
+
+
+def _normalized_path(path: Path) -> str:
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError:
+        resolved = path.absolute()
+    return os.path.normcase(str(resolved))
 
 
 def _next_pending_action(state: dict[str, Any]) -> str:
@@ -936,6 +1267,8 @@ def _next_pending_action(state: dict[str, Any]) -> str:
 
 
 def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
         number = int(value)
     except (TypeError, ValueError):

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from cofounder_kernel import project_autonomy as autonomy_module
 from cofounder_kernel.db import KernelDatabase, utc_now
 from cofounder_kernel.project_autonomy import (
     ProjectAutonomyReporter,
@@ -59,6 +60,26 @@ def fresh_verification(checks=1) -> dict:
     }
 
 
+def verification_for(root: Path, head: str | None = None, *, checks: int = 1) -> dict:
+    expected_head = head or _git(root, "rev-parse", "HEAD")
+    return {
+        "ok": True,
+        "project_path": str(root.resolve()),
+        "repo_head": expected_head,
+        "repo_status": "",
+        "checked_at": utc_now(),
+        "checks": [
+            {
+                "argv": ["python", "-m", "pytest", "-q"],
+                "ok": True,
+                "returncode": 0,
+                "output": "42 passed",
+            }
+            for _ in range(checks)
+        ],
+    }
+
+
 def _git(root: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-c", "user.email=test@test", "-c", "user.name=test", *args],
@@ -81,6 +102,23 @@ def make_git_project(db: KernelDatabase, tmp_path: Path, *, name="Same Ground") 
     return project_id, root, head
 
 
+def complete_planned_criterion(
+    reporter: ProjectAutonomyReporter,
+    project_id: int,
+    root: Path,
+    head: str,
+    criterion_id: str,
+) -> None:
+    reporter.begin_increment(project_id, criterion_id=criterion_id)
+    reporter.begin_verification(project_id)
+    reporter.complete_criterion(
+        project_id,
+        criterion_id,
+        verification=verification_for(root, head),
+        commit=head,
+    )
+
+
 CRITERIA = [
     {"id": "auth", "title": "Local account sign-in works"},
     {"id": "feed", "title": "Feed renders real data"},
@@ -92,7 +130,7 @@ CRITERIA = [
 
 def test_plan_and_increment_transitions(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path)
-    project_id = make_project(db, tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
 
     planned = reporter.plan(project_id, criteria=CRITERIA, priority="high", next_action="start auth")
     assert autonomy_projection(planned)["phase"] == "planning"
@@ -110,7 +148,11 @@ def test_plan_and_increment_transitions(tmp_path: Path) -> None:
     verifying = reporter.begin_verification(project_id)
     assert autonomy_projection(verifying)["phase"] == "verifying"
 
-    ready = reporter.record_increment(project_id, summary="auth screen wired", verification=fresh_verification())
+    ready = reporter.record_increment(
+        project_id,
+        summary="auth screen wired",
+        verification=verification_for(root, head),
+    )
     view = autonomy_projection(ready)
     assert view["phase"] == "ready_for_next_increment"
     assert view["active_run_id"] is None
@@ -140,8 +182,10 @@ def test_plan_rejects_empty_or_duplicate_criteria(tmp_path: Path) -> None:
 
 def test_criterion_completion_requires_mechanical_evidence(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path)
-    project_id = make_project(db, tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
     reporter.plan(project_id, criteria=CRITERIA)
+    reporter.begin_increment(project_id, criterion_id="auth")
+    reporter.begin_verification(project_id)
 
     with pytest.raises(ValueError, match="did not pass"):
         reporter.complete_criterion(project_id, "auth", verification={"ok": False}, commit="abc")
@@ -153,18 +197,234 @@ def test_criterion_completion_requires_mechanical_evidence(tmp_path: Path) -> No
             commit="abc",
         )
     with pytest.raises(ValueError, match="without the verified repository commit"):
-        reporter.complete_criterion(project_id, "auth", verification=fresh_verification(), commit="")
-    stale = fresh_verification()
+        reporter.complete_criterion(
+            project_id, "auth", verification=verification_for(root, head), commit=""
+        )
+    stale = verification_for(root, head)
     stale["checked_at"] = (datetime.now(UTC) - timedelta(hours=3)).isoformat(timespec="seconds")
     with pytest.raises(ValueError, match="stale"):
-        reporter.complete_criterion(project_id, "auth", verification=stale, commit="abc")
+        reporter.complete_criterion(project_id, "auth", verification=stale, commit=head)
 
-    done = reporter.complete_criterion(project_id, "auth", verification=fresh_verification(), commit="abc123")
+    done = reporter.complete_criterion(
+        project_id, "auth", verification=verification_for(root, head), commit=head
+    )
     view = autonomy_projection(done)
     assert view["mvp_criteria_completed"] == 1
     assert view["phase"] == "ready_for_next_increment"
-    assert view["repo_head"] == "abc123"
+    assert view["repo_head"] == head
     assert view["mvp_complete"] is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda evidence: evidence["checks"][0].update(
+            {"argv": None, "name": "passed"}
+        ),
+        lambda evidence: evidence["checks"][0].update(
+            {"returncode": 1, "output": "failed"}
+        ),
+        lambda evidence: evidence["checks"][0].update({"output": ""}),
+    ],
+)
+def test_completion_rejects_non_mechanical_checks(tmp_path: Path, mutate) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+    reporter.begin_verification(project_id)
+    evidence = verification_for(root, head)
+    mutate(evidence)
+
+    with pytest.raises(ValueError):
+        reporter.complete_criterion(
+            project_id,
+            "mvp-1",
+            verification=evidence,
+            commit=head,
+        )
+
+
+def test_begin_increment_cannot_bypass_waiting_decision(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id = make_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+    reporter.report_needs_decision(
+        project_id,
+        decision_id=41,
+        question="Choose storage",
+        recommendation="SQLite",
+        options=[
+            {"option": "SQLite", "impact": "stays local"},
+            {"option": "Realm", "impact": "adds a dependency"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="needs_decision"):
+        reporter.begin_increment(project_id, criterion_id="mvp-1")
+
+
+def test_completion_rejects_future_evidence_and_commit_mismatch(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+    reporter.begin_verification(project_id)
+    evidence = verification_for(root, head)
+    evidence["checked_at"] = (datetime.now(UTC) + timedelta(minutes=6)).isoformat()
+
+    with pytest.raises(ValueError, match="future"):
+        reporter.complete_criterion(
+            project_id, "mvp-1", verification=evidence, commit=head
+        )
+
+    evidence = verification_for(root, head)
+    with pytest.raises(ValueError, match="commit"):
+        reporter.complete_criterion(
+            project_id, "mvp-1", verification=evidence, commit="deadbeef"
+        )
+
+
+def test_completion_rejects_git_status_command_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+    reporter.begin_verification(project_id)
+    real_run_git = autonomy_module._run_git
+
+    def fail_status(project_root: Path, *args: str):
+        if args[:2] == ("status", "--porcelain"):
+            return subprocess.CompletedProcess(["git", *args], 1, "", "status failed")
+        return real_run_git(project_root, *args)
+
+    monkeypatch.setattr(autonomy_module, "_run_git", fail_status)
+
+    with pytest.raises(ValueError, match="git status"):
+        reporter.complete_criterion(
+            project_id, "mvp-1", verification=verification_for(root, head), commit=head
+        )
+
+
+def test_linked_worktree_is_valid_git_evidence_root(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    _origin_id, origin, _origin_head = make_git_project(db, tmp_path, name="Origin")
+    linked = tmp_path / "linked-worktree"
+    _git(origin, "worktree", "add", str(linked), "-b", "linked-test")
+    head = _git(linked, "rev-parse", "HEAD")
+    project_id = db.upsert_project(
+        canonical_path=str(linked),
+        name="Linked Same Ground",
+        product_type="mobile_application",
+        distribution_targets=["google_play", "apple_app_store_eventual"],
+        lifecycle_state="verified",
+        repo_fingerprint="linked-fp",
+        metadata={},
+    )
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+    reporter.begin_verification(project_id)
+
+    completed = reporter.complete_criterion(
+        project_id,
+        "mvp-1",
+        verification=verification_for(linked, head),
+        commit=head,
+    )
+
+    assert autonomy_projection(completed)["mvp_criteria_completed"] == 1
+
+
+def test_replanning_preserves_completed_criterion(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
+    criteria = [{"id": "mvp-1", "title": "Core flow"}]
+    reporter.plan(project_id, criteria=criteria)
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+    reporter.begin_verification(project_id)
+    reporter.complete_criterion(
+        project_id, "mvp-1", verification=verification_for(root, head), commit=head
+    )
+
+    replanned = reporter.plan(project_id, criteria=criteria)
+
+    assert autonomy_projection(replanned)["mvp_criteria_completed"] == 1
+
+
+def test_changed_plan_reconciles_completion_by_criterion_id(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign in"}])
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+
+    reconciled = reporter.plan(
+        project_id,
+        criteria=[
+            {"id": "auth", "title": "Local sign in"},
+            {"id": "feed", "title": "Feed renders"},
+        ],
+    )
+
+    state = reconciled["metadata"]["autonomy"]
+    by_id = {item["id"]: item for item in state["mvp_criteria"]}
+    assert by_id["auth"]["status"] == "complete"
+    assert by_id["auth"]["title"] == "Local sign in"
+    assert by_id["feed"]["status"] == "pending"
+
+
+def test_record_increment_requires_verifying_and_passing_evidence(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+
+    with pytest.raises(ValueError, match="verifying"):
+        reporter.record_increment(
+            project_id, summary="not verified", verification=verification_for(root, head)
+        )
+
+    reporter.begin_verification(project_id)
+    failed = verification_for(root, head)
+    failed["ok"] = False
+    with pytest.raises(ValueError, match="did not pass"):
+        reporter.record_increment(project_id, summary="failed", verification=failed)
+
+
+def test_blocked_state_clears_active_run(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id = make_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1", run_id=7)
+
+    blocked = reporter.report_blocked(project_id, reason="tooling unavailable")
+
+    assert autonomy_projection(blocked)["active_run_id"] is None
+
+
+def test_repeated_criterion_completion_at_same_commit_is_idempotent(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+    reporter.begin_verification(project_id)
+    evidence = verification_for(root, head)
+
+    reporter.complete_criterion(
+        project_id, "mvp-1", verification=evidence, commit=head
+    )
+    reporter.complete_criterion(
+        project_id, "mvp-1", verification=evidence, commit=head
+    )
+
+    events = [
+        event
+        for event in db.list_project_events(project_id)
+        if event["event_type"] == "criterion_completed"
+    ]
+    assert len(events) == 1
 
 
 # ---- scaffold verified is never MVP complete ---------------------------------
@@ -198,12 +458,12 @@ def test_mvp_completion_rejected_for_scaffold_verified_project_without_plan(tmp_
 
 def test_mvp_completion_rejected_with_incomplete_criteria(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path)
-    project_id, _root, head = make_git_project(db, tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
     reporter.plan(project_id, criteria=CRITERIA)
-    reporter.complete_criterion(project_id, "auth", verification=fresh_verification(), commit=head)
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
 
     with pytest.raises(ValueError, match="'feed' is not complete"):
-        reporter.complete_mvp(project_id, final_verification=fresh_verification())
+        reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
 
 
 def test_mvp_completion_rejected_without_final_verification_or_clean_git(tmp_path: Path) -> None:
@@ -211,22 +471,38 @@ def test_mvp_completion_rejected_without_final_verification_or_clean_git(tmp_pat
     project_id, root, head = make_git_project(db, tmp_path)
     reporter.plan(project_id, criteria=CRITERIA)
     for criterion in ("auth", "feed"):
-        reporter.complete_criterion(project_id, criterion, verification=fresh_verification(), commit=head)
+        complete_planned_criterion(reporter, project_id, root, head, criterion)
 
     with pytest.raises(ValueError, match="prose is not evidence"):
         reporter.complete_mvp(project_id, final_verification={"ok": True, "summary": "all good, trust me"})
 
     (root / "untracked.tmp").write_text("dirty", encoding="utf-8")
+    dirty_evidence = verification_for(root, head)
+    dirty_evidence["repo_status"] = _git(root, "status", "--porcelain")
     with pytest.raises(ValueError, match="not clean"):
-        reporter.complete_mvp(project_id, final_verification=fresh_verification())
+        reporter.complete_mvp(project_id, final_verification=dirty_evidence)
+
+
+def test_final_verification_must_match_current_git_head(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path)
+    project_id, root, first_head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign in"}])
+    complete_planned_criterion(reporter, project_id, root, first_head, "auth")
+    stale_final = verification_for(root, first_head)
+    (root / "README.md").write_text("new commit\n", encoding="utf-8")
+    _git(root, "add", "README.md")
+    _git(root, "commit", "-m", "advance head")
+
+    with pytest.raises(ValueError, match="repo_head"):
+        reporter.complete_mvp(project_id, final_verification=stale_final)
 
 
 def test_mvp_completion_rejected_when_required_criterion_blocked(tmp_path: Path) -> None:
     bus = FakeBus()
     reporter, db = make_reporter(tmp_path, bus=bus)
-    project_id, _root, head = make_git_project(db, tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
     reporter.plan(project_id, criteria=CRITERIA)
-    reporter.complete_criterion(project_id, "auth", verification=fresh_verification(), commit=head)
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
     reporter.report_blocked(
         project_id,
         criterion_id="feed",
@@ -237,7 +513,7 @@ def test_mvp_completion_rejected_when_required_criterion_blocked(tmp_path: Path)
     )
 
     with pytest.raises(ValueError, match="'feed' is blocked"):
-        reporter.complete_mvp(project_id, final_verification=fresh_verification())
+        reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
 
 
 def test_valid_mvp_completion_emits_exactly_one_notification(tmp_path: Path) -> None:
@@ -246,10 +522,14 @@ def test_valid_mvp_completion_emits_exactly_one_notification(tmp_path: Path) -> 
     project_id, root, head = make_git_project(db, tmp_path)
     reporter.plan(project_id, criteria=CRITERIA, external_boundaries=["Google Play submission"])
     for criterion in ("auth", "feed"):
-        reporter.complete_criterion(project_id, criterion, verification=fresh_verification(), commit=head)
+        complete_planned_criterion(reporter, project_id, root, head, criterion)
 
-    completed = reporter.complete_mvp(project_id, final_verification=fresh_verification(checks=3))
-    again = reporter.complete_mvp(project_id, final_verification=fresh_verification(checks=3))
+    completed = reporter.complete_mvp(
+        project_id, final_verification=verification_for(root, head, checks=3)
+    )
+    again = reporter.complete_mvp(
+        project_id, final_verification=verification_for(root, head, checks=3)
+    )
 
     view = autonomy_projection(completed)
     assert view["phase"] == "mvp_complete"
@@ -274,10 +554,10 @@ def test_valid_mvp_completion_emits_exactly_one_notification(tmp_path: Path) -> 
 
 def test_mutations_rejected_after_mvp_complete(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path, bus=FakeBus())
-    project_id, _root, head = make_git_project(db, tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
     reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
-    reporter.complete_criterion(project_id, "auth", verification=fresh_verification(), commit=head)
-    reporter.complete_mvp(project_id, final_verification=fresh_verification())
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+    reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
 
     with pytest.raises(ValueError, match="already mvp_complete"):
         reporter.begin_increment(project_id, criterion_id="auth")
@@ -335,6 +615,7 @@ def test_approval_required_notification_content_and_boundary(tmp_path: Path) -> 
     reporter, db = make_reporter(tmp_path, bus=bus)
     project_id = make_project(db, tmp_path)
     reporter.plan(project_id, criteria=CRITERIA)
+    reporter.begin_increment(project_id, criterion_id="auth")
 
     updated = reporter.report_approval_required(
         project_id,
@@ -402,12 +683,17 @@ def test_blocked_notification_carries_real_failure_detail(tmp_path: Path) -> Non
 def test_routine_increment_records_ledger_but_never_notifies(tmp_path: Path) -> None:
     bus = FakeBus()
     reporter, db = make_reporter(tmp_path, bus=bus)
-    project_id = make_project(db, tmp_path)
+    project_id, root, head = make_git_project(db, tmp_path)
     reporter.plan(project_id, criteria=CRITERIA)
     reporter.begin_increment(project_id, criterion_id="auth")
+    reporter.begin_verification(project_id)
 
-    reporter.record_increment(project_id, summary="login form built", verification=fresh_verification())
-    reporter.complete_criterion(project_id, "auth", verification=fresh_verification(), commit="abc123")
+    reporter.record_increment(
+        project_id,
+        summary="login form built",
+        verification=verification_for(root, head),
+    )
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
 
     assert bus.calls == []
     events = [row["event_type"] for row in db.list_project_events(project_id)]
@@ -445,7 +731,7 @@ def test_decision_resolution_resumes_correct_project_and_criterion(tmp_path: Pat
     assert view["phase"] == "building"
     assert view["decision_id"] is None
     assert view["blocking_type"] is None
-    untouched = autonomy_projection(db.get_project(first))
+    untouched = autonomy_projection(reporter.get_project(first))
     assert untouched["phase"] == "needs_decision"
     assert untouched["decision_id"] == first * 10
 
@@ -508,6 +794,7 @@ def test_portfolio_distinguishes_every_status(tmp_path: Path) -> None:
         options=[{"option": "a", "impact": "x"}, {"option": "b", "impact": "y"}],
     )
     reporter.plan(approving, criteria=CRITERIA)
+    reporter.begin_increment(approving, criterion_id="auth")
     reporter.report_approval_required(
         approving,
         approval_request_id=72,
@@ -517,11 +804,16 @@ def test_portfolio_distinguishes_every_status(tmp_path: Path) -> None:
     )
     reporter.plan(blocked, criteria=CRITERIA)
     reporter.report_blocked(blocked, reason="toolchain missing")
+    complete_root = Path(db.get_project(complete_id)["canonical_path"])
     reporter.plan(complete_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
-    reporter.complete_criterion(complete_id, "auth", verification=fresh_verification(), commit=head)
-    reporter.complete_mvp(complete_id, final_verification=fresh_verification())
+    complete_planned_criterion(reporter, complete_id, complete_root, head, "auth")
+    reporter.complete_mvp(
+        complete_id, final_verification=verification_for(complete_root, head)
+    )
 
-    status = portfolio_status(db.list_projects())
+    status = portfolio_status(
+        [reporter.get_project(project["id"]) for project in db.list_projects()]
+    )
 
     assert status["totals"] == {
         "scaffold_verified": 1,
