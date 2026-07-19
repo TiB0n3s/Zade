@@ -25,7 +25,18 @@ from .db import KernelDatabase, utc_now
 from .devtools import DevToolsHandlers, allowed_commands
 from .evals import EvalService
 from .experiments import ExperimentService
-from .anthropic_client import AnthropicError, AnthropicNotConfigured
+from .anthropic_build import AnthropicBuildModelClient
+from .anthropic_client import (
+    AnthropicClient,
+    AnthropicError,
+    AnthropicNotConfigured,
+    AnthropicPolicyError,
+)
+from .build_assessment import BuildAssessmentService
+from .build_budget import BuildBudgetService
+from .build_routing import BuildRouter
+from .build_service import BuildService
+from .build_store import BuildStore
 from .channel_auth import ChannelAuth, ChannelAuthError, parse_bind_command
 from .founder import FounderService
 from .strategy_review import StrategyReviewService
@@ -35,6 +46,7 @@ from .research import ResearchService
 from .roles import RolePassService
 from .delegation import DelegationService
 from .coding_agent import CodingAgentService
+from .egress import EgressPolicy
 from .inventory import ModelInventoryService
 from .screen import ScreenService
 from .models import (
@@ -60,6 +72,9 @@ from .models import (
     BackupCreateRequest,
     BackupRetentionRequest,
     BrowserRunRequest,
+    BuildAssessRequest,
+    BuildLeaseApproveRequest,
+    BuildLeaseDenyRequest,
     ResearchDaydreamRequest,
     ResearchRunRequest,
     RolePassRequest,
@@ -286,12 +301,61 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     coding_agent = CodingAgentService(
         config=cfg, db=db, ollama=ollama, inventory=inventory, notifier=bus
     )
+    build_store = BuildStore(db)
+    build_budget = BuildBudgetService(
+        build_store,
+        cfg.build.anthropic_pricing.snapshot(),
+        warning_percent=cfg.build.warning_percent,
+    )
+    build_router = BuildRouter(
+        lease_lookup=build_store.get_active_lease,
+        cloud_enabled=(
+            cfg.build.enabled
+            and cfg.anthropic.enabled
+            and cfg.ollama.provider_policy != "local_only"
+        ),
+        pricing_current=cfg.build.anthropic_pricing.is_current,
+    )
+    anthropic_build_transport = AnthropicClient(
+        cfg.anthropic, provider_policy=cfg.ollama.provider_policy
+    )
+
+    def build_cloud_agent_factory(session_id: int, authorize_egress: Any) -> CodingAgentService:
+        model_client = AnthropicBuildModelClient(
+            session_id=session_id,
+            budget=build_budget,
+            sdk_client=anthropic_build_transport.sdk_client(),
+            authorize_egress=authorize_egress,
+            provider_overhead_tokens=cfg.build.provider_overhead_tokens,
+        )
+        return CodingAgentService(
+            config=cfg,
+            db=db,
+            ollama=ollama,
+            model_client=model_client,
+            inventory=inventory,
+            notifier=bus,
+        )
+
+    build_service = BuildService(
+        config=cfg,
+        db=db,
+        assessor=BuildAssessmentService(local_client=ollama),
+        store=build_store,
+        budget=build_budget,
+        router=build_router,
+        local_coding_agent=coding_agent,
+        cloud_coding_agent_factory=build_cloud_agent_factory,
+        egress_policy=EgressPolicy.from_config(cfg),
+        typed_confirmation_phrase=authority.summary()["typed_confirmation_phrase"],
+    )
     delegation = DelegationService(
         config=cfg,
         db=db,
         founder=founder,
         work_queue=work_queue,
         coding_agent=coding_agent,
+        build_service=build_service,
     )
     delegation.register_into(handlers)
     # Let the chat runtime route founder build commands ("build this out for me")
@@ -366,6 +430,11 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     app.state.research = research
     app.state.roles = roles
     app.state.delegation = delegation
+    app.state.build = build_service
+    app.state.build_store = build_store
+    app.state.build_budget = build_budget
+    app.state.build_router = build_router
+    app.state.anthropic_build_transport = anthropic_build_transport
     app.state.screen = screen
     app.state.surfacing = surfacing
     app.state.bus = bus
@@ -1034,7 +1103,17 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     # ---- Swarm: delegation ----
     @app.get("/delegation/status")
     def delegation_status() -> dict[str, Any]:
-        return delegation.status()
+        recent = build_service.list_sessions(limit=5)
+        return delegation.status() | {
+            "build": {
+                "enabled": cfg.build.enabled,
+                "provider": "anthropic",
+                "model": cfg.build.anthropic_pricing.model,
+                "pricing_current": cfg.build.anthropic_pricing.is_current(),
+                "active_session_count": build_store.count_sessions(status="active"),
+                "recent_sessions": recent,
+            }
+        }
 
     @app.post("/delegation/brief")
     def delegation_brief(payload: DelegationBriefRequest) -> dict[str, Any]:
@@ -1060,6 +1139,83 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # ---- Governed build sessions ----
+    def require_build_session(session_id: int) -> None:
+        if build_store.get_session(session_id) is None:
+            raise HTTPException(
+                status_code=404, detail=f"Build session not found: {session_id}"
+            )
+
+    @app.post("/build/assess")
+    def build_assess(payload: BuildAssessRequest) -> dict[str, Any]:
+        if not cfg.build.enabled:
+            raise HTTPException(status_code=503, detail="Build sessions are disabled.")
+        try:
+            return build_service.prepare(
+                task=payload.task,
+                workspace=payload.workspace,
+                acceptance=payload.acceptance,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/build/sessions")
+    def build_sessions(limit: int = 20) -> dict[str, Any]:
+        if not 1 <= limit <= 100:
+            raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+        return {"sessions": build_service.list_sessions(limit=limit)}
+
+    @app.get("/build/sessions/{session_id}")
+    def build_session_status(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        return build_service.status(session_id)
+
+    @app.post("/build/sessions/{session_id}/approve")
+    def build_session_approve(
+        session_id: int, payload: BuildLeaseApproveRequest
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            result = build_service.approve(
+                session_id,
+                typed_phrase=payload.typed_confirmation,
+                tier=payload.tier,
+                audit_note=payload.audit_note,
+            )
+        except (AnthropicNotConfigured, AnthropicPolicyError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except AnthropicError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _raise_build_provider_error(result)
+        return result
+
+    @app.post("/build/sessions/{session_id}/deny")
+    def build_session_deny(
+        session_id: int, payload: BuildLeaseDenyRequest | None = None
+    ) -> dict[str, Any]:
+        require_build_session(session_id)
+        request = payload or BuildLeaseDenyRequest()
+        try:
+            return build_service.deny(
+                session_id, note=request.note, resolved_by=request.resolved_by
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/build/sessions/{session_id}/run")
+    def build_session_run(session_id: int) -> dict[str, Any]:
+        require_build_session(session_id)
+        try:
+            result = build_service.run(session_id)
+        except (AnthropicNotConfigured, AnthropicPolicyError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except AnthropicError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _raise_build_provider_error(result)
+        return result
 
     # ---- Screen awareness ----
     @app.get("/screen/status")
@@ -2638,6 +2794,27 @@ def _tool_error(data: Any) -> str:
     return "Request failed."
 
 
+def _raise_build_provider_error(payload: dict[str, Any]) -> None:
+    run = payload.get("run") if isinstance(payload.get("run"), dict) else payload
+    if run.get("route") != "cloud":
+        return
+    status = str(run.get("status") or "")
+    result = run.get("result") if isinstance(run.get("result"), dict) else {}
+    if status not in {"model_error", "capability_error"}:
+        return
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "error": str(result.get("error") or status)[:400],
+            "status": status,
+            "route": "cloud",
+            "session_id": session.get("id"),
+            "checkpoint_preserved": True,
+        },
+    )
+
+
 def _mutation_requires_token(cfg: KernelConfig, request: Request, token: str) -> bool:
     if not token or not cfg.security.protect_mutations:
         return False
@@ -3004,16 +3181,30 @@ def _inventory_payload(
         ],
     }
     inventory["delegation_layer"] = {
-        "routes": ["GET /delegation/status", "POST /delegation/brief", "POST /delegation/run"],
+        "routes": [
+            "GET /delegation/status",
+            "POST /delegation/brief",
+            "POST /delegation/run",
+            "POST /build/assess",
+            "GET /build/sessions",
+            "GET /build/sessions/{session_id}",
+            "POST /build/sessions/{session_id}/approve",
+            "POST /build/sessions/{session_id}/deny",
+            "POST /build/sessions/{session_id}/run",
+        ],
         "dispatch_action": "external.delegation.run",
+        "hybrid_assessment_action": "local.assessment.prepare",
         "enabled": cfg.delegation.enabled,
+        "engine": cfg.delegation.engine,
+        "build_enabled": cfg.build.enabled,
         "auto_invoke": cfg.delegation.auto_invoke,
         "daily_budget": cfg.delegation.daily_budget,
         "operating_rules": [
-            "The frontier half of the swarm: Zade packages a scoped brief and hands heavy work OUT to a configured external agent (Claude Code/Codex), then captures the artifact — it does not try to BE the agent.",
-            "Invoking an external agent is an L3 external action. Auto-invoke runs it without asking up to the daily budget; past that it requires the typed confirmation phrase.",
-            "With no agent command configured, delegation is brief-only (prepare-not-send) and can never invoke.",
-            "Artifacts are filed as delegated-work evidence — a sourced external claim, never native certainty.",
+            "Hybrid builds assess complexity locally before any cloud client is constructed or any paid request is authorized.",
+            "Routine coding, repository discovery, tools, tests, and verification stay on Zade's local Ollama coding agent.",
+            "Eligible Anthropic turns require a typed project lease, lease-scoped source-code egress, and a worst-case reservation under token, dollar, turn, and time ceilings.",
+            "Cloud failures never retry automatically, fall back to another paid provider, or enlarge the approved lease.",
+            "Build checkpoints, immutable usage events, cache categories, route reasons, and upgrade requests survive restart in SQLite.",
         ],
     }
     inventory["screen_layer"] = {

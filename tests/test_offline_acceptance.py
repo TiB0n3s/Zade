@@ -227,6 +227,20 @@ def test_offline_acceptance_all_operations_are_loopback_local(
     assert dispatch["changed_files"] == ["calc.py"]
     assert (workspace / "calc.py").read_text(encoding="utf-8") == "def add(a, b):\n    return a + b\n"
 
+    # 8. build-session assessment stays local and stops at lease approval.
+    assessed = client.post(
+        "/build/assess",
+        json={
+            "task": "Add authentication to the calculator API",
+            "workspace": str(workspace),
+            "acceptance": "Local tests pass",
+        },
+    )
+    assert assessed.status_code == 200, assessed.text
+    assert assessed.json()["session"]["phase"] == "approval"
+    assert assessed.json()["usage"]["actual_microdollars"] == 0
+    assert assessed.json()["approval_request_id"]
+
     # ---- the proof ----
     hosts = {r["base_url"] for r in transport.requests}
     assert hosts == {"http://127.0.0.1:11434"}, hosts

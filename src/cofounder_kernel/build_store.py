@@ -143,6 +143,19 @@ class BuildStore:
             ).fetchall()
         return [_session_from_row(row) for row in rows]
 
+    def count_sessions(self, *, status: str | None = None) -> int:
+        with self.database.connect() as connection:
+            if status is None:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS count FROM build_sessions"
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS count FROM build_sessions WHERE status = ?",
+                    (status,),
+                ).fetchone()
+        return int(row["count"] if row else 0)
+
     def checkpoint(
         self,
         session_id: int,

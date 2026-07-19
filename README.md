@@ -22,6 +22,13 @@ python -m venv .venv
 .\scripts\start.ps1
 ```
 
+Install the optional Anthropic SDK only on a machine that will run approved
+hybrid build leases:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,cloud]"
+```
+
 Then open:
 
 ```text
@@ -137,16 +144,18 @@ server-side guarantee), whether the Claude Code compatibility bridge is
 active, installed models, and the provider/model of the most recent request.
 The UI sidebar shows the same truth as a LOCAL/CLOUD indicator.
 
-Delegated builds default to the **native local coding agent**
-(`[delegation] engine = "native"`): Zade's own bounded tool loop on the local
-model — build profile as the system message, real workspace-confined tools
-(list/read/search/edit/run tests/git), every execution audited. Claude Code is
-not required for local coding. `engine = "bridge"` runs the configured CLI as
-a *local compatibility bridge*: under a local policy its subprocess environment
-is sanitized to the loopback Ollama Anthropic-compatible API
-(`ANTHROPIC_BASE_URL=http://127.0.0.1:11434`, `ANTHROPIC_AUTH_TOKEN=ollama`,
-API key stripped, explicit local model). There is no automatic fallback
-between engines.
+Delegated builds can use the **native local coding agent**
+(`[delegation] engine = "native"`) or the governed hybrid engine
+(`engine = "hybrid"`). Both use Zade's bounded workspace-confined tool loop for
+repository discovery, edits, commands, tests, Git inspection, and verification.
+Hybrid first performs a zero-paid-token local assessment and recommends a small,
+medium, or large lease. Only explicitly eligible task slices can reach Anthropic,
+and only after typed approval of project, model, expiration, token, dollar, and
+turn ceilings. Each cloud send reserves its worst-case cost; failures never
+retry against a paid model, fall back to another provider, or enlarge the lease.
+`engine = "bridge"` remains a local compatibility bridge to the loopback Ollama
+Anthropic-compatible API. Claude Code is not required for native or hybrid
+execution.
 
 Cloud speech engines (`[voice]` Deepgram/ElevenLabs) and approved web-research
 fetches are external **data** tools under their own permission gates; they are
@@ -245,6 +254,15 @@ POST /approval-requests/{request_id}/deny
 POST /work/items/{item_id}/approve
 POST /work/items/{item_id}/deny
 POST /work/items/{item_id}/dispatch
+GET  /delegation/status
+POST /delegation/brief
+POST /delegation/run
+POST /build/assess
+GET  /build/sessions
+GET  /build/sessions/{session_id}
+POST /build/sessions/{session_id}/approve
+POST /build/sessions/{session_id}/deny
+POST /build/sessions/{session_id}/run
 GET  /trading-bot/status
 GET  /trading-bot/safe-ops-checks
 GET  /trading-bot/deep-thought-replacement

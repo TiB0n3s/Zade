@@ -127,6 +127,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `365701e` 2026-07-18 - feat: orchestrate approved hybrid builds
 - `9efb717` 2026-07-18 - feat: add budgeted Anthropic build adapter
 - `075c481` 2026-07-18 - refactor: make coding model provider neutral
 - `27efc28` 2026-07-18 - feat: route build work local first
@@ -138,7 +139,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `5d6684e` 2026-07-18 - chore: ignore local worktrees
 - `341143f` 2026-07-18 - docs: plan token-budgeted build delegation
 - `b9a03eb` 2026-07-18 - docs: design token-budgeted build delegation
-- `d90b5b5` 2026-07-18 - Skills integrations
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

@@ -112,6 +112,17 @@ def test_assessment_and_checkpoint_json_round_trip(tmp_path: Path) -> None:
     assert restored.unknowns == sample_assessment().unknowns
 
 
+def test_session_counts_are_not_limited_by_recent_listing(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    first = store.create_session(sample_assessment())
+    store.create_session(sample_assessment())
+    store.checkpoint(first.id, phase="complete", checkpoint={"done": True})
+
+    assert len(store.list_sessions(limit=1)) == 1
+    assert store.count_sessions() == 2
+    assert store.count_sessions(status="active") == 1
+
+
 def test_only_one_active_lease_can_exist_for_a_session(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     session = store.create_session(sample_assessment())

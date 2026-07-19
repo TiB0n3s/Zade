@@ -384,6 +384,23 @@ class DelegationQueueRequest(BaseModel):
     directed: bool = False
 
 
+class BuildAssessRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=4000)
+    workspace: str = Field(min_length=1, max_length=1000)
+    acceptance: str = Field(default="", max_length=4000)
+
+
+class BuildLeaseApproveRequest(BaseModel):
+    typed_confirmation: str = Field(min_length=1, max_length=200)
+    tier: str | None = Field(default=None, pattern="^(small|medium|large)$")
+    audit_note: str = Field(default="", max_length=1000)
+
+
+class BuildLeaseDenyRequest(BaseModel):
+    resolved_by: str = Field(default="founder", min_length=1, max_length=120)
+    note: str = Field(default="", max_length=1000)
+
+
 class ScreenCaptureRequest(BaseModel):
     snapshot: bool = False
 

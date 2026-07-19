@@ -333,6 +333,9 @@ class BuildService:
         blocked_checkpoint = {
             **session.checkpoint,
             "route": decision.route,
+            "route_history": _append_route(
+                session.checkpoint, "local" if local_continued else decision.route
+            ),
             "route_reasons": list(decision.reasons),
             "route_blockers": list(decision.blockers),
             "blocked_local_continuation": local_continued,
@@ -363,7 +366,12 @@ class BuildService:
             "assessment": _assessment_dict(assessment),
             "session": _session_dict(session),
             "lease": _lease_dict(lease) if lease else None,
+            "recommended_limits": asdict(
+                self.config.build.limits(assessment.recommended_tier)
+            ),
             "usage": _usage_dict(lease, usage_events),
+            "usage_events": [_usage_event_dict(item) for item in usage_events],
+            "route_counts": _route_counts(session.checkpoint),
             "approval_request_id": approval.id if approval else None,
             "upgrade_request_id": self._pending_upgrade_id(session_id),
         }
@@ -412,6 +420,7 @@ class BuildService:
         checkpoint = {
             **session.checkpoint,
             "route": decision.route,
+            "route_history": _append_route(session.checkpoint, decision.route),
             "route_reasons": list(decision.reasons),
             "route_blockers": list(decision.blockers),
             "result": _result_summary(result),
@@ -475,6 +484,9 @@ class BuildService:
         )
         checkpoint["upgrade_request_id"] = upgrade_id
         checkpoint["route"] = "founder"
+        checkpoint["route_history"] = _append_route(
+            checkpoint, "local" if local_continued else "founder"
+        )
         checkpoint["route_blockers"] = ["lease_exhausted"]
         updated = self.store.checkpoint(
             session.id, phase="implementation", checkpoint=checkpoint
@@ -686,6 +698,10 @@ def _lease_dict(lease: BuildLease | None) -> dict[str, Any] | None:
 def _usage_dict(lease: BuildLease | None, events: Sequence[Any]) -> dict[str, Any]:
     if lease is None:
         return {
+            "authorized_input_tokens": 0,
+            "authorized_output_tokens": 0,
+            "authorized_microdollars": 0,
+            "authorized_cloud_turns": 0,
             "actual_input_tokens": 0,
             "actual_output_tokens": 0,
             "actual_microdollars": 0,
@@ -693,11 +709,22 @@ def _usage_dict(lease: BuildLease | None, events: Sequence[Any]) -> dict[str, An
             "reserved_output_tokens": 0,
             "reserved_microdollars": 0,
             "cloud_turns": 0,
+            "remaining_input_tokens": 0,
+            "remaining_output_tokens": 0,
+            "remaining_microdollars": 0,
+            "remaining_cloud_turns": 0,
             "cache_write_5m_tokens": 0,
             "cache_write_1h_tokens": 0,
             "cache_read_tokens": 0,
         }
+    committed_input = lease.actual_input_tokens + lease.reserved_input_tokens
+    committed_output = lease.actual_output_tokens + lease.reserved_output_tokens
+    committed_cost = lease.actual_microdollars + lease.reserved_microdollars
     return {
+        "authorized_input_tokens": lease.limits.input_tokens,
+        "authorized_output_tokens": lease.limits.output_tokens,
+        "authorized_microdollars": lease.limits.dollar_micro,
+        "authorized_cloud_turns": lease.limits.cloud_turns,
         "actual_input_tokens": lease.actual_input_tokens,
         "actual_output_tokens": lease.actual_output_tokens,
         "actual_microdollars": lease.actual_microdollars,
@@ -705,9 +732,53 @@ def _usage_dict(lease: BuildLease | None, events: Sequence[Any]) -> dict[str, An
         "reserved_output_tokens": lease.reserved_output_tokens,
         "reserved_microdollars": lease.reserved_microdollars,
         "cloud_turns": lease.cloud_turns,
+        "remaining_input_tokens": max(0, lease.limits.input_tokens - committed_input),
+        "remaining_output_tokens": max(0, lease.limits.output_tokens - committed_output),
+        "remaining_microdollars": max(0, lease.limits.dollar_micro - committed_cost),
+        "remaining_cloud_turns": max(0, lease.limits.cloud_turns - lease.cloud_turns),
         "cache_write_5m_tokens": sum(item.cache_write_5m_tokens for item in events),
         "cache_write_1h_tokens": sum(item.cache_write_1h_tokens for item in events),
         "cache_read_tokens": sum(item.cache_read_tokens for item in events),
+    }
+
+
+def _append_route(checkpoint: dict[str, Any], route: str) -> list[str]:
+    history = [
+        str(item)
+        for item in checkpoint.get("route_history", [])
+        if str(item) in {"local", "cloud", "founder"}
+    ]
+    history.append(route)
+    return history[-100:]
+
+
+def _route_counts(checkpoint: dict[str, Any]) -> dict[str, int]:
+    history = checkpoint.get("route_history", [])
+    return {
+        route: sum(1 for item in history if item == route)
+        for route in ("local", "cloud", "founder")
+    }
+
+
+def _usage_event_dict(event: Any) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "lease_id": event.lease_id,
+        "request_id": event.request_id,
+        "turn_number": event.turn_number,
+        "status": event.status,
+        "input_tokens": event.input_tokens,
+        "cache_write_5m_tokens": event.cache_write_5m_tokens,
+        "cache_write_1h_tokens": event.cache_write_1h_tokens,
+        "cache_read_tokens": event.cache_read_tokens,
+        "output_tokens": event.output_tokens,
+        "reserved_microdollars": event.reserved_microdollars,
+        "settled_microdollars": event.settled_microdollars,
+        "provider": event.pricing.provider,
+        "model": event.pricing.model,
+        "pricing_review_after": event.pricing.review_after,
+        "created_at": event.created_at,
+        "settled_at": event.settled_at,
     }
 
 
