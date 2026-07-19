@@ -394,3 +394,47 @@ def test_fresh_context_verifier_failure_prevents_task_advancement(tmp_path: Path
     assert result["status"] == "failed"
     assert result["result"]["status"] == "verifier_rejected"
     assert "does not satisfy" in result["error"]
+
+
+def test_local_retry_receives_previous_verifier_findings(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = make_store(tmp_path)
+    session = create_session(store, workspace)
+    store.create_task(
+        session.id,
+        phase="requirements",
+        kind=BuildTaskKind.AGENT,
+        title="Write requirements",
+        payload={"route": "local", "instructions": "Define testable criteria"},
+        idempotency_key="requirements-retry",
+        max_attempts=2,
+    )
+    agent = FakeAgent(
+        result={
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "changed_files": [".zade/build/requirements.md"],
+            "auto_verification": {"ok": None, "mode": "none"},
+            "verifier_review": {
+                "verdict": "fail",
+                "notes": "requirements.md: installation and launch criteria are missing",
+            },
+        }
+    )
+    orchestrator = BuildOrchestrator(
+        store=store,
+        planner=BuildPlanner(store=store, toolchains=ToolchainRegistry()),
+        router=make_router(store),
+        local_agent=agent,
+    )
+
+    first = orchestrator.run_next(session.id)
+    second = orchestrator.run_next(session.id)
+
+    assert first["status"] == "failed"
+    assert second["status"] == "failed"
+    retry_prompt = agent.calls[1]["task"]
+    assert "Previous failed attempt" in retry_prompt
+    assert "installation and launch criteria are missing" in retry_prompt

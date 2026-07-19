@@ -406,10 +406,12 @@ class BuildOrchestrator:
             return executor(task, assessment)
         if task.kind in {BuildTaskKind.AGENT, BuildTaskKind.REVIEW}:
             instructions = str(task.payload.get("instructions") or "").strip()
+            retry_feedback = self._retry_feedback(task)
             return self.local_agent.run(
                 task=(
                     f"{task.title}\n\nProduct objective: {assessment.task}"
                     + (f"\n\nTask instructions: {instructions}" if instructions else "")
+                    + retry_feedback
                 ),
                 workspace=assessment.workspace,
                 context=self._task_context(task, assessment),
@@ -421,6 +423,36 @@ class BuildOrchestrator:
             "status": "handler_unavailable",
             "error": f"No executor is configured for {task.kind.value} tasks",
         }
+
+    def _retry_feedback(self, task: BuildTask) -> str:
+        if task.attempt_count < 1:
+            return ""
+        previous = next(
+            (
+                run
+                for run in reversed(self.store.list_task_runs(task_id=task.id))
+                if run.status in {BuildTaskStatus.FAILED, BuildTaskStatus.INTERRUPTED}
+            ),
+            None,
+        )
+        if previous is None:
+            return ""
+        details: list[str] = []
+        for value in (
+            previous.error,
+            str((previous.result.get("verifier_review") or {}).get("notes") or ""),
+            str((previous.result.get("auto_verification") or {}).get("output") or ""),
+        ):
+            clean = value.strip()
+            if clean and clean not in details:
+                details.append(clean)
+        if not details:
+            details.append(f"Previous attempt ended with status {previous.status.value}.")
+        rendered = "\n\n".join(details)
+        return (
+            "\n\nPrevious failed attempt evidence (repair these exact issues; do not "
+            f"repeat the same result):\n{rendered[:4000]}"
+        )
 
     @staticmethod
     def _apply_evidence_gate(
