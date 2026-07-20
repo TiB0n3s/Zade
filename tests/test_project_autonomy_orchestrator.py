@@ -56,6 +56,14 @@ class FakePlanner:
         return self.result
 
 
+class RaisingPlanner:
+    def __init__(self, error: ValueError):
+        self.error = error
+
+    def plan(self, project: dict[str, Any]) -> MvpPlanResult:
+        raise self.error
+
+
 class FakeDelegation:
     def __init__(self, dispatches: list[dict[str, Any]] | None = None):
         self.dispatches = list(dispatches or [])
@@ -256,6 +264,85 @@ def test_unplanned_project_is_planned_before_first_increment(tmp_path: Path) -> 
     assert result["criterion_id"] == "mvp-one"
     assert planner.calls == [project_id]
     assert reporter.state(project_id)["plan_revision"] == "plan-revision"
+
+
+def test_invalid_planner_dependency_becomes_a_durable_block(tmp_path: Path) -> None:
+    orchestrator, reporter, db, config, _ = make_services(tmp_path)
+    project_id, _root = make_project(db, config, "The Dark Index", priority="normal")
+    orchestrator.planner = RaisingPlanner(
+        ValueError(
+            "Criterion mvp-cloud-backup-mvp depends on unknown criterion "
+            "mvp-account-creation."
+        )
+    )
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "blocked"
+    assert "depends on unknown criterion" in result["reason"]
+    assert reporter.state(project_id)["phase"] == "blocked"
+
+
+def test_repeated_planning_decision_is_blocked_without_a_new_work_item(
+    tmp_path: Path,
+) -> None:
+    repeated_decision = {
+        "question": "Should the MVP stick to the current native ABIs?",
+        "recommendation": "Stick to the current ABIs.",
+        "options": [
+            {
+                "option": "Stick to current ABIs",
+                "impact": "Keeps the existing native integration contracts.",
+            },
+            {
+                "option": "Introduce a new ABI layer",
+                "impact": "Changes the native integration contracts.",
+            },
+        ],
+    }
+    planner = FakePlanner(
+        MvpPlanResult(
+            criteria=[],
+            external_boundaries=[],
+            source_hash="repeated-decision",
+            plan_revision="repeated-decision-plan",
+            needs_decision=repeated_decision,
+        )
+    )
+    orchestrator, reporter, db, config, _delegation = make_services(
+        tmp_path, planner=planner
+    )
+    project_id, _root = make_project(db, config, "Same Ground", priority="normal")
+    db.append_project_event(
+        project_id,
+        event_type="decision_applied",
+        detail="Stick to current ABIs.",
+        metadata={"decision_id": 41},
+    )
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "blocked"
+    assert "already resolved" in result["reason"]
+    assert reporter.state(project_id)["phase"] == "blocked"
+    assert [item for item in db.list_work_items() if item.kind == "founder_decision"] == []
+    blocked_events = [
+        event
+        for event in db.list_project_events(project_id)
+        if event["event_type"] == "build_blocked"
+    ]
+    assert len(blocked_events) == 1
+    assert blocked_events[0]["metadata"]["criterion_id"] is None
+    with db.connect() as conn:
+        outbox = conn.execute(
+            "SELECT body FROM project_autonomy_outbox WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+    assert outbox is not None
+    assert (
+        '"question": "Should the MVP stick to the current native ABIs?"'
+        in outbox["body"]
+    )
 
 
 def test_two_urgent_projects_claim_concurrently_but_never_twice_each(tmp_path: Path) -> None:

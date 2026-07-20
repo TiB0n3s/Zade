@@ -269,15 +269,50 @@ class ProjectAutonomyOrchestrator:
         if not state.get("mvp_criteria"):
             planning_project = dict(project)
             planning_metadata = dict(project.get("metadata") or {})
-            planning_metadata["planner_founder_answers"] = [
+            founder_answers = [
                 str(event.get("detail") or "")
                 for event in reversed(self.db.list_project_events(project_id, limit=100))
                 if event.get("event_type") == "decision_applied"
                 and str(event.get("detail") or "").strip()
             ]
+            planning_metadata["planner_founder_answers"] = founder_answers
             planning_project["metadata"] = planning_metadata
-            planned = self.planner.plan(planning_project)
+            try:
+                planned = self.planner.plan(planning_project)
+            except ValueError as exc:
+                reason = f"Local MVP planner returned an invalid plan: {exc}"
+                self.reporter.report_blocked(
+                    project_id,
+                    reason=reason,
+                    verification_output=str(exc),
+                    attempts=1,
+                    needed="correct the documented MVP plan and wake project autonomy",
+                )
+                return {"status": "blocked", "project_id": project_id, "reason": reason}
             if planned.needs_decision is not None:
+                if self._decision_repeats_accepted_answer(
+                    planned.needs_decision, founder_answers
+                ):
+                    reason = (
+                        "Local MVP planner repeated a founder decision that was already resolved."
+                    )
+                    self.reporter.report_blocked(
+                        project_id,
+                        reason=reason,
+                        verification_output=json.dumps(
+                            planned.needs_decision, indent=2, sort_keys=True
+                        ),
+                        attempts=1,
+                        needed=(
+                            "correct the local MVP planner to honor accepted founder answers "
+                            "and wake project autonomy"
+                        ),
+                    )
+                    return {
+                        "status": "blocked",
+                        "project_id": project_id,
+                        "reason": reason,
+                    }
                 decision_id = self._file_decision(
                     project,
                     planned.needs_decision,
@@ -529,6 +564,57 @@ class ProjectAutonomyOrchestrator:
                 "approval_request_id": approval_id,
             }
         return None
+
+    def _decision_repeats_accepted_answer(
+        self,
+        decision: dict[str, Any],
+        answers: list[str],
+    ) -> bool:
+        stopwords = {
+            "and",
+            "are",
+            "for",
+            "from",
+            "into",
+            "its",
+            "should",
+            "that",
+            "the",
+            "this",
+            "to",
+            "use",
+            "with",
+        }
+
+        def normalized_tokens(value: Any) -> set[str]:
+            return {
+                token
+                for token in re.findall(r"[a-z0-9]+", str(value or "").casefold())
+                if len(token) >= 3 and token not in stopwords
+            }
+
+        decision_parts: list[Any] = [
+            decision.get("question"),
+            decision.get("recommendation"),
+        ]
+        for option in decision.get("options") or []:
+            if isinstance(option, dict):
+                decision_parts.extend(option.values())
+            else:
+                decision_parts.append(option)
+        decision_tokens = set().union(
+            *(normalized_tokens(part) for part in decision_parts)
+        )
+        if not decision_tokens:
+            return False
+        for answer in answers:
+            answer_tokens = normalized_tokens(answer)
+            if len(answer_tokens) < 2:
+                continue
+            overlap = answer_tokens & decision_tokens
+            if len(overlap) >= 2 and len(overlap) / len(answer_tokens) >= 0.75:
+                return True
+        return False
 
     def _file_decision(
         self,
