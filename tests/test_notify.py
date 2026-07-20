@@ -11,6 +11,7 @@ from cofounder_kernel.db import KernelDatabase
 from cofounder_kernel.notify import NotificationBus
 from cofounder_kernel.notify import _in_quiet_hours
 from cofounder_kernel.ollama import OllamaClient
+from cofounder_kernel.project_autonomy import ProjectAutonomyReporter
 
 
 def fake_health(self: OllamaClient) -> dict:
@@ -104,6 +105,94 @@ def test_telegram_callback_uses_bus_dedupe_and_hourly_rate_limit(tmp_path: Path)
     assert first_telegram["status"] == "delivered"
     assert limited_telegram["status"] == "suppressed"
     assert limited_telegram["detail"] == "rate_limited"
+
+
+def test_project_autonomy_outbox_retries_quiet_hours_then_delivers_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db = KernelDatabase(tmp_path / "kernel.sqlite")
+    db.migrate()
+    root = tmp_path / "project-intake" / "Same Ground"
+    root.mkdir(parents=True)
+    project_id = db.upsert_project(
+        canonical_path=str(root),
+        name="Same Ground",
+        product_type="mobile_application",
+        distribution_targets=["google_play", "apple_app_store_eventual"],
+        lifecycle_state="verified",
+        repo_fingerprint="fp",
+        metadata={},
+    )
+    decision_id, _created = db.enqueue_work_item(
+        kind="founder_decision",
+        title="Choose storage",
+        detail="Choose the local database.",
+        action="project.decision.resolve",
+        target="Same Ground",
+        permission_tier="L1_MEMORY_WRITE",
+        metadata={"workspace": str(root.resolve()), "project_id": project_id},
+        unique_key="decision:same-ground:storage",
+    )
+    bus = NotificationBus(db=db)
+    sent: list[str] = []
+
+    def deliver(text: str):
+        sent.append(text)
+        return SimpleNamespace(status="delivered", detail="founder notified")
+
+    bus.set_telegram_sender(deliver)
+    bus.update_channel(
+        "telegram", {"quiet_start": "22:00", "quiet_end": "07:00"}
+    )
+    monkeypatch.setattr(notify_module, "_local_hhmm", lambda: "23:30")
+    reporter = ProjectAutonomyReporter(db=db, bus=bus)
+    reporter.plan(project_id, criteria=[{"id": "mvp-1", "title": "Core flow"}])
+    reporter.begin_increment(project_id, criterion_id="mvp-1")
+
+    reporter.report_needs_decision(
+        project_id,
+        decision_id=decision_id,
+        question="Which local database should the app use?",
+        recommendation="SQLite",
+        options=[
+            {"option": "SQLite", "impact": "stays local"},
+            {"option": "Realm", "impact": "adds a dependency"},
+        ],
+    )
+
+    with db.connect() as conn:
+        waiting = conn.execute(
+            "SELECT * FROM project_autonomy_outbox WHERE project_id = ?", (project_id,)
+        ).fetchone()
+        conn.execute(
+            "UPDATE project_autonomy_outbox SET next_attempt_at = ? WHERE id = ?",
+            ("2000-01-01T00:00:00+00:00", waiting["id"]),
+        )
+    assert waiting["status"] == "retry"
+    assert waiting["attempts"] == 1
+    assert sent == []
+
+    bus.update_channel("telegram", {"quiet_start": "", "quiet_end": ""})
+    delivered = reporter.deliver_due_notifications()
+    again = reporter.deliver_due_notifications()
+
+    assert delivered == {"seen": 1, "delivered": 1, "retried": 0}
+    assert again == {"seen": 0, "delivered": 0, "retried": 0}
+    assert len(sent) == 1
+    assert "Open Zade" in sent[0]
+    assert "Reply exactly" not in sent[0]
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM project_autonomy_outbox WHERE project_id = ?", (project_id,)
+        ).fetchone()
+    assert row["status"] == "delivered"
+    assert row["attempts"] == 2
+    event = next(
+        item
+        for item in db.list_project_events(project_id)
+        if item["event_type"] == "decision_requested"
+    )
+    assert event["work_item_id"] == decision_id
 
 
 def test_dedupe_rate_limit_and_severity_rules(tmp_path: Path, monkeypatch) -> None:
@@ -248,7 +337,7 @@ def test_surfacing_brief_announces_through_the_bus(tmp_path: Path, monkeypatch) 
     assert "need founder attention" in notifications.json()["items"][0]["title"]
 
 
-def test_force_channels_bypasses_min_severity_but_not_enablement(tmp_path: Path) -> None:
+def test_producers_cannot_bypass_channel_severity_or_enablement(tmp_path: Path) -> None:
     db = KernelDatabase(tmp_path / "kernel.sqlite")
     db.migrate()
     bus = NotificationBus(db=db)
@@ -262,25 +351,23 @@ def test_force_channels_bypasses_min_severity_but_not_enablement(tmp_path: Path)
     bus.update_channel("telegram", {"quiet_start": "", "quiet_end": ""})
 
     gated = bus.notify(topic="project.mvp_complete", title="MVP done", body="a", severity="info")
-    forced = bus.notify(
+    warning = bus.notify(
         topic="project.mvp_complete",
         title="MVP done",
         body="b",
-        severity="info",
+        severity="warning",
         dedupe_key="project:1:mvp:abc",
-        force_channels=("telegram",),
     )
     bus.update_channel("telegram", {"enabled": False})
     disabled = bus.notify(
         topic="project.mvp_complete",
         title="MVP done",
         body="c",
-        severity="info",
+        severity="warning",
         dedupe_key="project:2:mvp:def",
-        force_channels=("telegram",),
     )
 
     assert [d["channel"] for d in gated["deliveries"]] == ["ui"]
-    assert {d["channel"] for d in forced["deliveries"]} == {"ui", "telegram"}
+    assert {d["channel"] for d in warning["deliveries"]} == {"ui", "telegram"}
     assert len(sent) == 1
     assert [d["channel"] for d in disabled["deliveries"]] == ["ui"]

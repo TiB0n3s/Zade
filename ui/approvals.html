@@ -25,6 +25,8 @@
     .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .history { display: grid; gap: 10px; }
+    .decision-list { display: grid; gap: 12px; }
+    .decision-card { border-left: 3px solid var(--z-accent); }
     .empty { text-align: center; }
     .error { white-space: pre-wrap; }
     @media (max-width: 1060px) {
@@ -128,6 +130,17 @@
         <div class="sub" style="margin:8px 0;">Actions the local runtime can actually dispatch once approved or directly commanded by you. An action outside this list can be queued and evaluated by authority, but has nothing to execute it.</div>
         <div class="list" id="handlersList" style="margin-top:8px;"></div>
       </details>
+    </section>
+
+    <section class="panel" style="grid-column: 1 / -1;">
+      <div class="toolbar">
+        <div>
+          <h2 style="margin:0;">Project Decisions</h2>
+          <div class="sub">Answer consequential project questions here. Telegram only tells you that a decision is waiting.</div>
+        </div>
+        <span class="pill" id="decisionCount">Loading</span>
+      </div>
+      <div class="decision-list" id="decisionList"></div>
     </section>
 
     <section>
@@ -257,16 +270,22 @@
       }
     }
 
-    let state = { items: [], summary: {}, training: [] };
+    let state = { items: [], summary: {}, training: [], decisions: [] };
 
     async function load() {
       const status = byId('statusFilter').value;
       const query = status ? '?status=' + encodeURIComponent(status) + '&limit=50' : '?limit=50';
-      const [consoleData, trainingData] = await Promise.all([
+      const [consoleData, trainingData, workData] = await Promise.all([
         api('/approval-console' + query),
-        api('/approval-training-events?limit=25')
+        api('/approval-training-events?limit=25'),
+        api('/work/queue?status=approval_required&limit=100')
       ]);
-      state = { items: consoleData.items || [], summary: consoleData.summary || {}, training: trainingData.items || [] };
+      state = {
+        items: (consoleData.items || []).filter((item) => !(((item.work_item || {}).metadata || {}).project_autonomy)),
+        summary: consoleData.summary || {},
+        training: trainingData.items || [],
+        decisions: (workData.items || []).filter((item) => item.kind === 'founder_decision' && (item.metadata || {}).project_autonomy)
+      };
       render();
     }
 
@@ -275,7 +294,66 @@
       byId('loadedAt').textContent = new Date().toLocaleTimeString();
       byId('approvalList').innerHTML = state.items.length ? state.items.map(renderApproval).join('') : '<div class="empty">No approval requests in this view.</div>';
       byId('trainingEvents').innerHTML = state.training.length ? state.training.map(renderTraining).join('') : '<div class="empty">No training events yet.</div>';
+      byId('decisionCount').textContent = `${state.decisions.length} waiting`;
+      byId('decisionList').innerHTML = state.decisions.length
+        ? state.decisions.map(renderDecision).join('')
+        : '<div class="empty">No project decisions are waiting.</div>';
       wireActions();
+      wireDecisionActions();
+    }
+
+    function renderDecision(item) {
+      const metadata = item.metadata || {};
+      const question = metadata.founder_question || {};
+      const options = Array.isArray(question.options) ? question.options : [];
+      const optionHtml = options.length
+        ? '<ul>' + options.map((option) => `<li>${esc(typeof option === 'object' ? (option.option || option.label || JSON.stringify(option)) : option)}</li>`).join('') + '</ul>'
+        : '';
+      return `
+        <article class="card decision-card" data-decision-card="${esc(item.id)}">
+          <div class="topline">
+            <div>
+              <div class="wants">${esc(question.question || item.title || 'Project decision')}</div>
+              <div class="detail">${esc(item.detail || '')}</div>
+            </div>
+            <span class="pill needs_decision">Needs decision</span>
+          </div>
+          ${question.recommendation ? `<div><strong>Recommendation:</strong> ${esc(question.recommendation)}</div>` : ''}
+          ${optionHtml}
+          <label>Your answer
+            <textarea rows="3" data-decision-answer placeholder="State the decision Zade should use to continue."></textarea>
+          </label>
+          <div class="actions">
+            <button class="ok" data-decision-resolve="${esc(item.id)}">Submit decision</button>
+          </div>
+          <div class="error" data-decision-error></div>
+        </article>
+      `;
+    }
+
+    function wireDecisionActions() {
+      document.querySelectorAll('[data-decision-resolve]').forEach((button) => {
+        button.addEventListener('click', () => withBusy(button, 'Submitting…', async () => {
+          const id = button.dataset.decisionResolve;
+          const card = document.querySelector(`[data-decision-card="${CSS.escape(String(id))}"]`);
+          const answer = card.querySelector('[data-decision-answer]').value.trim();
+          const error = card.querySelector('[data-decision-error]');
+          error.textContent = '';
+          if (!answer) {
+            error.textContent = 'Enter the decision Zade should use.';
+            return;
+          }
+          try {
+            await api(`/project-intake/decisions/${encodeURIComponent(id)}/resolve`, {
+              method: 'POST',
+              body: JSON.stringify({ resolved_by: 'founder.ui', note: answer })
+            });
+            await load();
+          } catch (err) {
+            error.textContent = err.message;
+          }
+        }));
+      });
     }
 
     function renderApproval(item) {

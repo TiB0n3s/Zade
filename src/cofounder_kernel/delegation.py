@@ -650,10 +650,9 @@ class DelegationService:
     ) -> dict[str, Any]:
         """File the agent's blocking question as a founder decision item.
 
-        The decision item carries a resume brief: clearing it re-runs the
-        delegation with the question surfaced, and an answer given in chat
-        routes as a fresh directed command. Either way the work is queued, not
-        lost — and nothing was guessed at."""
+        The decision item carries a resume brief. The founder answers it in
+        Zade's Project Decisions panel; Telegram only announces that it is
+        waiting. The work remains queued and nothing is guessed at."""
         question_info = result.get("founder_question") or {}
         question = str(question_info.get("question") or "").strip() or "The agent needs your direction to continue."
         options = [str(o) for o in (question_info.get("options") or []) if str(o).strip()]
@@ -661,8 +660,8 @@ class DelegationService:
         resume_brief = (
             f"{brief}\n\n## Founder decision\n"
             f"The previous run stopped on this question:\n{question}{options_block}\n"
-            "If the founder cleared this item without a written answer, choose the safest "
-            "reasonable option, state which you chose, and complete the task end to end."
+            "Use the founder's written UI answer, state how it was applied, and complete "
+            "the task end to end."
         )
         decision_item_id = None
         error = ""
@@ -673,8 +672,8 @@ class DelegationService:
                 detail=(
                     f"The delegated run for '{task}' is paused on a decision.\n\n"
                     f"Question: {question}{options_block}\n\n"
-                    "Clearing this item resumes the run (best safe judgment); answering in chat "
-                    "with direction starts a fresh directed run."
+                    "Answer this item in Zade's Project Decisions panel to resume the run. "
+                    "Telegram notifications cannot resolve it."
                 ),
                 action=DELEGATION_RUN_ACTION,
                 target="native-coding-agent",

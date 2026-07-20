@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable
 
 from .authority import AuthorityDecision, AuthorityPolicy, AuthorityRequest
 from .db import ApprovalRequest, KernelDatabase
@@ -26,6 +26,15 @@ class ApprovalService:
         self.handlers = handlers
         self.authority = authority
         self.typed_confirmation_phrase = typed_confirmation_phrase
+        self._resolution_listeners: list[Callable[[dict[str, Any]], None]] = []
+
+    def add_resolution_listener(
+        self, listener: Callable[[dict[str, Any]], None]
+    ) -> None:
+        if not callable(listener):
+            raise ValueError("Approval resolution listener must be callable.")
+        if listener not in self._resolution_listeners:
+            self._resolution_listeners.append(listener)
 
     def list_requests(self, *, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         return [_request_to_dict(item) for item in self.db.list_approval_requests(status=status, limit=limit)]
@@ -110,8 +119,22 @@ class ApprovalService:
         note: str = "",
         dispatch: bool = False,
         typed_confirmation: str = "",
+        decision_answer: bool = False,
     ) -> dict[str, Any]:
         request = self._load_open_request(request_id)
+        source_item = (
+            self.db.get_work_item(request.source_id)
+            if request.source_type == "work_item" and request.source_id
+            else None
+        )
+        if (
+            source_item is not None
+            and _is_project_autonomy_decision(source_item)
+            and not decision_answer
+        ):
+            raise ValueError(
+                "Founder project decisions must be answered in the Project Decisions panel."
+            )
         if request.permission_tier in NON_APPROVABLE_TIERS or request.authority_decision == "deny":
             raise ValueError("Denied or irreversible boundaries cannot be approved through this endpoint.")
         if dispatch:
@@ -160,6 +183,13 @@ class ApprovalService:
                 "training_event_id": training_event_id,
             },
         )
+        self._emit_resolution(
+            resolved,
+            approved=True,
+            resolved_by=resolved_by,
+            note=note,
+            work_item=work_item,
+        )
         return {
             "request": _request_to_dict(resolved),
             "work_item": work_item,
@@ -176,6 +206,15 @@ class ApprovalService:
 
     def deny_request(self, request_id: int, *, resolved_by: str = "founder", note: str = "") -> dict[str, Any]:
         request = self._load_open_request(request_id)
+        source_item = (
+            self.db.get_work_item(request.source_id)
+            if request.source_type == "work_item" and request.source_id
+            else None
+        )
+        if source_item is not None and _is_project_autonomy_decision(source_item):
+            raise ValueError(
+                "Founder project decisions must be answered in the Project Decisions panel."
+            )
         resolved = self.db.resolve_approval_request(
             request_id,
             status="denied",
@@ -205,6 +244,13 @@ class ApprovalService:
                 "note": note,
                 "training_event_id": training_event_id,
             },
+        )
+        self._emit_resolution(
+            resolved,
+            approved=False,
+            resolved_by=resolved_by,
+            note=note,
+            work_item=work_item,
         )
         return {
             "request": _request_to_dict(resolved),
@@ -397,6 +443,39 @@ class ApprovalService:
         request = self._request_for_work_item(item_id)
         return self.edit_request(request.id, **kwargs)
 
+    def _emit_resolution(
+        self,
+        request: ApprovalRequest,
+        *,
+        approved: bool,
+        resolved_by: str,
+        note: str,
+        work_item: dict[str, Any] | None,
+    ) -> None:
+        payload = {
+            "approval_request_id": request.id,
+            "approved": bool(approved),
+            "status": "approved" if approved else "denied",
+            "resolved_by": resolved_by,
+            "note": note,
+            "source_type": request.source_type,
+            "source_id": request.source_id,
+            "request": _request_to_dict(request),
+            "work_item": work_item,
+        }
+        for listener in tuple(self._resolution_listeners):
+            try:
+                listener(payload)
+            except Exception as exc:  # noqa: BLE001 - canonical approval is already committed
+                self.db.audit(
+                    actor="approval",
+                    action="approval.resolution_listener",
+                    target=str(request.id),
+                    permission_tier="L1_MEMORY_WRITE",
+                    status="error",
+                    details={"error": str(exc)[:400], "resolution": payload["status"]},
+                )
+
     def approve_work_item(
         self,
         item_id: int,
@@ -405,6 +484,7 @@ class ApprovalService:
         note: str = "",
         dispatch: bool = False,
         typed_confirmation: str = "",
+        decision_answer: bool = False,
     ) -> dict[str, Any]:
         request = self._request_for_work_item(item_id)
         return self.approve_request(
@@ -413,6 +493,7 @@ class ApprovalService:
             note=note,
             dispatch=dispatch,
             typed_confirmation=typed_confirmation,
+            decision_answer=decision_answer,
         )
 
     def deny_work_item(self, item_id: int, *, resolved_by: str = "founder", note: str = "") -> dict[str, Any]:
@@ -709,6 +790,15 @@ def _is_founder_decision(item: Any) -> bool:
     approval, so dispatching the resume never demands the typed phrase."""
     metadata = getattr(item, "metadata", {}) or {}
     return getattr(item, "kind", "") == "founder_decision" or bool(metadata.get("founder_decision"))
+
+
+def _is_project_autonomy_decision(item: Any) -> bool:
+    metadata = getattr(item, "metadata", {}) or {}
+    project_id = metadata.get("project_id")
+    return _is_founder_decision(item) and (
+        bool(metadata.get("project_autonomy"))
+        or (not isinstance(project_id, bool) and isinstance(project_id, int) and project_id > 0)
+    )
 
 
 def _has_founder_implied_approval(item: Any) -> bool:

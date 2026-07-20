@@ -206,6 +206,74 @@ class ProjectAutonomyStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def mark_outbox_delivered(
+        self, outbox_id: int, *, notification_id: int | None
+    ) -> dict[str, Any]:
+        outbox_id = _positive_id(outbox_id, "outbox_id")
+        notification_id = (
+            _positive_id(notification_id, "notification_id")
+            if notification_id is not None
+            else None
+        )
+        now = utc_now()
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE project_autonomy_outbox
+                SET updated_at = ?, status = 'delivered', attempts = attempts + 1,
+                    notification_id = ?, delivered_at = ?, last_error = ''
+                WHERE id = ? AND status IN ('pending', 'retry')
+                """,
+                (now, notification_id, now, outbox_id),
+            )
+            if int(cur.rowcount or 0) != 1:
+                raise ValueError(f"Pending autonomy outbox row not found: {outbox_id}")
+            row = conn.execute(
+                "SELECT * FROM project_autonomy_outbox WHERE id = ?", (outbox_id,)
+            ).fetchone()
+        return dict(row)
+
+    def reschedule_outbox(
+        self,
+        outbox_id: int,
+        *,
+        error: str,
+        notification_id: int | None = None,
+        delay_seconds: int = 300,
+    ) -> dict[str, Any]:
+        outbox_id = _positive_id(outbox_id, "outbox_id")
+        notification_id = (
+            _positive_id(notification_id, "notification_id")
+            if notification_id is not None
+            else None
+        )
+        if isinstance(delay_seconds, bool) or int(delay_seconds) < 0:
+            raise ValueError("delay_seconds must be a non-negative integer.")
+        now_dt = datetime.now(UTC)
+        next_attempt_at = (now_dt + timedelta(seconds=int(delay_seconds))).isoformat()
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE project_autonomy_outbox
+                SET updated_at = ?, status = 'retry', attempts = attempts + 1,
+                    next_attempt_at = ?, last_error = ?, notification_id = ?
+                WHERE id = ? AND status IN ('pending', 'retry')
+                """,
+                (
+                    now_dt.isoformat(),
+                    next_attempt_at,
+                    str(error or "delivery did not complete")[:400],
+                    notification_id,
+                    outbox_id,
+                ),
+            )
+            if int(cur.rowcount or 0) != 1:
+                raise ValueError(f"Pending autonomy outbox row not found: {outbox_id}")
+            row = conn.execute(
+                "SELECT * FROM project_autonomy_outbox WHERE id = ?", (outbox_id,)
+            ).fetchone()
+        return dict(row)
+
     @staticmethod
     def _require_project(conn: sqlite3.Connection, project_id: int) -> None:
         row = conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -352,6 +420,13 @@ def _optional_positive_id(value: Any, field: str) -> int | None:
         raise ValueError(f"{field} must be a positive integer or null.") from exc
     if parsed <= 0:
         raise ValueError(f"{field} must be a positive integer or null.")
+    return parsed
+
+
+def _positive_id(value: Any, field: str) -> int:
+    parsed = _optional_positive_id(value, field)
+    if parsed is None:
+        raise ValueError(f"{field} must be a positive integer.")
     return parsed
 
 

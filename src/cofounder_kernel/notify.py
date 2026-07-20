@@ -109,15 +109,12 @@ class NotificationBus:
         source: str = "kernel",
         dedupe_key: str = "",
         metadata: dict[str, Any] | None = None,
-        force_channels: tuple[str, ...] | list[str] = (),
     ) -> dict[str, Any]:
         """Route one notification through channel rules.
 
-        force_channels lets a producer push a single milestone (e.g. an
-        info-severity MVP completion) past a channel's standing min_severity
-        WITHOUT changing that configuration. Every other founder rule —
-        channel enabled, quiet hours, rate limit, recipient whitelist, and
-        dedupe — still governs; force never creates a new egress path.
+        Producers cannot bypass channel configuration. Severity thresholds,
+        enablement, quiet hours, rate limits, recipient whitelists, and dedupe
+        are all founder-controlled policy at this boundary.
         """
         severity = severity.strip().lower()
         if severity not in SEVERITY_RANK:
@@ -147,14 +144,12 @@ class NotificationBus:
             metadata=metadata,
         )
         delivered_any = False
-        forced = {str(name) for name in force_channels}
         for channel in self.list_channels():
             outcome, detail = self._deliver(
                 channel,
                 severity=severity,
                 title=title,
                 body=body,
-                force=channel["channel"] in forced,
             )
             if outcome is None:
                 continue  # channel disabled or below severity: not part of this notification's story
@@ -270,11 +265,10 @@ class NotificationBus:
         severity: str,
         title: str,
         body: str,
-        force: bool = False,
     ) -> tuple[str | None, str]:
         if not channel["enabled"]:
             return None, ""
-        if not force and SEVERITY_RANK[severity] < SEVERITY_RANK.get(channel["min_severity"], 0):
+        if SEVERITY_RANK[severity] < SEVERITY_RANK.get(channel["min_severity"], 0):
             return None, ""
         if severity != "critical" and _in_quiet_hours(_local_hhmm(), channel["quiet_start"], channel["quiet_end"]):
             return "suppressed", "quiet_hours"

@@ -285,7 +285,7 @@ def test_reconciliation_scan_does_not_restart_a_completed_scaffold(tmp_path: Pat
     assert len(delegation.calls) == 1
 
 
-def test_needs_decision_blocks_project_and_notifies_with_resume_command(tmp_path: Path) -> None:
+def test_needs_decision_blocks_project_and_notifies_to_open_zade(tmp_path: Path) -> None:
     bus = FakeBus()
     service, config, _db = make_service(tmp_path, delegation=BlockingDelegation(), bus=bus)
     project = config.paths.project_intake_dir / "Same Ground"
@@ -300,7 +300,8 @@ def test_needs_decision_blocks_project_and_notifies_with_resume_command(tmp_path
     assert stored["metadata"]["decision_id"] == 91
     assert stored["metadata"]["founder_question"]["question"].startswith("Which local")
     assert bus.calls[0]["topic"] == "project.decision_required"
-    assert "decision 91: <your answer>" in bus.calls[0]["body"]
+    assert "Open Zade" in bus.calls[0]["body"]
+    assert "decision 91: <your answer>" not in bus.calls[0]["body"]
     assert bus.calls[0]["dedupe_key"] == "project:1:decision:91"
 
 
@@ -334,6 +335,12 @@ def test_resolve_decision_injects_answer_into_paused_work_item_and_resumes(tmp_p
         repo_fingerprint=project["repo_fingerprint"],
         metadata={**project["metadata"], "decision_id": decision_id},
     )
+    listener_calls = []
+    service.set_decision_listener(
+        lambda project_id, answer, context: listener_calls.append(
+            (project_id, answer, context)
+        )
+    )
 
     resumed = service.resolve_decision(decision_id, "Use SQLite and keep all data local.")
     updated_item = db.get_work_item(decision_id)
@@ -345,10 +352,22 @@ def test_resolve_decision_injects_answer_into_paused_work_item_and_resumes(tmp_p
         (
             decision_id,
             {
-                "resolved_by": "founder.telegram",
+                "resolved_by": "founder.ui",
                 "note": "Use SQLite and keep all data local.",
                 "dispatch": True,
                 "typed_confirmation": "",
+                "decision_answer": True,
+            },
+        )
+    ]
+    assert listener_calls == [
+        (
+            project["id"],
+            "Use SQLite and keep all data local.",
+            {
+                "decision_id": decision_id,
+                "resolved_by": "founder.ui",
+                "work_item_id": decision_id,
             },
         )
     ]

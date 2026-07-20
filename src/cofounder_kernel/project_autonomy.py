@@ -459,37 +459,35 @@ class ProjectAutonomyReporter:
             f"{index}. {item['option']} — impact: {item['impact']}"
             for index, item in enumerate(cleaned, start=1)
         )
-        notification_id = self._notify(
-            topic="project.decision_required",
-            title=f"{project['name']} needs a decision",
-            body=(
+        outbox = {
+            "topic": "project.decision_required",
+            "title": f"{project['name']} needs a decision",
+            "body": (
                 f"Question: {question}\n"
                 f"Recommendation: {recommendation}\n\n"
                 f"Options:\n{options_block}\n\n"
-                f"Reply exactly: decision {decision}: <your answer>"
+                "Open Zade's Approvals & Actions screen to answer. "
+                "Telegram is notification-only for project decisions."
             ),
-            severity="warning",
-            dedupe_key=f"project:{project['id']}:decision:{decision}",
-            metadata={
-                "project_id": project["id"],
-                "decision_id": decision,
-                "criterion_id": state.get("current_criterion_id"),
-            },
-        )
-        state["last_notification_id"] = notification_id or state.get("last_notification_id")
-        return self._transition(
+            "severity": "warning",
+            "dedupe_key": f"project:{project['id']}:decision:{decision}",
+        }
+        updated = self._transition(
             project,
             state,
             event={
                 "event_type": "decision_requested",
                 "detail": question,
+                "work_item_id": decision if self.db.get_work_item(decision) else None,
                 "metadata": {
                     "phase": "needs_decision",
                     "decision_id": decision,
-                    "notification_id": notification_id,
                 },
             },
+            outbox=outbox,
         )
+        self.deliver_due_notifications()
+        return self.get_project(updated["id"])
 
     def report_approval_required(
         self,
@@ -515,10 +513,6 @@ class ProjectAutonomyReporter:
                 f"Authority boundary must be one of: {', '.join(APPROVAL_BOUNDARIES)}"
             )
         self._require_transition(state, "approval_required", operation="request approval")
-        hint = approve_hint.strip() or (
-            f"Approve: POST /work/items/{approval}/approve — "
-            f"Deny: POST /work/items/{approval}/deny"
-        )
         state.update(
             {
                 "phase": "approval_required",
@@ -529,39 +523,39 @@ class ProjectAutonomyReporter:
                 "next_action": f"waiting for founder approval {approval}",
             }
         )
-        notification_id = self._notify(
-            topic="project.approval_required",
-            title=f"{project['name']} needs founder approval",
-            body=(
+        outbox = {
+            "topic": "project.approval_required",
+            "title": f"{project['name']} needs founder approval",
+            "body": (
                 f"Proposed action: {action}\n"
                 f"Why approval is required: {reason}\n"
                 f"Authority boundary: {boundary}\n"
                 f"Approval request: {approval}\n\n"
-                f"{hint}"
+                "Open Zade's Approvals & Actions screen to approve or deny this request. "
+                "Telegram is notification-only for approvals."
             ),
-            severity="warning",
-            dedupe_key=f"project:{project['id']}:approval:{approval}",
-            metadata={
-                "project_id": project["id"],
-                "approval_request_id": approval,
-                "boundary": boundary,
-            },
-        )
-        state["last_notification_id"] = notification_id or state.get("last_notification_id")
-        return self._transition(
+            "severity": "warning",
+            "dedupe_key": f"project:{project['id']}:approval:{approval}",
+        }
+        updated = self._transition(
             project,
             state,
             event={
                 "event_type": "approval_requested",
                 "detail": action,
+                "approval_request_id": (
+                    approval if self.db.get_approval_request(approval) else None
+                ),
                 "metadata": {
                     "phase": "approval_required",
                     "boundary": boundary,
                     "approval_request_id": approval,
-                    "notification_id": notification_id,
                 },
             },
+            outbox=outbox,
         )
+        self.deliver_due_notifications()
+        return self.get_project(updated["id"])
 
     def report_blocked(
         self,
@@ -601,26 +595,20 @@ class ProjectAutonomyReporter:
                 "next_action": needed or "founder or tooling intervention required",
             }
         )
-        notification_id = self._notify(
-            topic="project.build_blocked",
-            title=f"{project['name']} build is blocked",
-            body=(
+        outbox = {
+            "topic": "project.build_blocked",
+            "title": f"{project['name']} build is blocked",
+            "body": (
                 f"Failed criterion: {criterion_title}\n"
                 f"Reason: {reason}\n"
                 f"Verification output: {verification_output.strip()[:600] or 'none captured'}\n"
                 f"Repair attempts: {int(attempts)}\n"
                 f"Needed next: {needed or 'founder direction'}"
             ),
-            severity=severity,
-            dedupe_key=f"project:{project['id']}:blocked:{criterion_id or 'project'}",
-            metadata={
-                "project_id": project["id"],
-                "criterion_id": criterion_id,
-                "attempts": int(attempts),
-            },
-        )
-        state["last_notification_id"] = notification_id or state.get("last_notification_id")
-        return self._transition(
+            "severity": severity,
+            "dedupe_key": f"project:{project['id']}:blocked:{criterion_id or 'project'}",
+        }
+        updated = self._transition(
             project,
             state,
             event={
@@ -631,10 +619,12 @@ class ProjectAutonomyReporter:
                     "criterion_id": criterion_id,
                     "attempts": int(attempts),
                     "severity": severity,
-                    "notification_id": notification_id,
                 },
             },
+            outbox=outbox,
         )
+        self.deliver_due_notifications()
+        return self.get_project(updated["id"])
 
     # ---- resumption ---------------------------------------------------------
 
@@ -796,23 +786,20 @@ class ProjectAutonomyReporter:
                 "next_action": "founder review; external release boundaries remain founder-approved",
             }
         )
-        notification_id = self._notify(
-            topic="project.mvp_complete",
-            title=f"{project['name']} MVP complete",
-            body=(
+        outbox = {
+            "topic": "project.mvp_complete",
+            "title": f"{project['name']} MVP complete",
+            "body": (
                 f"MVP criteria complete: {completed}/{len(criteria)}\n"
                 f"Final verification: {len(checks)} checks passed at {final_verification.get('checked_at')}\n"
                 f"Repository: {project['canonical_path']}\n"
                 f"Commit: {head}\n"
                 f"Remaining external boundaries: {'; '.join(boundaries) or 'none recorded'}"
             ),
-            severity="info",
-            dedupe_key=f"project:{project['id']}:mvp:{head}",
-            metadata={"project_id": project["id"], "commit": head, "criteria_total": len(criteria)},
-            force_channels=("telegram",),
-        )
-        state["last_notification_id"] = notification_id or state.get("last_notification_id")
-        return self._transition(
+            "severity": "info",
+            "dedupe_key": f"project:{project['id']}:mvp:{head}",
+        }
+        updated = self._transition(
             project,
             state,
             event={
@@ -822,11 +809,13 @@ class ProjectAutonomyReporter:
                     "phase": "mvp_complete",
                     "commit": head,
                     "checks": len(checks),
-                    "notification_id": notification_id,
                     "verification": final_verification,
                 },
             },
+            outbox=outbox,
         )
+        self.deliver_due_notifications()
+        return self.get_project(updated["id"])
 
     # ---- internals ----------------------------------------------------------
 
@@ -940,11 +929,88 @@ class ProjectAutonomyReporter:
                 return project
         return None
 
-    def _notify(self, **kwargs: Any) -> int | None:
+    def deliver_due_notifications(self, limit: int = 50) -> dict[str, int]:
+        rows = self.store.due_outbox(limit=limit)
+        result = {"seen": len(rows), "delivered": 0, "retried": 0}
         if self.bus is None:
+            return result
+        for row in rows:
+            notification: dict[str, Any] | None = None
+            try:
+                attempt = int(row.get("attempts") or 0) + 1
+                notification = self.bus.notify(
+                    topic=row["topic"],
+                    title=row["title"],
+                    body=row["body"],
+                    severity=row["severity"],
+                    source="project_autonomy",
+                    dedupe_key=f"autonomy-outbox:{row['id']}:attempt:{attempt}",
+                    metadata={
+                        "project_id": row["project_id"],
+                        "autonomy_outbox_id": row["id"],
+                        "producer_dedupe_key": row["dedupe_key"],
+                    },
+                )
+                raw_notification_id = _positive_int((notification or {}).get("id"))
+                notification_id = self._persisted_notification_id(raw_notification_id)
+                retry_reason = _notification_retry_reason(notification or {})
+                if retry_reason:
+                    delay_seconds = min(3600, 60 * (2 ** min(attempt, 5)))
+                    self.store.reschedule_outbox(
+                        row["id"],
+                        error=retry_reason,
+                        notification_id=notification_id,
+                        delay_seconds=delay_seconds,
+                    )
+                    result["retried"] += 1
+                    continue
+                delivered = self.store.mark_outbox_delivered(
+                    row["id"], notification_id=notification_id
+                )
+                result["delivered"] += 1
+                if notification_id is not None:
+                    project = self.get_project(int(row["project_id"]))
+                    state = self._state_for_project(project)
+                    state["last_notification_id"] = notification_id
+                    self._transition(
+                        project,
+                        state,
+                        event={
+                            "event_type": "notification_delivered",
+                            "detail": row["topic"],
+                            "notification_id": notification_id,
+                            "metadata": {
+                                "outbox_id": delivered["id"],
+                                "topic": row["topic"],
+                            },
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001 - the durable row must survive any adapter failure
+                notification_id = self._persisted_notification_id(
+                    _positive_int((notification or {}).get("id"))
+                    if isinstance(notification, dict)
+                    else None
+                )
+                try:
+                    self.store.reschedule_outbox(
+                        row["id"],
+                        error=f"{type(exc).__name__}: {exc}",
+                        notification_id=notification_id,
+                        delay_seconds=300,
+                    )
+                except ValueError:
+                    pass
+                result["retried"] += 1
+        return result
+
+    def _persisted_notification_id(self, notification_id: int | None) -> int | None:
+        if notification_id is None:
             return None
-        notification = self.bus.notify(source="project_autonomy", **kwargs)
-        return _positive_int((notification or {}).get("id"))
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM notifications WHERE id = ?", (notification_id,)
+            ).fetchone()
+        return notification_id if row is not None else None
 
 
 # ---- pure projection (no database access) -----------------------------------
@@ -1257,6 +1323,30 @@ def _normalized_path(path: Path) -> str:
     except OSError:
         resolved = path.absolute()
     return os.path.normcase(str(resolved))
+
+
+def _notification_retry_reason(notification: dict[str, Any]) -> str:
+    deliveries = notification.get("deliveries")
+    if isinstance(deliveries, list):
+        telegram = [
+            item
+            for item in deliveries
+            if isinstance(item, dict) and item.get("channel") == "telegram"
+        ]
+        if telegram:
+            incomplete = [item for item in telegram if item.get("status") != "delivered"]
+            if incomplete:
+                return "; ".join(
+                    str(item.get("detail") or item.get("status") or "telegram not delivered")
+                    for item in incomplete
+                )[:400]
+            return ""
+    status = str(notification.get("status") or "").strip().lower()
+    if status and status != "delivered":
+        return str(
+            notification.get("suppressed_reason") or f"notification status {status}"
+        )[:400]
+    return ""
 
 
 def _next_pending_action(state: dict[str, Any]) -> str:

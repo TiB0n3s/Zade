@@ -7,7 +7,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import KernelConfig
 from .db import KernelDatabase, utc_now
@@ -26,6 +26,7 @@ class ProjectIntakeService:
         delegation: Any | None = None,
         bus: Any | None = None,
         approvals: Any | None = None,
+        autonomy: Any | None = None,
     ):
         self.config = config
         self.db = db
@@ -33,7 +34,16 @@ class ProjectIntakeService:
         self.delegation = delegation
         self.bus = bus
         self.approvals = approvals
+        self.autonomy = autonomy
+        self._decision_listener: Callable[[int, str, dict[str, Any]], None] | None = None
         self.root = config.paths.project_intake_dir.resolve()
+
+    def set_decision_listener(
+        self, listener: Callable[[int, str, dict[str, Any]], None]
+    ) -> None:
+        if not callable(listener):
+            raise ValueError("Project decision listener must be callable.")
+        self._decision_listener = listener
 
     def scan(self, *, auto_run: bool = True) -> dict[str, Any]:
         if not self.config.project_intake.enabled:
@@ -162,66 +172,85 @@ class ProjectIntakeService:
         decision_id: int,
         answer: str,
         *,
-        resolved_by: str = "founder.telegram",
+        resolved_by: str = "founder.ui",
     ) -> dict[str, Any]:
         if not answer.strip():
             raise ValueError("Decision answer must not be empty.")
         if self.approvals is None:
             raise ValueError("Project decision approval service is unavailable.")
-        for project in self.db.list_projects(limit=500):
-            metadata = project.get("metadata") or {}
-            if int(metadata.get("decision_id") or 0) == int(decision_id):
-                item = self.db.get_work_item(decision_id)
-                if item is None or item.kind != "founder_decision":
-                    raise ValueError(f"Project decision work item not found: {decision_id}")
-                root = self._validated_project_root(project["canonical_path"])
-                item_workspace = Path(str(item.metadata.get("workspace") or "")).resolve()
-                if item_workspace != root:
-                    raise ValueError(
-                        f"Project decision {decision_id} does not belong to {project['name']}."
-                    )
-                clean_answer = answer.strip()
-                prior_brief = str(item.metadata.get("brief") or "").rstrip()
-                self.db.update_work_item_proposal(
-                    decision_id,
-                    metadata={
-                        "brief": (
-                            f"{prior_brief}\n\n## Founder answer\n{clean_answer}\n"
-                            "Continue the paused project build using this answer."
-                        ),
-                        "founder_answer": clean_answer,
-                        "founder_answered_by": resolved_by,
-                    },
-                )
-                self.db.append_project_event(
-                    project["id"],
-                    event_type="decision_resolved",
-                    detail=clean_answer,
-                    work_item_id=decision_id,
-                    metadata={"decision_id": decision_id, "resolved_by": resolved_by},
-                )
-                resumed = self.approvals.approve_work_item(
-                    decision_id,
-                    resolved_by=resolved_by,
-                    note=clean_answer,
-                    dispatch=True,
-                    typed_confirmation="",
-                )
-                dispatch = (
-                    resumed.get("dispatch_result")
-                    if isinstance(resumed.get("dispatch_result"), dict)
-                    else {}
-                )
-                manifest = load_project_manifest(root / "project.md")
-                route = {
-                    "item_id": decision_id,
-                    "status": "resumed",
-                    "auto_invoked": True,
-                    "dispatch": dispatch,
-                    "approval_dispatch": resumed.get("dispatch"),
-                }
-                return self._record_build_route(project, manifest, route)
-        raise ValueError(f"Project decision not found: {decision_id}")
+        item = self.db.get_work_item(decision_id)
+        if item is None or item.kind != "founder_decision":
+            raise ValueError(f"Project decision work item not found: {decision_id}")
+        raw_workspace = str(item.metadata.get("workspace") or "").strip()
+        if not raw_workspace:
+            raise ValueError(f"Project decision {decision_id} has no registered workspace.")
+        item_workspace = Path(raw_workspace).resolve()
+        project = None
+        project_id = _positive_int(item.metadata.get("project_id"))
+        if project_id is not None:
+            project = self.db.get_project(project_id)
+        if project is None:
+            project = self.db.find_project_by_path(str(item_workspace))
+        if project is None:
+            raise ValueError(f"Project decision not found: {decision_id}")
+        root = self._validated_project_root(project["canonical_path"])
+        if item_workspace != root:
+            raise ValueError(
+                f"Project decision {decision_id} does not belong to {project['name']}."
+            )
+        clean_answer = answer.strip()
+        prior_brief = str(item.metadata.get("brief") or "").rstrip()
+        self.db.update_work_item_proposal(
+            decision_id,
+            metadata={
+                "brief": (
+                    f"{prior_brief}\n\n## Founder answer\n{clean_answer}\n"
+                    "Continue the paused project build using this answer."
+                ),
+                "founder_answer": clean_answer,
+                "founder_answered_by": resolved_by,
+            },
+        )
+        self.db.append_project_event(
+            project["id"],
+            event_type="decision_resolved",
+            detail=clean_answer,
+            work_item_id=decision_id,
+            metadata={"decision_id": decision_id, "resolved_by": resolved_by},
+        )
+        resumed = self.approvals.approve_work_item(
+            decision_id,
+            resolved_by=resolved_by,
+            note=clean_answer,
+            dispatch=True,
+            typed_confirmation="",
+            decision_answer=True,
+        )
+        dispatch = (
+            resumed.get("dispatch_result")
+            if isinstance(resumed.get("dispatch_result"), dict)
+            else {}
+        )
+        manifest = load_project_manifest(root / "project.md")
+        route = {
+            "item_id": decision_id,
+            "status": "resumed",
+            "auto_invoked": True,
+            "dispatch": dispatch,
+            "approval_dispatch": resumed.get("dispatch"),
+        }
+        updated = self._record_build_route(project, manifest, route)
+        if self._decision_listener is not None:
+            self._decision_listener(
+                project["id"],
+                clean_answer,
+                {
+                    "decision_id": decision_id,
+                    "resolved_by": resolved_by,
+                    "work_item_id": decision_id,
+                },
+            )
+        return updated
 
     def _record_build_route(
         self,
@@ -241,6 +270,16 @@ class ProjectIntakeService:
             state = "blocked"
             question = dispatch.get("founder_question")
             question = question if isinstance(question, dict) else {}
+            if decision_id is not None and self.db.get_work_item(decision_id) is not None:
+                self.db.update_work_item_proposal(
+                    decision_id,
+                    metadata={
+                        "project_id": project["id"],
+                        "project_autonomy": True,
+                        "workspace": project["canonical_path"],
+                        "founder_question": question,
+                    },
+                )
             metadata_update.update(
                 {
                     "decision_id": decision_id,
@@ -274,12 +313,57 @@ class ProjectIntakeService:
             )[:400]
 
         updated = self._set_state(project, manifest, state, metadata_update)
-        if dispatch_status == "needs_decision" and decision_id is not None:
-            notification_id = self._notify_founder_decision(updated, decision_id, dispatch)
-        elif dispatch_status == "approval_required" and approval_request_id is not None:
-            notification_id = self._notify_approval_required(updated, approval_request_id)
-        elif verification_blocked:
-            notification_id = self._notify_build_blocked(updated)
+        boundary_reported = False
+        if self.autonomy is not None:
+            try:
+                if dispatch_status == "needs_decision" and decision_id is not None:
+                    question_info = dispatch.get("founder_question")
+                    question_info = question_info if isinstance(question_info, dict) else {}
+                    options = _autonomy_decision_options(question_info)
+                    autonomy_project = self.autonomy.report_needs_decision(
+                        project["id"],
+                        decision_id=decision_id,
+                        question=str(
+                            question_info.get("question")
+                            or "Which documented option should Zade use to continue?"
+                        ),
+                        recommendation=str(
+                            question_info.get("recommendation")
+                            or options[0]["option"]
+                        ),
+                        options=options,
+                    )
+                    notification_id = _positive_int(
+                        ((autonomy_project.get("metadata") or {}).get("autonomy") or {}).get(
+                            "last_notification_id"
+                        )
+                    )
+                    boundary_reported = True
+                elif verification_blocked:
+                    autonomy_project = self.autonomy.report_blocked(
+                        project["id"],
+                        reason=str(
+                            (updated.get("metadata") or {}).get("blocked_reason")
+                            or "scaffold verification did not pass"
+                        ),
+                        verification_output=str(dispatch.get("auto_verification") or "")[:600],
+                        needed="repair the local scaffold verification failure",
+                    )
+                    notification_id = _positive_int(
+                        ((autonomy_project.get("metadata") or {}).get("autonomy") or {}).get(
+                            "last_notification_id"
+                        )
+                    )
+                    boundary_reported = True
+            except ValueError:
+                boundary_reported = False
+        if not boundary_reported:
+            if dispatch_status == "needs_decision" and decision_id is not None:
+                notification_id = self._notify_founder_decision(updated, decision_id, dispatch)
+            elif dispatch_status == "approval_required" and approval_request_id is not None:
+                notification_id = self._notify_approval_required(updated, approval_request_id)
+            elif verification_blocked:
+                notification_id = self._notify_build_blocked(updated)
 
         self.db.append_project_event(
             project["id"],
@@ -309,7 +393,8 @@ class ProjectIntakeService:
             title=f"{project['name']} needs a decision",
             body=(
                 f"{question}{options_block}\n\n"
-                f"Reply exactly: decision {decision_id}: <your answer>"
+                "Open Zade's Approvals & Actions screen to answer. "
+                "Telegram is notification-only for project decisions."
             ),
             severity="warning",
             source="project_intake",
@@ -521,6 +606,37 @@ def parse_project_decision_reply(text: str) -> tuple[int, str] | None:
     if not answer:
         return None
     return int(match.group("decision_id")), answer
+
+
+def _autonomy_decision_options(question: dict[str, Any]) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    for raw in list(question.get("options") or [])[:3]:
+        if isinstance(raw, dict):
+            option = str(raw.get("option") or raw.get("label") or "").strip()
+            impact = str(raw.get("impact") or raw.get("description") or "").strip()
+        else:
+            option = str(raw or "").strip()
+            impact = "Selecting this option lets Zade continue the paused local build."
+        if option:
+            cleaned.append(
+                {
+                    "option": option,
+                    "impact": impact or "Uses this option for the documented MVP.",
+                }
+            )
+    if len(cleaned) < 2:
+        recommendation = str(question.get("recommendation") or "Use Zade's recommendation").strip()
+        cleaned = [
+            {
+                "option": recommendation,
+                "impact": "Continues with Zade's documented local-first recommendation.",
+            },
+            {
+                "option": "Pause and revise the project specification",
+                "impact": "Keeps the build paused until the written MVP is clarified.",
+            },
+        ]
+    return cleaned[:3]
 
 
 def _positive_int(value: Any) -> int | None:

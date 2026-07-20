@@ -539,6 +539,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     # Let the chat runtime route founder build commands ("build this out for me")
     # into a gated delegation brief instead of a text-only architecture outline.
     runtime.delegation = delegation
+    project_autonomy = ProjectAutonomyReporter(db=db, bus=bus)
     project_intake = ProjectIntakeService(
         config=cfg,
         db=db,
@@ -546,8 +547,30 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         delegation=delegation,
         bus=bus,
         approvals=approvals,
+        autonomy=project_autonomy,
     )
-    project_autonomy = ProjectAutonomyReporter(db=db, bus=bus)
+
+    def apply_project_decision(
+        project_id: int, answer: str, context: dict[str, Any]
+    ) -> None:
+        del project_id
+        project_autonomy.resume_after_decision(
+            int(context["decision_id"]), answer=answer
+        )
+
+    def apply_project_approval(resolution: dict[str, Any]) -> None:
+        try:
+            project_autonomy.resume_after_approval(
+                int(resolution["approval_request_id"]),
+                approved=bool(resolution["approved"]),
+                note=str(resolution.get("note") or ""),
+            )
+        except ValueError as exc:
+            if "No project is waiting on approval" not in str(exc):
+                raise
+
+    project_intake.set_decision_listener(apply_project_decision)
+    approvals.add_resolution_listener(apply_project_approval)
     screen = ScreenService(config=cfg, db=db)
 
     # Serving-boot maintenance. Skipped for read-only introspection builds so
@@ -2510,26 +2533,13 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         if channel == "telegram":
             project_decision = parse_project_decision_reply(text)
             if project_decision is not None:
-                decision_id, answer = project_decision
-                try:
-                    project = project_intake.resolve_decision(
-                        decision_id,
-                        answer,
-                        resolved_by="founder.telegram",
-                    )
-                except ValueError as exc:
-                    return {
-                        "status": "project_decision_failed",
-                        "authenticated": True,
-                        "reply": f"I could not resume that project decision: {exc}",
-                    }
+                decision_id, _answer = project_decision
                 return {
-                    "status": "project_decision_resolved",
+                    "status": "project_decision_requires_ui",
                     "authenticated": True,
-                    "project_id": project["id"],
                     "reply": (
-                        f"Decision recorded for {project['name']}. The build resumed; "
-                        f"current state: {project['lifecycle_state']}."
+                        f"Project decision {decision_id} must be answered in Zade. "
+                        "Open Zade's Approvals & Actions screen; Telegram is notification-only."
                     ),
                 }
 
@@ -4220,7 +4230,7 @@ def _inventory_payload(
             "Only real, registered direct-child project roots can receive build execution.",
             "Project manifests and durable project records are authoritative over stale historical build claims.",
             "Documentation-only intake can initialize Git and route an initial scaffold automatically.",
-            "Founder decisions are notified through the notification bus and explicit Telegram decision replies resume the paused work item.",
+            "Founder decisions are notified through the notification bus and resolved only in Zade's Approvals & Actions UI; Telegram is notification-only.",
         ],
     }
     inventory["screen_layer"] = {

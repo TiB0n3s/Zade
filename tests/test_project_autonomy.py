@@ -539,14 +539,20 @@ def test_valid_mvp_completion_emits_exactly_one_notification(tmp_path: Path) -> 
     assert len(calls) == 1
     call = calls[0]
     assert call["severity"] == "info"
-    assert call["dedupe_key"] == f"project:{project_id}:mvp:{head}"
+    assert call["dedupe_key"].startswith("autonomy-outbox:")
     assert "Same Ground" in call["title"]
     assert "MVP criteria complete: 2/2" in call["body"]
     assert "3 checks passed" in call["body"]
     assert str(root.resolve()) in call["body"]
     assert head in call["body"]
     assert "Google Play submission" in call["body"]
-    assert call.get("force_channels") == ("telegram",)
+    assert "force_channels" not in call
+    with db.connect() as conn:
+        outbox = conn.execute(
+            "SELECT * FROM project_autonomy_outbox WHERE project_id = ?", (project_id,)
+        ).fetchone()
+    assert outbox["dedupe_key"] == f"project:{project_id}:mvp:{head}"
+    assert outbox["status"] == "delivered"
     assert autonomy_projection(again)["mvp_complete"] is True
     events = [row["event_type"] for row in db.list_project_events(project_id)]
     assert events.count("mvp_completed") == 1
@@ -589,16 +595,17 @@ def test_needs_decision_notification_content_and_dedupe(tmp_path: Path) -> None:
     assert view["phase"] == "needs_decision"
     assert view["blocking_type"] == "decision"
     assert view["decision_id"] == 91
-    assert view["last_notification_id"] == 101
+    assert view["last_notification_id"] is None  # FakeBus IDs are not canonical notification rows.
     call = bus.topic_calls("project.decision_required")[0]
     assert call["severity"] == "warning"
-    assert call["dedupe_key"] == f"project:{project_id}:decision:91"
+    assert call["dedupe_key"].startswith("autonomy-outbox:")
     assert "Same Ground" in call["title"]
     assert "Which local database should the app use?" in call["body"]
     assert "Recommendation: SQLite" in call["body"]
     assert "1. SQLite — impact: zero-dependency, single-device only" in call["body"]
     assert "2. Realm — impact: sync-ready, adds a native dependency" in call["body"]
-    assert "Reply exactly: decision 91: <your answer>" in call["body"]
+    assert "Open Zade" in call["body"]
+    assert "Reply exactly" not in call["body"]
 
     with pytest.raises(ValueError, match="2-3 concrete options"):
         reporter.report_needs_decision(
@@ -631,14 +638,16 @@ def test_approval_required_notification_content_and_boundary(tmp_path: Path) -> 
     assert view["approval_request_id"] == 55
     call = bus.topic_calls("project.approval_required")[0]
     assert call["severity"] == "warning"
-    assert call["dedupe_key"] == f"project:{project_id}:approval:55"
+    assert call["dedupe_key"].startswith("autonomy-outbox:")
+    assert "Open Zade" in call["body"]
+    assert "POST /work/items" not in call["body"]
     assert "Same Ground" in call["title"]
     assert "Proposed action: Create a Google Play developer account" in call["body"]
     assert "Why approval is required:" in call["body"]
     assert "Authority boundary: external_account_creation" in call["body"]
     assert "Approval request: 55" in call["body"]
-    assert "/work/items/55/approve" in call["body"]
-    assert "/work/items/55/deny" in call["body"]
+    assert "/work/items/55/approve" not in call["body"]
+    assert "/work/items/55/deny" not in call["body"]
 
     with pytest.raises(ValueError, match="Authority boundary"):
         reporter.report_approval_required(
