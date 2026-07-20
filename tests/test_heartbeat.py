@@ -83,6 +83,7 @@ def make_heartbeat(
     chats: tuple[int, ...] = (42,),
     send: object = _DEFAULT,
     notify: FakeNotify | None = None,
+    project_reconcile=None,
 ) -> tuple[KernelHeartbeat, list[tuple[int, str]]]:
     sent: list[tuple[int, str]] = []
 
@@ -97,6 +98,7 @@ def make_heartbeat(
         telegram_running=lambda: running,
         telegram_chat_ids=lambda: list(chats),
         send_telegram=_send if send is _DEFAULT else send,  # type: ignore[arg-type]
+        project_reconcile=project_reconcile,
     )
     return hb, sent
 
@@ -284,3 +286,17 @@ def test_cadence_fresh_or_never_run_does_not_alert(tmp_path: Path) -> None:
     _insert_cadence_audit(db, age=timedelta(hours=2))
     hb.tick(in_window_today(minute=50))
     assert [n for n in notify.sent if n["title"] == "Cadence loop is stale"] == []
+
+
+def test_heartbeat_triggers_bounded_project_autonomy_reconciliation(tmp_path: Path) -> None:
+    db = make_db(tmp_path)
+    calls: list[str] = []
+    hb, _ = make_heartbeat(
+        make_config(brief=False),
+        db,
+        project_reconcile=lambda: calls.append("wake"),
+    )
+
+    hb.tick(in_window_today())
+
+    assert calls == ["wake"]

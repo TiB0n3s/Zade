@@ -26,6 +26,7 @@
     .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .history { display: grid; gap: 10px; }
     .decision-list { display: grid; gap: 12px; }
+    .autonomy-list { display: grid; gap: 12px; }
     .decision-card { border-left: 3px solid var(--z-accent); }
     .empty { text-align: center; }
     .error { white-space: pre-wrap; }
@@ -141,6 +142,17 @@
         <span class="pill" id="decisionCount">Loading</span>
       </div>
       <div class="decision-list" id="decisionList"></div>
+    </section>
+
+    <section class="panel" style="grid-column: 1 / -1;">
+      <div class="toolbar">
+        <div>
+          <h2 style="margin:0;">Autonomous Project Builds</h2>
+          <div class="sub">Live backend truth for documented MVP work. Pause, resume, and priority changes take effect through Zade here.</div>
+        </div>
+        <span class="pill" id="autonomyWorkerStatus">Loading</span>
+      </div>
+      <div class="autonomy-list" id="autonomyList"></div>
     </section>
 
     <section>
@@ -270,21 +282,25 @@
       }
     }
 
-    let state = { items: [], summary: {}, training: [], decisions: [] };
+    let state = { items: [], summary: {}, training: [], decisions: [], projects: [], autonomy: {} };
 
     async function load() {
       const status = byId('statusFilter').value;
       const query = status ? '?status=' + encodeURIComponent(status) + '&limit=50' : '?limit=50';
-      const [consoleData, trainingData, workData] = await Promise.all([
+      const [consoleData, trainingData, workData, portfolioData, autonomyData] = await Promise.all([
         api('/approval-console' + query),
         api('/approval-training-events?limit=25'),
-        api('/work/queue?status=approval_required&limit=100')
+        api('/work/queue?status=approval_required&limit=100'),
+        api('/project-intake/status'),
+        api('/project-intake/autonomy/status')
       ]);
       state = {
         items: (consoleData.items || []).filter((item) => !(((item.work_item || {}).metadata || {}).project_autonomy)),
         summary: consoleData.summary || {},
         training: trainingData.items || [],
-        decisions: (workData.items || []).filter((item) => item.kind === 'founder_decision' && (item.metadata || {}).project_autonomy)
+        decisions: (workData.items || []).filter((item) => item.kind === 'founder_decision' && (item.metadata || {}).project_autonomy),
+        projects: portfolioData.projects || [],
+        autonomy: autonomyData || {}
       };
       render();
     }
@@ -298,8 +314,85 @@
       byId('decisionList').innerHTML = state.decisions.length
         ? state.decisions.map(renderDecision).join('')
         : '<div class="empty">No project decisions are waiting.</div>';
+      byId('autonomyWorkerStatus').textContent = state.autonomy.enabled
+        ? `${state.autonomy.workers_alive || 0}/${state.autonomy.max_workers || 0} workers`
+        : 'Disabled';
+      byId('autonomyList').innerHTML = state.projects.length
+        ? state.projects.map(renderAutonomyProject).join('')
+        : '<div class="empty">No registered project-intake projects.</div>';
       wireActions();
       wireDecisionActions();
+      wireAutonomyActions();
+    }
+
+    function renderAutonomyProject(project) {
+      const autonomy = project.autonomy || {};
+      const completed = autonomy.mvp_criteria_completed || 0;
+      const total = autonomy.mvp_criteria_total || 0;
+      const paused = autonomy.paused === true;
+      return `
+        <article class="card" data-autonomy-project="${esc(project.id)}">
+          <div class="topline">
+            <div>
+              <div class="wants">${esc(project.name)}</div>
+              <div class="detail">${esc((project.product_type || 'project').replaceAll('_', ' '))} · MVP ${esc(completed)}/${esc(total)} · ${esc(autonomy.next_action || 'project intake')}</div>
+            </div>
+            <div class="pillrow">
+              <span class="pill ${esc(project.status || '')}">${esc(prettyLabel(project.status || 'intake'))}</span>
+              <span class="pill">${esc(prettyLabel(autonomy.phase || 'planning'))}</span>
+            </div>
+          </div>
+          ${autonomy.blocking_reason ? `<div class="error">${esc(autonomy.blocking_reason)}</div>` : ''}
+          ${autonomy.pause_reason ? `<div class="muted">Paused: ${esc(autonomy.pause_reason)}</div>` : ''}
+          <div class="actions">
+            <label style="min-width:150px;">Priority
+              <select data-autonomy-priority>
+                ${['urgent','high','normal','low'].map((priority) => `<option value="${priority}" ${priority === autonomy.priority ? 'selected' : ''}>${esc(prettyLabel(priority))}</option>`).join('')}
+              </select>
+            </label>
+            <button class="secondary" data-autonomy-save-priority>Save priority</button>
+            ${paused
+              ? '<button class="ok" data-autonomy-resume>Resume autonomous work</button>'
+              : '<button class="secondary" data-autonomy-pause>Pause</button>'}
+          </div>
+          <div class="error" data-autonomy-error></div>
+        </article>
+      `;
+    }
+
+    function wireAutonomyActions() {
+      document.querySelectorAll('[data-autonomy-project]').forEach((card) => {
+        const id = card.dataset.autonomyProject;
+        const error = card.querySelector('[data-autonomy-error]');
+        const save = card.querySelector('[data-autonomy-save-priority]');
+        if (save) save.addEventListener('click', () => withBusy(save, 'Saving…', async () => {
+          error.textContent = '';
+          try {
+            await api(`/project-intake/projects/${encodeURIComponent(id)}/autonomy/priority`, {
+              method: 'POST', body: JSON.stringify({ priority: card.querySelector('[data-autonomy-priority]').value })
+            });
+            await load();
+          } catch (err) { error.textContent = err.message; }
+        }));
+        const pause = card.querySelector('[data-autonomy-pause]');
+        if (pause) pause.addEventListener('click', () => withBusy(pause, 'Pausing…', async () => {
+          error.textContent = '';
+          try {
+            await api(`/project-intake/projects/${encodeURIComponent(id)}/autonomy/pause`, {
+              method: 'POST', body: JSON.stringify({ reason: 'Founder paused autonomy in Zade' })
+            });
+            await load();
+          } catch (err) { error.textContent = err.message; }
+        }));
+        const resume = card.querySelector('[data-autonomy-resume]');
+        if (resume) resume.addEventListener('click', () => withBusy(resume, 'Resuming…', async () => {
+          error.textContent = '';
+          try {
+            await api(`/project-intake/projects/${encodeURIComponent(id)}/autonomy/resume`, { method: 'POST', body: '{}' });
+            await load();
+          } catch (err) { error.textContent = err.message; }
+        }));
+      });
     }
 
     function renderDecision(item) {

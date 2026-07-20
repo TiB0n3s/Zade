@@ -196,6 +196,7 @@ def test_portfolio_status_endpoint_distinguishes_buckets(tmp_path: Path, monkeyp
     assert status["totals"]["scaffold_verified"] == 1
     assert status["totals"]["actively_building"] == 1
     assert status["totals"]["mvp_complete"] == 0
+    assert status["totals"]["paused"] == 0
     by_name = {item["name"]: item["status"] for item in status["projects"]}
     assert by_name["Same Ground"] == "scaffold_verified"
     assert by_name["The Dark Index"] == "actively_building"

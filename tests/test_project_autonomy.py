@@ -831,6 +831,7 @@ def test_portfolio_distinguishes_every_status(tmp_path: Path) -> None:
         "waiting_approval": 1,
         "blocked": 1,
         "mvp_complete": 1,
+        "paused": 0,
         "planned": 0,
         "ready_for_next_increment": 0,
         "intake": 0,

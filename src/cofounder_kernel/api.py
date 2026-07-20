@@ -93,6 +93,9 @@ from .models import (
     ApprovalDeferRequest,
     ApprovalEditRequest,
     ApprovalResolveRequest,
+    ProjectAutonomyPauseRequest,
+    ProjectAutonomyPriorityRequest,
+    ProjectAutonomyWakeRequest,
     ChannelConfirmRequest,
     ChannelEnrollRequest,
     ChannelMessageRequest,
@@ -205,6 +208,8 @@ from .ops import KernelOpsService
 from .prompts import PromptProfileRegistry
 from .project_intake import ProjectIntakeService, parse_project_decision_reply
 from .project_autonomy import ProjectAutonomyReporter
+from .project_autonomy_orchestrator import ProjectAutonomyOrchestrator
+from .project_mvp_planner import ProjectMvpPlanner
 from .actions import ActionPipelineService
 from .commitments import CommitmentLedger
 from .notify import NotificationBus
@@ -541,6 +546,14 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     runtime.delegation = delegation
     project_autonomy = ProjectAutonomyReporter(db=db, bus=bus)
     runtime.project_autonomy = project_autonomy
+    project_mvp_planner = ProjectMvpPlanner(config=cfg, ollama=ollama)
+    project_autonomy_orchestrator = ProjectAutonomyOrchestrator(
+        config=cfg,
+        db=db,
+        reporter=project_autonomy,
+        planner=project_mvp_planner,
+        delegation=delegation,
+    )
     project_intake = ProjectIntakeService(
         config=cfg,
         db=db,
@@ -554,18 +567,26 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     def apply_project_decision(
         project_id: int, answer: str, context: dict[str, Any]
     ) -> None:
-        del project_id
         project_autonomy.resume_after_decision(
             int(context["decision_id"]), answer=answer
+        )
+        project_autonomy_orchestrator.wake(
+            project_id, reason=f"founder resolved decision {context['decision_id']}"
         )
 
     def apply_project_approval(resolution: dict[str, Any]) -> None:
         try:
-            project_autonomy.resume_after_approval(
+            resumed = project_autonomy.resume_after_approval(
                 int(resolution["approval_request_id"]),
                 approved=bool(resolution["approved"]),
                 note=str(resolution.get("note") or ""),
             )
+            if bool(resolution["approved"]):
+                project = resumed.get("project") or {}
+                project_autonomy_orchestrator.wake(
+                    int(project["id"]),
+                    reason=f"founder approved boundary {resolution['approval_request_id']}",
+                )
         except ValueError as exc:
             if "No project is waiting on approval" not in str(exc):
                 raise
@@ -617,12 +638,24 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             execution_manager.recover()
         except Exception:
             log.exception("Durable build recovery failed during startup")
+        if cfg.project_intake.enabled and cfg.project_intake.autonomy_enabled:
+            try:
+                project_autonomy_orchestrator.recover()
+            except Exception:
+                log.exception("Project autonomy recovery failed during startup")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
-        execution_manager.shutdown(wait=False)
-        command_runner.cancel_all()
+        if cfg.project_intake.enabled and cfg.project_intake.autonomy_enabled:
+            project_autonomy_orchestrator.start()
+            if run_boot_maintenance:
+                project_autonomy_orchestrator.wake(reason="application startup")
+        try:
+            yield
+        finally:
+            project_autonomy_orchestrator.shutdown(wait=False)
+            execution_manager.shutdown(wait=False)
+            command_runner.cancel_all()
 
     app = FastAPI(
         title=f"{cfg.identity.name} Local AI Co-founder Kernel",
@@ -657,6 +690,8 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     app.state.delegation = delegation
     app.state.project_intake = project_intake
     app.state.project_autonomy = project_autonomy
+    app.state.project_mvp_planner = project_mvp_planner
+    app.state.project_autonomy_orchestrator = project_autonomy_orchestrator
     app.state.build = build_service
     app.state.build_store = build_store
     app.state.build_budget = build_budget
@@ -739,6 +774,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
                 "available": [item["id"] for item in runtime.available_prompt_profiles()],
             },
             "work_queue": db.work_queue_counts(),
+            "project_autonomy": project_autonomy_orchestrator.status(),
             "authority": {
                 "policy_version": authority.summary()["policy_version"],
                 "typed_confirmation_phrase": authority.summary()["typed_confirmation_phrase"],
@@ -984,7 +1020,16 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
 
     @app.post("/project-intake/scan")
     def scan_project_intake() -> dict[str, Any]:
-        return project_intake.scan(auto_run=cfg.project_intake.scaffold_on_intake)
+        result = project_intake.scan(auto_run=False)
+        wakes = []
+        if cfg.project_intake.autonomy_enabled:
+            for project in result.get("projects") or []:
+                wakes.append(
+                    project_autonomy_orchestrator.wake(
+                        int(project["id"]), reason="project intake scan"
+                    )
+                )
+        return {**result, "autonomy_wakes": wakes, "autonomy_wake_count": len(wakes)}
 
     @app.get("/project-intake/projects")
     def list_project_intake(lifecycle_state: str | None = None, limit: int = 500) -> dict[str, Any]:
@@ -1007,6 +1052,58 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     def project_intake_status() -> dict[str, Any]:
         """Read-only portfolio view; scaffold-verified is never conflated with MVP-complete."""
         return project_autonomy.portfolio()
+
+    @app.get("/project-intake/autonomy/status")
+    def project_intake_autonomy_status() -> dict[str, Any]:
+        return {
+            **project_autonomy_orchestrator.status(),
+            "portfolio": project_autonomy.portfolio(),
+        }
+
+    @app.post("/project-intake/autonomy/wake")
+    def wake_project_intake_autonomy(
+        payload: ProjectAutonomyWakeRequest,
+    ) -> dict[str, Any]:
+        if payload.project_id is not None:
+            try:
+                project_autonomy.project_view(payload.project_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return project_autonomy_orchestrator.wake(
+            payload.project_id, reason=payload.reason
+        )
+
+    @app.post("/project-intake/projects/{project_id}/autonomy/pause")
+    def pause_project_intake_autonomy(
+        project_id: int, payload: ProjectAutonomyPauseRequest
+    ) -> dict[str, Any]:
+        try:
+            project_autonomy.pause(project_id, reason=payload.reason)
+            return {"project": project_autonomy.project_view(project_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/project-intake/projects/{project_id}/autonomy/resume")
+    def resume_project_intake_autonomy(project_id: int) -> dict[str, Any]:
+        try:
+            project_autonomy.resume(project_id)
+            project_autonomy_orchestrator.wake(project_id, reason="founder resumed autonomy")
+            return {"project": project_autonomy.project_view(project_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/project-intake/projects/{project_id}/autonomy/priority")
+    def prioritize_project_intake_autonomy(
+        project_id: int, payload: ProjectAutonomyPriorityRequest
+    ) -> dict[str, Any]:
+        try:
+            project_autonomy.set_priority(project_id, payload.priority)
+            project_autonomy_orchestrator.wake(
+                project_id, reason=f"priority changed to {payload.priority}"
+            )
+            return {"project": project_autonomy.project_view(project_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/project-intake/projects/{project_id}/events")
     def list_project_intake_events(project_id: int, limit: int = 200) -> dict[str, Any]:
@@ -2670,6 +2767,11 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         telegram_running=lambda: telegram_adapter.running,
         telegram_chat_ids=_telegram_founder_chats,
         send_telegram=_tg_client.send_message if _tg_client else None,
+        project_reconcile=(
+            lambda: project_autonomy_orchestrator.wake(reason="heartbeat reconciliation")
+            if cfg.project_intake.enabled and cfg.project_intake.autonomy_enabled
+            else None
+        ),
     )
     app.state.heartbeat = heartbeat
     if run_boot_maintenance:
@@ -4209,6 +4311,11 @@ def _inventory_payload(
         "enabled": cfg.project_intake.enabled,
         "scaffold_on_intake": cfg.project_intake.scaffold_on_intake,
         "watcher_debounce_seconds": cfg.project_intake.watcher_debounce_seconds,
+        "autonomy_enabled": cfg.project_intake.autonomy_enabled,
+        "autonomy_max_workers": cfg.project_intake.autonomy_max_workers,
+        "autonomy_lease_seconds": cfg.project_intake.autonomy_lease_seconds,
+        "autonomy_repair_attempts": cfg.project_intake.autonomy_repair_attempts,
+        "autonomy_reconcile_seconds": cfg.project_intake.autonomy_reconcile_seconds,
         "project_count": len(projects),
         "projects": [
             {
@@ -4227,6 +4334,11 @@ def _inventory_payload(
             "GET /project-intake/projects/{project_id}",
             "GET /project-intake/projects/{project_id}/events",
             "GET /project-intake/status",
+            "GET /project-intake/autonomy/status",
+            "POST /project-intake/autonomy/wake",
+            "POST /project-intake/projects/{project_id}/autonomy/pause",
+            "POST /project-intake/projects/{project_id}/autonomy/resume",
+            "POST /project-intake/projects/{project_id}/autonomy/priority",
             "POST /project-intake/projects/{project_id}/run",
             "POST /project-intake/projects/{project_id}/verify",
             "POST /project-intake/decisions/{decision_id}/resolve",
@@ -4234,7 +4346,9 @@ def _inventory_payload(
         "operating_rules": [
             "Only real, registered direct-child project roots can receive build execution.",
             "Project manifests and durable project records are authoritative over stale historical build claims.",
-            "Documentation-only intake can initialize Git and route an initial scaffold automatically.",
+            "Documentation-only intake wakes the durable local orchestrator; the watcher never dispatches a build directly.",
+            "Autonomy defaults to completing the documented MVP through dependency-ready verified increments, with one lease per project and two project workers by default.",
+            "Routine implementation runs inline through the native loopback coding agent; optional external agent routes remain separately governed and are never an automatic fallback.",
             "Founder decisions are notified through the notification bus and resolved only in Zade's Approvals & Actions UI; Telegram is notification-only.",
         ],
     }

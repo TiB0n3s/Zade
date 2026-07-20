@@ -90,6 +90,8 @@ AUTONOMY_PROJECTION_KEYS = (
     "last_notification_id",
     "repo_head",
     "mvp_complete",
+    "paused",
+    "pause_reason",
 )
 
 
@@ -270,6 +272,56 @@ class ProjectAutonomyReporter:
             project,
             state,
             event={"event_type": "priority_changed", "metadata": {"priority": priority}},
+        )
+
+    def pause(self, project_id: int, *, reason: str = "founder paused autonomy") -> dict[str, Any]:
+        project = self.get_project(project_id)
+        state = self._state_for_project(project)
+        if state.get("mvp_complete"):
+            raise ValueError("A completed MVP cannot be paused.")
+        if state.get("paused") is True:
+            return project
+        state.update(
+            {
+                "paused": True,
+                "pause_reason": str(reason or "founder paused autonomy").strip()[:400],
+                "active_run_id": None,
+                "next_action": "paused by founder in Zade",
+            }
+        )
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "autonomy_paused",
+                "detail": state["pause_reason"],
+                "metadata": {"phase": state.get("phase")},
+            },
+        )
+
+    def resume(self, project_id: int) -> dict[str, Any]:
+        project = self.get_project(project_id)
+        state = self._state_for_project(project)
+        if state.get("paused") is not True:
+            return project
+        state.update(
+            {
+                "paused": False,
+                "pause_reason": "",
+                "next_action": (
+                    "resume the current documented MVP increment"
+                    if state.get("phase") in {"building", "verifying"}
+                    else "build the next dependency-ready documented MVP criterion"
+                ),
+            }
+        )
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "autonomy_resumed",
+                "metadata": {"phase": state.get("phase")},
+            },
         )
 
     def begin_increment(
@@ -1149,6 +1201,8 @@ def autonomy_projection(project: dict[str, Any]) -> dict[str, Any]:
         "last_notification_id": _positive_int(state.get("last_notification_id")),
         "repo_head": state.get("repo_head") or (snapshot.get("head") or None),
         "mvp_complete": state.get("mvp_complete") is True,
+        "paused": state.get("paused") is True,
+        "pause_reason": str(state.get("pause_reason") or ""),
     }
 
 
@@ -1158,6 +1212,8 @@ def portfolio_bucket(project: dict[str, Any], projection: dict[str, Any] | None 
     phase = autonomy["phase"]
     if autonomy["mvp_complete"]:
         return "mvp_complete"
+    if autonomy.get("paused"):
+        return "paused"
     if phase == "needs_decision":
         return "waiting_decision"
     if phase == "approval_required":
@@ -1183,6 +1239,7 @@ def portfolio_status(projects: list[dict[str, Any]]) -> dict[str, Any]:
         "waiting_approval": 0,
         "blocked": 0,
         "mvp_complete": 0,
+        "paused": 0,
         "planned": 0,
         "ready_for_next_increment": 0,
         "intake": 0,
@@ -1245,6 +1302,8 @@ def _default_state() -> dict[str, Any]:
         "repo_head": None,
         "mvp_complete": False,
         "mvp_completed_commit": None,
+        "paused": False,
+        "pause_reason": "",
         "external_boundaries": [],
     }
 

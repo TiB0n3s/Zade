@@ -40,8 +40,9 @@ function Invoke-ProjectIntakeScan {
         created_count = $Result.created_count
         existing_count = $Result.existing_count
         error_count = @($Result.errors).Count
+        autonomy_wake_count = $Result.autonomy_wake_count
     }
-    Write-Output "Project intake scan: registered $($Result.created_count), already known $($Result.existing_count), errors $(@($Result.errors).Count)."
+    Write-Output "Project intake scan: registered $($Result.created_count), already known $($Result.existing_count), autonomy wakes $($Result.autonomy_wake_count), errors $(@($Result.errors).Count)."
 }
 
 $Watcher = [System.IO.FileSystemWatcher]::new($ProjectIntake, "*")

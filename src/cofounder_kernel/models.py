@@ -58,6 +58,19 @@ class ApprovalResolveRequest(BaseModel):
     typed_confirmation: str = Field(default="", max_length=200)
 
 
+class ProjectAutonomyWakeRequest(BaseModel):
+    project_id: int | None = Field(default=None, ge=1)
+    reason: str = Field(default="founder requested reconciliation", min_length=1, max_length=200)
+
+
+class ProjectAutonomyPauseRequest(BaseModel):
+    reason: str = Field(default="founder paused autonomy", min_length=1, max_length=400)
+
+
+class ProjectAutonomyPriorityRequest(BaseModel):
+    priority: str = Field(min_length=1, max_length=20)
+
+
 class StrategyReviewRequest(BaseModel):
     focus: str = Field(default="", max_length=2000)
     question: str = Field(default="", max_length=2000)

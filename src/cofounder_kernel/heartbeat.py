@@ -113,6 +113,7 @@ class KernelHeartbeat:
         telegram_running: Callable[[], bool],
         telegram_chat_ids: Callable[[], list[int]],
         send_telegram: Callable[[int, str], None] | None,
+        project_reconcile: Callable[[], Any] | None = None,
     ):
         self.config = config
         self.tg = config.telegram
@@ -122,6 +123,7 @@ class KernelHeartbeat:
         self._telegram_running = telegram_running
         self._telegram_chat_ids = telegram_chat_ids
         self._send_telegram = send_telegram
+        self._project_reconcile = project_reconcile
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._started_monotonic: float | None = None
@@ -154,6 +156,8 @@ class KernelHeartbeat:
         self._check_telegram_liveness(now_local)
         self._check_cadence_staleness(now_local)
         self._maybe_send_brief(now_local)
+        if self._project_reconcile is not None:
+            self._project_reconcile()
 
     def _past_grace(self) -> bool:
         if self._started_monotonic is None:

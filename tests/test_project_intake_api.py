@@ -298,6 +298,11 @@ def test_approvals_ui_contains_project_decision_resolution_panel() -> None:
     assert "/project-intake/decisions/${encodeURIComponent(id)}/resolve" in html
     assert "resolved_by: 'founder.ui'" in html
     assert "project_autonomy" in html
+    assert "Autonomous Project Builds" in html
+    assert "/project-intake/autonomy/status" in html
+    assert "/autonomy/priority" in html
+    assert "/autonomy/pause" in html
+    assert "/autonomy/resume" in html
 
 
 def test_generic_approval_routes_cannot_bypass_project_decision_panel(

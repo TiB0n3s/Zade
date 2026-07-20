@@ -274,6 +274,9 @@ def _planning_messages(
         "name": str(project.get("name") or ""),
         "product_type": str(project.get("product_type") or ""),
         "distribution_targets": list(project.get("distribution_targets") or []),
+        "accepted_founder_answers": list(
+            (project.get("metadata") or {}).get("planner_founder_answers") or []
+        ),
     }
     sections = [f"PROJECT\n{json.dumps(header, sort_keys=True)}"]
     sections.extend(

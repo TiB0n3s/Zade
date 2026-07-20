@@ -218,14 +218,36 @@ class ProjectIntakeService:
             work_item_id=decision_id,
             metadata={"decision_id": decision_id, "resolved_by": resolved_by},
         )
+        resume_only = item.metadata.get("project_autonomy_resume_only") is True
         resumed = self.approvals.approve_work_item(
             decision_id,
             resolved_by=resolved_by,
             note=clean_answer,
-            dispatch=True,
+            dispatch=not resume_only,
             typed_confirmation="",
             decision_answer=True,
         )
+        if resume_only:
+            self.db.update_work_item(
+                decision_id,
+                status="done",
+                result={
+                    "status": "decision_resolved",
+                    "founder_answer": clean_answer,
+                    "resumed_by": "project_autonomy_orchestrator",
+                },
+            )
+            if self._decision_listener is not None:
+                self._decision_listener(
+                    project["id"],
+                    clean_answer,
+                    {
+                        "decision_id": decision_id,
+                        "resolved_by": resolved_by,
+                        "work_item_id": decision_id,
+                    },
+                )
+            return self.get(project["id"])
         dispatch = (
             resumed.get("dispatch_result")
             if isinstance(resumed.get("dispatch_result"), dict)

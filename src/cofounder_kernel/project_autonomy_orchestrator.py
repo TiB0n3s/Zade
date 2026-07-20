@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -71,6 +72,27 @@ class ProjectAutonomyOrchestrator:
         self._lock = threading.RLock()
         self._wake_reasons: list[dict[str, Any]] = []
         self._shutdown = False
+        self._started = False
+        self._workers: list[threading.Thread] = []
+        self._condition = threading.Condition(self._lock)
+        self._last_results: list[dict[str, Any]] = []
+        self._wake_epoch = 0
+
+    def start(self) -> None:
+        with self._condition:
+            if self._started:
+                return
+            if self._shutdown:
+                raise RuntimeError("A shut down project autonomy orchestrator cannot restart.")
+            self._started = True
+            for index in range(self.config.project_intake.autonomy_max_workers):
+                thread = threading.Thread(
+                    target=self._worker_loop,
+                    name=f"project-autonomy-{index + 1}",
+                    daemon=True,
+                )
+                self._workers.append(thread)
+                thread.start()
 
     def wake(self, project_id: int | None = None, *, reason: str) -> dict[str, Any]:
         with self._lock:
@@ -84,6 +106,8 @@ class ProjectAutonomyOrchestrator:
                 }
             )
             self._wake_reasons = self._wake_reasons[-200:]
+            self._wake_epoch += 1
+            self._condition.notify_all()
         return {"accepted": True, "project_id": project_id, "reason": reason}
 
     def claim_ready(self, *, limit: int | None = None) -> list[dict[str, Any]]:
@@ -169,23 +193,57 @@ class ProjectAutonomyOrchestrator:
             return {
                 "enabled": self.config.project_intake.autonomy_enabled,
                 "shutdown": self._shutdown,
+                "started": self._started,
+                "workers_alive": sum(1 for worker in self._workers if worker.is_alive()),
                 "owner": self.owner,
                 "max_workers": self.config.project_intake.autonomy_max_workers,
                 "lease_seconds": self.config.project_intake.autonomy_lease_seconds,
                 "repair_attempts": self.config.project_intake.autonomy_repair_attempts,
                 "recent_wakes": list(self._wake_reasons[-20:]),
+                "recent_results": list(self._last_results[-20:]),
             }
 
     def shutdown(self, wait: bool = False) -> None:
-        del wait
-        with self._lock:
+        with self._condition:
             self._shutdown = True
+            self._condition.notify_all()
+        if wait:
+            for worker in list(self._workers):
+                worker.join(timeout=5)
+
+    def _worker_loop(self) -> None:
+        reconcile = max(5, int(self.config.project_intake.autonomy_reconcile_seconds))
+        observed_epoch = -1
+        while True:
+            with self._condition:
+                if self._shutdown:
+                    return
+                if observed_epoch == self._wake_epoch:
+                    self._condition.wait(timeout=reconcile)
+                    if self._shutdown:
+                        return
+                observed_epoch = self._wake_epoch
+            while not self._shutdown:
+                try:
+                    result = self.run_once()
+                except Exception as exc:  # noqa: BLE001 - one project cannot kill a worker
+                    result = {"status": "worker_error", "error": f"{type(exc).__name__}: {exc}"[:400]}
+                with self._lock:
+                    self._last_results.append({**result, "recorded_at": utc_now()})
+                    self._last_results = self._last_results[-100:]
+                if result.get("status") in {"idle", "shutdown"}:
+                    break
+                # Yield between projects so two busy workers do not spin on the
+                # same SQLite writer lock while autonomous work remains queued.
+                time.sleep(0.01)
 
     def _execute_claim(self, claim: dict[str, Any]) -> dict[str, Any]:
         project_id = int(claim["project_id"])
         project = self.reporter.get_project(project_id)
         root = Path(str(project["canonical_path"])).resolve()
         state = self.reporter.state(project_id)
+        if state.get("paused") is True:
+            return {"status": "paused", "project_id": project_id}
         policy_problem = self._local_execution_problem()
         if policy_problem:
             self.reporter.report_blocked(
@@ -209,7 +267,16 @@ class ProjectAutonomyOrchestrator:
             return {"status": "blocked", "project_id": project_id, "reason": str(exc)}
 
         if not state.get("mvp_criteria"):
-            planned = self.planner.plan(project)
+            planning_project = dict(project)
+            planning_metadata = dict(project.get("metadata") or {})
+            planning_metadata["planner_founder_answers"] = [
+                str(event.get("detail") or "")
+                for event in reversed(self.db.list_project_events(project_id, limit=100))
+                if event.get("event_type") == "decision_applied"
+                and str(event.get("detail") or "").strip()
+            ]
+            planning_project["metadata"] = planning_metadata
+            planned = self.planner.plan(planning_project)
             if planned.needs_decision is not None:
                 decision_id = self._file_decision(
                     project,
@@ -303,6 +370,12 @@ class ProjectAutonomyOrchestrator:
             boundary = self._classify_boundary(project, criterion, dispatch)
             if boundary is not None:
                 return boundary
+            if self.reporter.state(project_id).get("paused") is True:
+                return {
+                    "status": "paused",
+                    "project_id": project_id,
+                    "criterion_id": criterion["id"],
+                }
             problem = _dispatch_problem(dispatch)
             if problem:
                 failure_output = problem
@@ -627,7 +700,11 @@ class ProjectAutonomyOrchestrator:
 
 
 def _is_runnable(state: dict[str, Any]) -> bool:
-    if state.get("mvp_complete") is True or str(state.get("phase")) in _TERMINAL_PHASES:
+    if (
+        state.get("mvp_complete") is True
+        or state.get("paused") is True
+        or str(state.get("phase")) in _TERMINAL_PHASES
+    ):
         return False
     # A crash can occur after the final criterion transition but before the
     # project-level completion attestation. Keep that state runnable so

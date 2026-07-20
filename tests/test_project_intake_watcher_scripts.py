@@ -18,6 +18,8 @@ def test_project_intake_watcher_uses_events_startup_scan_and_authenticated_route
     assert "DebounceSeconds" in script
     assert "ScanTimeoutSeconds" in script
     assert "-TimeoutSec $ScanTimeoutSeconds" in script
+    assert "autonomy_wake_count" in script
+    assert "/project-intake/projects/" not in script
 
 
 def test_project_intake_watcher_installer_runs_limited_at_logon() -> None:
