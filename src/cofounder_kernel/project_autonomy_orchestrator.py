@@ -324,24 +324,25 @@ class ProjectAutonomyOrchestrator:
                             needed="repair the local MVP planner response and wake project autonomy",
                         )
                         return {"status": "blocked", "project_id": project_id, "reason": reason}
-                decision_id = self._file_decision(
-                    project,
-                    planned.needs_decision,
-                    plan_revision=planned.plan_revision,
-                    criterion_id=None,
-                )
-                self.reporter.report_needs_decision(
-                    project_id,
-                    decision_id=decision_id,
-                    question=planned.needs_decision["question"],
-                    recommendation=planned.needs_decision["recommendation"],
-                    options=planned.needs_decision["options"],
-                )
-                return {
-                    "status": "needs_decision",
-                    "project_id": project_id,
-                    "decision_id": decision_id,
-                }
+                if planned.needs_decision is not None:
+                    decision_id = self._file_decision(
+                        project,
+                        planned.needs_decision,
+                        plan_revision=planned.plan_revision,
+                        criterion_id=None,
+                    )
+                    self.reporter.report_needs_decision(
+                        project_id,
+                        decision_id=decision_id,
+                        question=planned.needs_decision["question"],
+                        recommendation=planned.needs_decision["recommendation"],
+                        options=planned.needs_decision["options"],
+                    )
+                    return {
+                        "status": "needs_decision",
+                        "project_id": project_id,
+                        "decision_id": decision_id,
+                    }
             self.reporter.plan(
                 project_id,
                 criteria=planned.criteria,

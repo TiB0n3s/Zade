@@ -56,6 +56,16 @@ class FakePlanner:
         return self.result
 
 
+class SequencePlanner:
+    def __init__(self, *results: MvpPlanResult):
+        self.results = list(results)
+        self.calls: list[int] = []
+
+    def plan(self, project: dict[str, Any]) -> MvpPlanResult:
+        self.calls.append(int(project["id"]))
+        return self.results.pop(0)
+
+
 class RaisingPlanner:
     def __init__(self, error: ValueError):
         self.error = error
@@ -349,6 +359,37 @@ def test_repeated_planning_decision_is_blocked_without_a_new_work_item(
         '"question": "Should the MVP stick to the current native ABIs?"'
         in outbox["body"]
     )
+
+
+def test_corrected_repeated_decision_continues_with_the_mvp_plan(tmp_path: Path) -> None:
+    repeated_decision = {
+        "question": "Should the MVP stick to the current native ABIs?",
+        "recommendation": "Stick to the current ABIs.",
+        "options": [
+            {"option": "Stick to current ABIs", "impact": "Keeps native contracts."},
+            {"option": "Introduce a new ABI layer", "impact": "Changes native contracts."},
+        ],
+    }
+    planner = SequencePlanner(
+        MvpPlanResult([], [], "duplicate", "duplicate-plan", repeated_decision),
+        MvpPlanResult(CRITERIA, [], "corrected", "corrected-plan", None),
+    )
+    orchestrator, reporter, db, config, _delegation = make_services(
+        tmp_path, planner=planner  # type: ignore[arg-type]
+    )
+    project_id, _root = make_project(db, config, "The Dark Index", priority="normal")
+    db.append_project_event(
+        project_id,
+        event_type="decision_applied",
+        detail="Stick to current ABIs.",
+        metadata={"decision_id": 41},
+    )
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "criterion_complete"
+    assert planner.calls == [project_id, project_id]
+    assert reporter.state(project_id)["plan_revision"] == "corrected-plan"
 
 
 def test_repeated_single_token_planning_decision_is_blocked_without_a_new_work_item(
