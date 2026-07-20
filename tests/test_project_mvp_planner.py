@@ -132,6 +132,20 @@ def test_planner_prompt_treats_founder_answers_as_binding_constraints(
     assert "must not return needs_decision for a choice already answered there" in system_prompt.lower()
 
 
+def test_planner_correction_call_forbids_another_decision_request(tmp_path: Path) -> None:
+    root = make_documented_project(tmp_path)
+    project = project_record(root)
+    project["metadata"] = {
+        "planner_founder_answers": ["Stick to current ABIs."],
+        "planner_rejected_duplicate_decision": '{"question": "Which ABIs?"}',
+    }
+    fake = FakeOllama(valid_payload())
+
+    ProjectMvpPlanner(config=config_for(root), ollama=fake).plan(project)
+
+    assert fake.calls[0]["format"]["properties"]["needs_decision"] == {"type": "null"}
+
+
 def test_planner_prompt_excludes_code_generated_and_legacy_material(tmp_path: Path) -> None:
     root = make_documented_project(tmp_path, "The Dark Index")
     (root / "app.py").write_text("SECRET_SOURCE_CODE", encoding="utf-8")

@@ -156,7 +156,7 @@ class ProjectMvpPlanner:
             ),
             temperature=0,
             think=False,
-            format=MVP_PLAN_SCHEMA,
+            format=_planning_schema(project),
             num_predict=4096,
         )
         try:
@@ -204,6 +204,16 @@ class ProjectMvpPlanner:
         if not root.is_dir():
             raise ValueError(f"Registered project root does not exist: {root}")
         return root
+
+
+def _planning_schema(project: dict[str, Any]) -> dict[str, Any]:
+    """Return a schema that makes an already-resolved decision unrepresentable."""
+    metadata = project.get("metadata") or {}
+    if not str(metadata.get("planner_rejected_duplicate_decision") or "").strip():
+        return MVP_PLAN_SCHEMA
+    schema = json.loads(json.dumps(MVP_PLAN_SCHEMA))
+    schema["properties"]["needs_decision"] = {"type": "null"}
+    return schema
 
 
 def _read_project_documents(root: Path) -> list[_Document]:
