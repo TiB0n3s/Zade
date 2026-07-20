@@ -228,7 +228,7 @@ class ProjectAutonomyReporter:
             raise ValueError(f"Priority must be one of: {', '.join(PRIORITIES)}")
         if prior.get("mvp_complete") and normalized == prior.get("mvp_criteria"):
             return project
-        state = copy.deepcopy(prior if prior.get("mvp_criteria") else _default_state())
+        state = copy.deepcopy(prior)
         if prior.get("mvp_complete"):
             state = _default_state()
         state.update(

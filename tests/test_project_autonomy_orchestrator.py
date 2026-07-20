@@ -276,6 +276,20 @@ def test_unplanned_project_is_planned_before_first_increment(tmp_path: Path) -> 
     assert reporter.state(project_id)["plan_revision"] == "plan-revision"
 
 
+def test_unplanned_project_with_prior_autonomy_state_is_planned(tmp_path: Path) -> None:
+    planner = FakePlanner()
+    orchestrator, reporter, db, config, _delegation = make_services(
+        tmp_path, planner=planner
+    )
+    project_id, _root = make_project(db, config, "The Dark Index", priority="normal")
+    reporter.set_priority(project_id, "high")
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "criterion_complete"
+    assert reporter.state(project_id)["plan_revision"] == "plan-revision"
+
+
 def test_invalid_planner_dependency_becomes_a_durable_block(tmp_path: Path) -> None:
     orchestrator, reporter, db, config, _ = make_services(tmp_path)
     project_id, _root = make_project(db, config, "The Dark Index", priority="normal")
