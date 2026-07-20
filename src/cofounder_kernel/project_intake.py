@@ -14,6 +14,14 @@ from .db import KernelDatabase, utc_now
 from .project_manifest import ProjectManifest, load_project_manifest
 
 
+_SUPERSEDED_SCAFFOLD_BLOCKS = {
+    "existing scaffold verification failed",
+    "fresh-context verifier failed",
+    "kernel auto-verification did not pass",
+    "no runnable verification passed",
+}
+
+
 class ProjectIntakeService:
     """Discover and advance durable project folders behind one small interface."""
 
@@ -519,6 +527,26 @@ class ProjectIntakeService:
                 event_type="verification_state_corrected",
                 notification_id=notification_id,
                 metadata={"state": "blocked"},
+            )
+        elif (
+            prior is not None
+            and registered["lifecycle_state"] == "blocked"
+            and str((registered.get("metadata") or {}).get("blocked_reason") or "")
+            in _SUPERSEDED_SCAFFOLD_BLOCKS
+            and (registered.get("metadata") or {}).get("decision_id") is None
+            and (registered.get("metadata") or {}).get("approval_request_id") is None
+            and _existing_verification_current(root, registered.get("metadata") or {})
+        ):
+            registered = self._set_state(
+                registered,
+                manifest,
+                "verified",
+                {"blocked_reason": None},
+            )
+            self.db.append_project_event(
+                project_id,
+                event_type="verification_state_restored",
+                metadata={"state": "verified"},
             )
         return registered
 

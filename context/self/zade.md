@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `6a46744` 2026-07-19 - feat: wire durable project autonomy wake and recovery
 - `3f4d88b` 2026-07-19 - feat: run project intake through verified MVP completion
 - `85c0e77` 2026-07-19 - feat: derive durable MVP plans from project docs
 - `dea3e5a` 2026-07-19 - fix: unify project autonomy status truth
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `b37bd93` 2026-07-19 - test: update stale schema-version pins to v32
 - `d3a9259` 2026-07-19 - docs: orchestrator integration handoff for the project-autonomy contract
 - `346093e` 2026-07-19 - feat: project-autonomy truth and notification contract
-- `c569377` 2026-07-19 - fix: [OK] all-clear diagnostic lines are never concerns
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

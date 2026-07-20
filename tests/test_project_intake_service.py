@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from cofounder_kernel.config import KernelConfig, PathConfig, ProjectIntakeConfig
@@ -283,6 +284,81 @@ def test_reconciliation_scan_does_not_restart_a_completed_scaffold(tmp_path: Pat
     assert second["projects"][0]["lifecycle_state"] == "verified"
     assert stored["lifecycle_state"] == "verified"
     assert len(delegation.calls) == 1
+
+
+def test_reconciliation_scan_restores_verified_state_when_clean_snapshot_returns(
+    tmp_path: Path,
+) -> None:
+    service, config, db = make_service(tmp_path)
+    project_root = config.paths.project_intake_dir / "Same Ground"
+    project_root.mkdir(parents=True)
+    project_file = project_root / "project.md"
+    project_file.write_text(MOBILE_MANIFEST, encoding="utf-8")
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=test@test", "-c", "user.name=test", "add", "-A"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@test",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-m",
+            "verified scaffold",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    registered = service.scan(auto_run=False)["projects"][0]
+    verification = {
+        "ok": True,
+        "checked_at": "2026-07-19T21:04:22+00:00",
+        "git_snapshot": project_intake_module._git_snapshot(project_root),
+        "checks": [{"argv": ["npm", "test"], "ok": True, "returncode": 0}],
+    }
+    db.upsert_project(
+        canonical_path=str(project_root),
+        name=registered["name"],
+        product_type=registered["product_type"],
+        distribution_targets=registered["distribution_targets"],
+        lifecycle_state="verified",
+        repo_fingerprint=registered["repo_fingerprint"],
+        metadata={
+            "scaffold_on_intake": True,
+            "existing_scaffold_verification": verification,
+            "last_build_route": {
+                "dispatch": {
+                    "ok": True,
+                    "auto_verification": {"ok": False},
+                }
+            },
+        },
+    )
+
+    project_file.write_text(MOBILE_MANIFEST + "\ntransient edit\n", encoding="utf-8")
+    blocked = service.scan(auto_run=False)["projects"][0]
+    assert blocked["lifecycle_state"] == "blocked"
+
+    project_file.write_text(MOBILE_MANIFEST, encoding="utf-8")
+    recovered = service.scan(auto_run=False)["projects"][0]
+
+    assert recovered["lifecycle_state"] == "verified"
+    assert recovered["metadata"].get("blocked_reason") is None
 
 
 def test_needs_decision_blocks_project_and_notifies_to_open_zade(tmp_path: Path) -> None:
