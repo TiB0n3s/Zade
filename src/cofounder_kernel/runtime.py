@@ -266,6 +266,9 @@ class RuntimeService:
         # It is the chat's only path to real build work: a founder "build X"
         # command routes here as a gated delegation brief for an external agent.
         self.delegation: Any | None = None
+        # Injected after ProjectAutonomyReporter is constructed in api.py. All
+        # project status prose and prompt context must use this shared truth.
+        self.project_autonomy: Any | None = None
         # Agentic investigation loop: whitelisted read-only tools the chat model
         # can call before answering, so "can you look at X?" runs real reads
         # instead of narrating a check the turn cannot perform.
@@ -935,7 +938,11 @@ class RuntimeService:
     def _render_project_portfolio(self) -> str:
         """Render the current project registry as authoritative prompt context."""
         try:
-            projects = self.db.list_projects(limit=50)
+            projects = (
+                self.project_autonomy.list_views(limit=50)
+                if self.project_autonomy is not None
+                else self.db.list_projects(limit=50)
+            )
         except Exception:
             return ""
         if not projects:
@@ -945,9 +952,14 @@ class RuntimeService:
         ]
         for project in projects:
             targets = ", ".join(str(item) for item in project.get("distribution_targets", []))
+            autonomy = project.get("autonomy") or {}
             lines.append(
                 f"- {project['name']} [{project['product_type']}]; "
-                f"state={project['lifecycle_state']}; targets={targets}; "
+                f"status={project.get('status') or 'intake'}; "
+                f"phase={autonomy.get('phase') or 'planning'}; "
+                f"criteria={autonomy.get('mvp_criteria_completed') or 0}/"
+                f"{autonomy.get('mvp_criteria_total') or 0}; "
+                f"next={autonomy.get('next_action') or 'project intake'}; targets={targets}; "
                 f"root={project['canonical_path']}"
             )
         return "\n".join(lines)
@@ -1619,7 +1631,11 @@ The founder's current message is supplied separately as the user-role message. D
             not ledger_answered
             and not (chat_action_route or research_route or build_route)
         ):
-            registered_projects = self.db.list_projects(limit=50)
+            registered_projects = (
+                self.project_autonomy.list_views(limit=50)
+                if self.project_autonomy is not None
+                else self.db.list_projects(limit=50)
+            )
             if _is_project_registry_status_question(message, registered_projects):
                 text = _render_project_registry_status(message, registered_projects)
                 ledger_answered = True
@@ -4184,21 +4200,28 @@ def _render_project_registry_status(
     }
     for project in selected:
         product_type = str(project.get("product_type") or "project").replace("_", " ")
-        state = str(project.get("lifecycle_state") or "unknown")
+        autonomy = project.get("autonomy") if isinstance(project.get("autonomy"), dict) else {}
+        phase = str(autonomy.get("phase") or project.get("lifecycle_state") or "unknown")
+        status = str(project.get("status") or phase)
         targets = ", ".join(
             target_labels.get(str(target), str(target).replace("_", " "))
             for target in project.get("distribution_targets", [])
         )
-        verification = (project.get("metadata") or {}).get("existing_scaffold_verification")
-        verification = verification if isinstance(verification, dict) else {}
-        checked_at = str(verification.get("checked_at") or "").strip()
-        verified = ""
-        if verification.get("ok") is True:
-            verified = f"; local verification passed{f' at {checked_at}' if checked_at else ''}"
+        completed = int(autonomy.get("mvp_criteria_completed") or 0)
+        total = int(autonomy.get("mvp_criteria_total") or 0)
+        current = str(autonomy.get("current_criterion_id") or "").strip()
+        next_action = str(autonomy.get("next_action") or "").strip()
+        blocker = str(autonomy.get("blocking_reason") or "").strip()
+        commit = str(autonomy.get("repo_head") or "").strip()
         target_text = f"; targets: {targets}" if targets else ""
         lines.append(
-            f"- {project.get('name')} — {product_type}; state: {state}"
-            f"{target_text}{verified}."
+            f"- {project.get('name')} — {product_type}; status: {status}; phase: {phase}; "
+            f"MVP criteria: {completed}/{total}"
+            f"{f'; current criterion: {current}' if current else ''}"
+            f"{f'; next: {next_action}' if next_action else ''}"
+            f"{f'; blocker: {blocker}' if blocker else ''}"
+            f"{f'; last verified commit: {commit}' if commit else ''}"
+            f"{target_text}."
         )
     lines.append(
         "This is the live project registry. Historical goals and recalled build claims "

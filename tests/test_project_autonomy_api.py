@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -5,7 +6,7 @@ from fastapi.testclient import TestClient
 from cofounder_kernel.api import create_app
 from cofounder_kernel.config import KernelConfig, OllamaConfig, PathConfig, ProjectIntakeConfig
 from cofounder_kernel.db import utc_now
-from cofounder_kernel.ollama import OllamaClient
+from cofounder_kernel.ollama import GenerateResult, OllamaClient
 from cofounder_kernel.project_autonomy import AUTONOMY_PROJECTION_KEYS
 
 
@@ -23,9 +24,12 @@ def fake_health(self: OllamaClient) -> dict:
     return {"version": "test"}
 
 
-def fresh_verification() -> dict:
+def fresh_verification(root: Path, head: str) -> dict:
     return {
         "ok": True,
+        "project_path": str(root.resolve()),
+        "repo_head": head,
+        "repo_status": "",
         "checked_at": utc_now(),
         "checks": [{"argv": ["npm", "test"], "ok": True, "returncode": 0, "output": "passed"}],
     }
@@ -42,6 +46,30 @@ def make_client(tmp_path: Path, monkeypatch, names: tuple[str, ...] = ("Same Gro
         root = config.paths.project_intake_dir / name
         root.mkdir(parents=True)
         (root / "project.md").write_text(MANIFEST.format(name=name), encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "--initial-branch=main"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(["git", "add", "project.md"], cwd=root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=test@test",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-m",
+                "initial project",
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     app = create_app(config, run_boot_maintenance=False)
     client = TestClient(app)
     scanned = client.post("/project-intake/scan").json()
@@ -64,11 +92,42 @@ def test_project_endpoints_expose_full_autonomy_projection(tmp_path: Path, monke
     assert fetched["distribution_targets"] == ["google_play", "apple_app_store_eventual"]
 
 
+def test_project_api_bounds_captured_command_output(tmp_path: Path, monkeypatch) -> None:
+    app, client, ids = make_client(tmp_path, monkeypatch)
+    project = app.state.db.get_project(ids["Same Ground"])
+    metadata = dict(project["metadata"])
+    metadata["last_check"] = {"output": "x" * 600, "returncode": 0}
+    app.state.db.upsert_project(
+        canonical_path=project["canonical_path"],
+        name=project["name"],
+        product_type=project["product_type"],
+        distribution_targets=project["distribution_targets"],
+        lifecycle_state=project["lifecycle_state"],
+        repo_fingerprint=project["repo_fingerprint"],
+        metadata=metadata,
+    )
+
+    payload = client.get(
+        f"/project-intake/projects/{ids['Same Ground']}"
+    ).json()["project"]
+
+    assert payload["metadata"]["last_check"]["returncode"] == 0
+    assert payload["metadata"]["last_check"]["output"] == ("x" * 240) + "…"
+
+
 def test_api_projects_every_phase(tmp_path: Path, monkeypatch) -> None:
     app, client, ids = make_client(tmp_path, monkeypatch)
     reporter = app.state.project_autonomy
     reporter.bus = None  # projection test only; no notifications leave the process
     project_id = ids["Same Ground"]
+    root = Path(app.state.db.get_project(project_id)["canonical_path"])
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     criteria = [{"id": "auth", "title": "Sign-in works"}, {"id": "feed", "title": "Feed renders"}]
 
     def phase() -> str:
@@ -80,7 +139,11 @@ def test_api_projects_every_phase(tmp_path: Path, monkeypatch) -> None:
     assert phase() == "building"
     reporter.begin_verification(project_id)
     assert phase() == "verifying"
-    reporter.record_increment(project_id, summary="increment done")
+    reporter.record_increment(
+        project_id,
+        summary="increment done",
+        verification=fresh_verification(root, head),
+    )
     assert phase() == "ready_for_next_increment"
     reporter.report_needs_decision(
         project_id,
@@ -115,7 +178,7 @@ def test_portfolio_status_endpoint_distinguishes_buckets(tmp_path: Path, monkeyp
     reporter.bus = None
     building = ids["The Dark Index"]
     reporter.plan(building, criteria=[{"id": "auth", "title": "Sign-in works"}])
-    reporter.begin_increment(building, criterion_id="auth")
+    reporter.begin_increment(building, criterion_id="auth", run_id=1)
     # Same Ground stays lifecycle-verified with no autonomy plan.
     same_ground = app.state.db.get_project(ids["Same Ground"])
     app.state.db.upsert_project(
@@ -137,3 +200,67 @@ def test_portfolio_status_endpoint_distinguishes_buckets(tmp_path: Path, monkeyp
     assert by_name["Same Ground"] == "scaffold_verified"
     assert by_name["The Dark Index"] == "actively_building"
     assert all("autonomy" in item for item in status["projects"])
+
+
+def test_planning_and_ready_are_not_actively_building(tmp_path: Path, monkeypatch) -> None:
+    app, client, ids = make_client(tmp_path, monkeypatch)
+    reporter = app.state.project_autonomy
+    reporter.bus = None
+    project_id = ids["Same Ground"]
+    root = Path(app.state.db.get_project(project_id)["canonical_path"])
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+
+    planned = client.get("/project-intake/status").json()["projects"][0]
+    assert planned["status"] == "planned"
+
+    reporter.begin_increment(project_id, criterion_id="auth", run_id=7)
+    reporter.begin_verification(project_id, run_id=7)
+    reporter.record_increment(
+        project_id,
+        summary="increment complete",
+        verification=fresh_verification(root, head),
+    )
+    ready = client.get("/project-intake/status").json()["projects"][0]
+    assert ready["status"] == "ready_for_next_increment"
+    assert ready["status"] != "actively_building"
+
+
+def test_runtime_and_portfolio_report_same_active_phase(tmp_path: Path, monkeypatch) -> None:
+    app, client, ids = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        OllamaClient,
+        "chat",
+        lambda self, **kwargs: GenerateResult(
+            response="All projects are verified.", model="test", raw={}
+        ),
+    )
+    project_id = ids["Same Ground"]
+    reporter = app.state.project_autonomy
+    reporter.bus = None
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+    reporter.begin_increment(project_id, criterion_id="auth", run_id=11)
+
+    portfolio = client.get("/project-intake/status").json()
+    reply = client.post(
+        "/runtime/respond",
+        json={
+            "message": "What is the status of my projects?",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "use_tools": False,
+            "contrarian": False,
+        },
+    ).json()["response"]
+
+    assert portfolio["projects"][0]["status"] == "actively_building"
+    assert "status: actively_building" in reply
+    assert "phase: building" in reply
+    assert "state: verified" not in reply

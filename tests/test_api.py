@@ -224,8 +224,15 @@ def test_runtime_project_status_uses_live_registry_over_stale_model_draft(
     payload = response.json()
     assert response.status_code == 200
     assert "Current registered projects — 2" in payload["response"]
-    assert "The Dark Index — mobile application; state: verified" in payload["response"]
-    assert "Same Ground — mobile application; state: verified" in payload["response"]
+    assert (
+        "The Dark Index — mobile application; status: scaffold_verified; "
+        "phase: ready_for_next_increment; MVP criteria: 0/0"
+    ) in payload["response"]
+    assert (
+        "Same Ground — mobile application; status: scaffold_verified; "
+        "phase: ready_for_next_increment; MVP criteria: 0/0"
+    ) in payload["response"]
+    assert "state: verified" not in payload["response"]
     assert "Google Play" in payload["response"]
     assert "Apple App Store (eventual)" in payload["response"]
     assert "Lakes & Lures" not in payload["response"]

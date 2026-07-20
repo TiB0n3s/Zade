@@ -131,6 +131,44 @@ class ProjectAutonomyReporter:
         project = self.get_project(project_id)
         return _autonomy_state(project)
 
+    def project_view(self, project_id: int) -> dict[str, Any]:
+        raw_project = self.db.get_project(project_id)
+        if raw_project is None:
+            raise ValueError(f"Project not found: {project_id}")
+        stored = self.store.get(project_id)
+        legacy = (raw_project.get("metadata") or {}).get("autonomy")
+        if int(stored.get("version") or 0) > 0 or isinstance(legacy, dict):
+            project = self._attach_state(
+                raw_project,
+                self._state_from_store(stored)
+                if int(stored.get("version") or 0) > 0
+                else _autonomy_state(raw_project),
+            )
+        else:
+            # An intake/scaffold record has no autonomous execution state yet.
+            # Preserve that absence so the projection can derive the honest
+            # lifecycle fallback (notably verified scaffold != planning MVP).
+            project = raw_project
+        project = _sanitize_project_for_api(project)
+        projection = autonomy_projection(project)
+        return {
+            **project,
+            "status": portfolio_bucket(project, projection),
+            "autonomy": projection,
+        }
+
+    def list_views(
+        self, *, lifecycle_state: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        projects = self.db.list_projects(
+            lifecycle_state=lifecycle_state,
+            limit=min(max(int(limit), 1), 5000),
+        )
+        return [self.project_view(int(project["id"])) for project in projects]
+
+    def portfolio(self) -> dict[str, Any]:
+        return portfolio_status(self.list_views(limit=500))
+
     # ---- planning and increments (ledger-only, no founder notifications) ----
 
     def plan(
@@ -1099,10 +1137,12 @@ def portfolio_bucket(project: dict[str, Any], projection: dict[str, Any] | None 
         return "waiting_approval"
     if phase == "blocked":
         return "blocked"
-    if phase in {"building", "verifying"}:
+    if phase in {"building", "verifying"} and autonomy.get("active_run_id") is not None:
         return "actively_building"
+    if phase == "ready_for_next_increment" and autonomy["mvp_criteria_total"] > 0:
+        return "ready_for_next_increment"
     if autonomy["mvp_criteria_total"] > 0:
-        return "actively_building"  # planned MVP between increments is active work
+        return "planned"
     if str(project.get("lifecycle_state") or "") == "verified":
         return "scaffold_verified"
     return "intake"
@@ -1116,19 +1156,22 @@ def portfolio_status(projects: list[dict[str, Any]]) -> dict[str, Any]:
         "waiting_approval": 0,
         "blocked": 0,
         "mvp_complete": 0,
+        "planned": 0,
+        "ready_for_next_increment": 0,
         "intake": 0,
     }
     items: list[dict[str, Any]] = []
     for project in projects:
-        projection = autonomy_projection(project)
+        projection = (
+            project.get("autonomy")
+            if isinstance(project.get("autonomy"), dict)
+            else autonomy_projection(project)
+        )
         bucket = portfolio_bucket(project, projection)
         totals[bucket] += 1
         items.append(
             {
-                "id": project["id"],
-                "name": project["name"],
-                "canonical_path": project["canonical_path"],
-                "lifecycle_state": project["lifecycle_state"],
+                **project,
                 "status": bucket,
                 "autonomy": projection,
             }
@@ -1137,6 +1180,23 @@ def portfolio_status(projects: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # ---- helpers -----------------------------------------------------------------
+
+
+def _sanitize_project_for_api(project: dict[str, Any]) -> dict[str, Any]:
+    sanitized = copy.deepcopy(project)
+
+    def bounded(value: Any, *, key: str = "") -> Any:
+        if isinstance(value, dict):
+            return {name: bounded(item, key=str(name)) for name, item in value.items()}
+        if isinstance(value, list):
+            return [bounded(item, key=key) for item in value]
+        if key in {"output", "stdout", "stderr", "artifact", "response"}:
+            text = str(value or "")
+            return text if len(text) <= 240 else f"{text[:240]}…"
+        return value
+
+    sanitized["metadata"] = bounded(sanitized.get("metadata") or {})
+    return sanitized
 
 
 def _default_state() -> dict[str, Any]:

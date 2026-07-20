@@ -204,7 +204,7 @@ from .ollama import OllamaClient, OllamaError
 from .ops import KernelOpsService
 from .prompts import PromptProfileRegistry
 from .project_intake import ProjectIntakeService, parse_project_decision_reply
-from .project_autonomy import ProjectAutonomyReporter, autonomy_projection, portfolio_status
+from .project_autonomy import ProjectAutonomyReporter
 from .actions import ActionPipelineService
 from .commitments import CommitmentLedger
 from .notify import NotificationBus
@@ -540,6 +540,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
     # into a gated delegation brief instead of a text-only architecture outline.
     runtime.delegation = delegation
     project_autonomy = ProjectAutonomyReporter(db=db, bus=bus)
+    runtime.project_autonomy = project_autonomy
     project_intake = ProjectIntakeService(
         config=cfg,
         db=db,
@@ -987,21 +988,25 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
 
     @app.get("/project-intake/projects")
     def list_project_intake(lifecycle_state: str | None = None, limit: int = 500) -> dict[str, Any]:
-        items = db.list_projects(lifecycle_state=lifecycle_state, limit=min(max(limit, 1), 500))
-        return {"items": [{**item, "autonomy": autonomy_projection(item)} for item in items]}
+        return {
+            "items": project_autonomy.list_views(
+                lifecycle_state=lifecycle_state,
+                limit=min(max(limit, 1), 500),
+            )
+        }
 
     @app.get("/project-intake/projects/{project_id}")
     def get_project_intake(project_id: int) -> dict[str, Any]:
         try:
-            project = project_intake.get(project_id)
+            project = project_autonomy.project_view(project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"project": {**project, "autonomy": autonomy_projection(project)}}
+        return {"project": project}
 
     @app.get("/project-intake/status")
     def project_intake_status() -> dict[str, Any]:
         """Read-only portfolio view; scaffold-verified is never conflated with MVP-complete."""
-        return portfolio_status(db.list_projects(limit=500))
+        return project_autonomy.portfolio()
 
     @app.get("/project-intake/projects/{project_id}/events")
     def list_project_intake_events(project_id: int, limit: int = 200) -> dict[str, Any]:

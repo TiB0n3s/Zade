@@ -793,7 +793,7 @@ def test_portfolio_distinguishes_every_status(tmp_path: Path) -> None:
     complete_id, _root, head = make_git_project(db, tmp_path, name="Complete")
 
     reporter.plan(building, criteria=CRITERIA)
-    reporter.begin_increment(building, criterion_id="auth")
+    reporter.begin_increment(building, criterion_id="auth", run_id=1)
     reporter.plan(deciding, criteria=CRITERIA)
     reporter.report_needs_decision(
         deciding,
@@ -831,6 +831,8 @@ def test_portfolio_distinguishes_every_status(tmp_path: Path) -> None:
         "waiting_approval": 1,
         "blocked": 1,
         "mvp_complete": 1,
+        "planned": 0,
+        "ready_for_next_increment": 0,
         "intake": 0,
     }
     by_name = {item["name"]: item["status"] for item in status["projects"]}
