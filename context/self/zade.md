@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `dea3e5a` 2026-07-19 - fix: unify project autonomy status truth
 - `b364dd9` 2026-07-19 - feat: resolve project boundaries through Zade UI
 - `7768ff3` 2026-07-19 - fix: enforce project autonomy evidence and transitions
 - `65d13ae` 2026-07-19 - feat: add transactional project autonomy store
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `c569377` 2026-07-19 - fix: [OK] all-clear diagnostic lines are never concerns
 - `0624fb3` 2026-07-19 - fix: ground project status in live registry
 - `a590483` 2026-07-19 - feat: verify repaired project scaffolds locally
-- `3a49fca` 2026-07-19 - fix: scaffold spaced project names safely
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

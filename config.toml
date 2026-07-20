@@ -52,6 +52,11 @@ max_output_chars = 40000
 enabled = true
 scaffold_on_intake = true
 watcher_debounce_seconds = 3
+autonomy_enabled = true
+autonomy_max_workers = 2
+autonomy_lease_seconds = 900
+autonomy_repair_attempts = 3
+autonomy_reconcile_seconds = 60
 
 [voice]
 # Local speech engines: whisper.cpp (STT) + piper (TTS), run as argv command

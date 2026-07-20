@@ -11,6 +11,18 @@ hot_root = "C:\\AI Brain"
 cold_root = "D:\\AI Brain-Cold"
 data_dir = "C:\\AI Brain\\memory-hot\\cofounder-kernel"
 
+[project_intake]
+# New documented projects under <hot_root>\project-intake are planned and
+# advanced toward the documented MVP without a separate start approval.
+enabled = true
+scaffold_on_intake = true
+watcher_debounce_seconds = 3
+autonomy_enabled = true
+autonomy_max_workers = 2
+autonomy_lease_seconds = 900
+autonomy_repair_attempts = 3
+autonomy_reconcile_seconds = 60
+
 [ollama]
 base_url = "http://127.0.0.1:11434"
 chat_model = "qwen3:14b"

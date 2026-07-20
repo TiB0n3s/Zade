@@ -62,6 +62,11 @@ class ProjectIntakeConfig:
     enabled: bool = False
     scaffold_on_intake: bool = False
     watcher_debounce_seconds: int = 3
+    autonomy_enabled: bool = True
+    autonomy_max_workers: int = 2
+    autonomy_lease_seconds: int = 900
+    autonomy_repair_attempts: int = 3
+    autonomy_reconcile_seconds: int = 60
 
 
 @dataclass(frozen=True)
@@ -941,6 +946,48 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> KernelConf
                 os.getenv(
                     "ZADE_PROJECT_INTAKE_WATCHER_DEBOUNCE_SECONDS",
                     project_intake_raw.get("watcher_debounce_seconds", 3),
+                )
+            ),
+        ),
+        autonomy_enabled=_bool(
+            os.getenv(
+                "ZADE_PROJECT_INTAKE_AUTONOMY_ENABLED",
+                project_intake_raw.get("autonomy_enabled", True),
+            )
+        ),
+        autonomy_max_workers=max(
+            1,
+            int(
+                os.getenv(
+                    "ZADE_PROJECT_INTAKE_AUTONOMY_MAX_WORKERS",
+                    project_intake_raw.get("autonomy_max_workers", 2),
+                )
+            ),
+        ),
+        autonomy_lease_seconds=max(
+            60,
+            int(
+                os.getenv(
+                    "ZADE_PROJECT_INTAKE_AUTONOMY_LEASE_SECONDS",
+                    project_intake_raw.get("autonomy_lease_seconds", 900),
+                )
+            ),
+        ),
+        autonomy_repair_attempts=max(
+            0,
+            int(
+                os.getenv(
+                    "ZADE_PROJECT_INTAKE_AUTONOMY_REPAIR_ATTEMPTS",
+                    project_intake_raw.get("autonomy_repair_attempts", 3),
+                )
+            ),
+        ),
+        autonomy_reconcile_seconds=max(
+            5,
+            int(
+                os.getenv(
+                    "ZADE_PROJECT_INTAKE_AUTONOMY_RECONCILE_SECONDS",
+                    project_intake_raw.get("autonomy_reconcile_seconds", 60),
                 )
             ),
         ),
