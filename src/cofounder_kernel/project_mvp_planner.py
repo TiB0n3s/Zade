@@ -31,6 +31,7 @@ IGNORED_DIRECTORIES = {
     "out",
     "coverage",
     ".coverage",
+    ".cxx",
     ".expo",
     ".next",
     ".nuxt",
@@ -42,7 +43,9 @@ IGNORED_DIRECTORIES = {
     "old",
 }
 MAX_DOCUMENT_BYTES = 256_000
-MAX_DOCUMENT_PROMPT_CHARS = 600_000
+# Leave most of the 40k-token local context window available for the schema and
+# a structured response.  This is an input ceiling, not a document-size limit.
+MAX_DOCUMENT_PROMPT_CHARS = 80_000
 
 
 MVP_PLAN_SCHEMA: dict[str, Any] = {

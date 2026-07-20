@@ -169,6 +169,29 @@ def test_planner_prompt_excludes_code_generated_and_legacy_material(tmp_path: Pa
     assert "OUTSIDE_PROJECT" not in prompt
 
 
+def test_planner_prompt_excludes_native_build_artifacts(tmp_path: Path) -> None:
+    root = make_documented_project(tmp_path)
+    generated = root / "android" / "app" / ".cxx" / "Debug" / "CMakeCache.txt"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("GENERATED_NATIVE_BUILD_ARTIFACT", encoding="utf-8")
+    fake = FakeOllama(valid_payload())
+
+    ProjectMvpPlanner(config=config_for(root), ollama=fake).plan(project_record(root))
+
+    prompt = "\n".join(str(message["content"]) for message in fake.calls[0]["messages"])
+    assert "GENERATED_NATIVE_BUILD_ARTIFACT" not in prompt
+
+
+def test_planner_rejects_source_input_that_would_exhaust_model_context(tmp_path: Path) -> None:
+    root = make_documented_project(tmp_path)
+    (root / "long-spec.md").write_text("x" * 100_000, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="bounded planning prompt"):
+        ProjectMvpPlanner(config=config_for(root), ollama=FakeOllama(valid_payload())).plan(
+            project_record(root)
+        )
+
+
 def test_planner_rejects_project_outside_project_intake(tmp_path: Path) -> None:
     root = tmp_path / "unregistered" / "Same Ground"
     root.mkdir(parents=True)
