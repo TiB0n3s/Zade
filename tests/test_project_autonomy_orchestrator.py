@@ -319,6 +319,12 @@ def test_repeated_planning_decision_is_blocked_without_a_new_work_item(
         detail="Stick to current ABIs.",
         metadata={"decision_id": 41},
     )
+    for index in range(101):
+        db.append_project_event(
+            project_id,
+            event_type="source_updated",
+            detail=f"Later non-decision project event {index}",
+        )
 
     result = orchestrator.run_once()
 
@@ -343,6 +349,50 @@ def test_repeated_planning_decision_is_blocked_without_a_new_work_item(
         '"question": "Should the MVP stick to the current native ABIs?"'
         in outbox["body"]
     )
+
+
+def test_repeated_single_token_planning_decision_is_blocked_without_a_new_work_item(
+    tmp_path: Path,
+) -> None:
+    planner = FakePlanner(
+        MvpPlanResult(
+            criteria=[],
+            external_boundaries=[],
+            source_hash="repeated-sqlite-decision",
+            plan_revision="repeated-sqlite-decision-plan",
+            needs_decision={
+                "question": "Which database should the MVP use?",
+                "recommendation": "SQLite",
+                "options": [
+                    {
+                        "option": "SQLite",
+                        "impact": "Keeps persistence local and embedded.",
+                    },
+                    {
+                        "option": "PostgreSQL",
+                        "impact": "Adds a separately operated database service.",
+                    },
+                ],
+            },
+        )
+    )
+    orchestrator, reporter, db, config, _delegation = make_services(
+        tmp_path, planner=planner
+    )
+    project_id, _root = make_project(db, config, "Same Ground", priority="normal")
+    db.append_project_event(
+        project_id,
+        event_type="decision_applied",
+        detail="SQLite",
+        metadata={"decision_id": 42},
+    )
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "blocked"
+    assert "already resolved" in result["reason"]
+    assert reporter.state(project_id)["phase"] == "blocked"
+    assert [item for item in db.list_work_items() if item.kind == "founder_decision"] == []
 
 
 def test_two_urgent_projects_claim_concurrently_but_never_twice_each(tmp_path: Path) -> None:

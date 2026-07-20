@@ -271,7 +271,7 @@ class ProjectAutonomyOrchestrator:
             planning_metadata = dict(project.get("metadata") or {})
             founder_answers = [
                 str(event.get("detail") or "")
-                for event in reversed(self.db.list_project_events(project_id, limit=100))
+                for event in reversed(self.db.list_project_events(project_id, limit=None))
                 if event.get("event_type") == "decision_applied"
                 and str(event.get("detail") or "").strip()
             ]
@@ -609,7 +609,11 @@ class ProjectAutonomyOrchestrator:
             return False
         for answer in answers:
             answer_tokens = normalized_tokens(answer)
-            if len(answer_tokens) < 2:
+            if len(answer_tokens) == 1:
+                if answer_tokens <= decision_tokens:
+                    return True
+                continue
+            if not answer_tokens:
                 continue
             overlap = answer_tokens & decision_tokens
             if len(overlap) >= 2 and len(overlap) / len(answer_tokens) >= 0.75:

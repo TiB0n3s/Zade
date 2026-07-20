@@ -351,13 +351,15 @@ class KernelDatabase:
         return project
 
     def list_project_events(
-        self, project_id: int, *, limit: int = 200
+        self, project_id: int, *, limit: int | None = 200
     ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM project_events WHERE project_id = ? ORDER BY id DESC"
+        params: tuple[Any, ...] = (project_id,)
+        if limit is not None:
+            query += " LIMIT ?"
+            params += (limit,)
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM project_events WHERE project_id = ? ORDER BY id DESC LIMIT ?",
-                (project_id, limit),
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [
             {
                 **{key: row[key] for key in row.keys() if key != "metadata_json"},
