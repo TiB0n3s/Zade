@@ -9,6 +9,7 @@ import re
 import subprocess
 import threading
 import time
+import traceback
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -229,7 +230,11 @@ class ProjectAutonomyOrchestrator:
                 try:
                     result = self.run_once()
                 except Exception as exc:  # noqa: BLE001 - one project cannot kill a worker
-                    result = {"status": "worker_error", "error": f"{type(exc).__name__}: {exc}"[:400]}
+                    result = {
+                        "status": "worker_error",
+                        "error": f"{type(exc).__name__}: {exc}"[:400],
+                        "traceback": traceback.format_exc()[-4000:],
+                    }
                 with self._lock:
                     self._last_results.append({**result, "recorded_at": utc_now()})
                     self._last_results = self._last_results[-100:]

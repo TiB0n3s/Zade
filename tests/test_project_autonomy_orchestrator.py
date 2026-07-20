@@ -549,6 +549,26 @@ def test_recover_clears_expired_leases_without_duplicate_runs(tmp_path: Path) ->
     assert orchestrator.status()["shutdown"] is True
 
 
+def test_worker_records_traceback_for_unexpected_failure(tmp_path: Path) -> None:
+    orchestrator, _reporter, _db, _config, _delegation = make_services(tmp_path)
+    calls = 0
+
+    def run_once() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TypeError("planner output was malformed")
+        orchestrator._shutdown = True
+        return {"status": "shutdown"}
+
+    orchestrator.run_once = run_once  # type: ignore[method-assign]
+    orchestrator._worker_loop()
+
+    result = orchestrator.status()["recent_results"][-2]
+    assert result["status"] == "worker_error"
+    assert "TypeError: planner output was malformed" in result["traceback"]
+
+
 def test_recovered_building_phase_can_repair_its_dirty_workspace(tmp_path: Path) -> None:
     orchestrator, reporter, db, config, _delegation = make_services(tmp_path)
     project_id, root = make_project(db, config, "Same Ground")
