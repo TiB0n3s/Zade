@@ -144,6 +144,18 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `b37bd93` 2026-07-19 - test: update stale schema-version pins to v32
 - `d3a9259` 2026-07-19 - docs: orchestrator integration handoff for the project-autonomy contract
 - `346093e` 2026-07-19 - feat: project-autonomy truth and notification contract
+- `8ef1694` 2026-07-19 - docs: plan project intake autopilot
+- `e15c5f2` 2026-07-19 - docs: reset Dark Index intake design
+- `ca5b6c4` 2026-07-19 - fix: value-aware trading-brief concern detection + weekend awareness
+- `92cd8bb` 2026-07-19 - docs: design project intake autopilot
+- `8741571` 2026-07-19 - fix: auto-resolve cleared integrity warnings in run_integrity_check
+- `4f197bb` 2026-07-19 - feat: require fresh approval for renewed build leases
+- `0c46772` 2026-07-19 - fix: omit deprecated Anthropic sampling params
+- `623ddac` 2026-07-19 - feat: verify Android install and launch locally
+- `0bfc54b` 2026-07-19 - feat: retry interrupted local build tasks
+- `14066c5` 2026-07-19 - fix: feed verifier evidence into local retries
+- `6ed15f7` 2026-07-19 - fix: keep planning phases command free
+- `178c9d4` 2026-07-19 - fix: exclude generated outputs from verifier context
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

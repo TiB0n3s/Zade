@@ -4374,6 +4374,58 @@ def test_runtime_repairs_charter_recitation_into_conversational_voice(
     assert any("recited charter lines" in note for note in payload["governor"]["notes"])
 
 
+def test_runtime_repairs_skill_instruction_recitation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    prompts: list[str] = []
+
+    def recitation_then_repair(self, *, prompt, model=None, think=None, temperature=None, num_predict=512, format=None):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return GenerateResult(
+                response=(
+                    "I'm using the finishing-a-development-branch skill to complete this work.\n\n"
+                    "### Step 1: Verify Tests\n\n```bash\nnpm test\n```\n\n"
+                    "### Step 2: Detect Environment\n\n"
+                    "```bash\ngit status\n```\n\n### Step 3: Determine Base Branch"
+                ),
+                model=model or "qwen3:14b",
+                raw={},
+            )
+        return GenerateResult(
+            response="The build route is blocked by its project boundary. I need the project scoped into the delegated workspace before I can run it.",
+            model=model or "qwen3:14b",
+            raw={},
+        )
+
+    patch_ollama_model(monkeypatch, recitation_then_repair)
+    config = KernelConfig(
+        app=AppConfig(),
+        paths=PathConfig(hot_root=tmp_path / "hot", cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
+        ollama=OllamaConfig(base_url="http://127.0.0.1:1"),
+    )
+    client = TestClient(create_app(config))
+
+    response = client.post(
+        "/runtime/respond",
+        json={
+            "message": "Complete all pending build tasks.",
+            "use_memory": False,
+            "use_semantic_memory": False,
+            "use_skills": False,
+            "contrarian": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(prompts) == 2
+    assert payload["response"].startswith("The build route is blocked")
+    assert "finishing-a-development-branch skill" not in payload["response"]
+    assert "charter_recitation_repaired" in payload["governor"]["applied_rules"]
+
+
 def test_runtime_rejects_profile_fragment_repair_for_identity_answers(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -6671,6 +6723,27 @@ def test_review_verify_failed_reads_as_finding_not_broken_run() -> None:
     note = _build_route_note(route)
     assert "finding" in note
     assert "NOT done" not in note
+
+
+def test_hybrid_build_route_reports_lease_approval_not_missing_engine() -> None:
+    from cofounder_kernel.runtime import _render_build_route_block
+
+    block = _render_build_route_block(
+        {
+            "status": "approval_required",
+            "kind": "step",
+            "task": "Carry out step 1",
+            "workspace": r"C:\BookCatalogingApp",
+            "item_id": 133,
+            "engine": "hybrid",
+            "approval_request_id": 51,
+            "assessment": {"recommended_tier": "small"},
+        }
+    )
+
+    assert "local assessment is complete" in block
+    assert "#51" in block
+    assert "no build engine can run" not in block
 
 
 def test_ops_providers_readout_reflects_cloud_off(tmp_path: Path, monkeypatch) -> None:

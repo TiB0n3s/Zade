@@ -293,26 +293,30 @@ class ProjectAutonomyOrchestrator:
                 if self._decision_repeats_accepted_answer(
                     planned.needs_decision, founder_answers
                 ):
-                    reason = (
-                        "Local MVP planner repeated a founder decision that was already resolved."
+                    planning_metadata["planner_rejected_duplicate_decision"] = json.dumps(
+                        planned.needs_decision, sort_keys=True
                     )
-                    self.reporter.report_blocked(
-                        project_id,
-                        reason=reason,
-                        verification_output=json.dumps(
-                            planned.needs_decision, indent=2, sort_keys=True
-                        ),
-                        attempts=1,
-                        needed=(
-                            "correct the local MVP planner to honor accepted founder answers "
-                            "and wake project autonomy"
-                        ),
-                    )
-                    return {
-                        "status": "blocked",
-                        "project_id": project_id,
-                        "reason": reason,
-                    }
+                    planning_project["metadata"] = planning_metadata
+                    try:
+                        planned = self.planner.plan(planning_project)
+                    except ValueError as exc:
+                        reason = f"Local MVP planner returned an invalid corrected plan: {exc}"
+                        self.reporter.report_blocked(
+                            project_id, reason=reason, verification_output=str(exc), attempts=2,
+                            needed="correct the documented MVP plan and wake project autonomy",
+                        )
+                        return {"status": "blocked", "project_id": project_id, "reason": reason}
+                    if planned.needs_decision is not None and self._decision_repeats_accepted_answer(
+                        planned.needs_decision, founder_answers
+                    ):
+                        reason = "Local MVP planner repeated a founder decision that was already resolved after correction."
+                        self.reporter.report_blocked(
+                            project_id, reason=reason,
+                            verification_output=json.dumps(planned.needs_decision, indent=2, sort_keys=True),
+                            attempts=2,
+                            needed="repair the local MVP planner response and wake project autonomy",
+                        )
+                        return {"status": "blocked", "project_id": project_id, "reason": reason}
                 decision_id = self._file_decision(
                     project,
                     planned.needs_decision,

@@ -1488,7 +1488,7 @@ The founder's current message is supplied separately as the user-role message. D
         model: str,
     ) -> dict[str, str]:
         draft = response.strip()
-        if not _looks_like_charter_recitation(draft):
+        if not _looks_like_prompt_recitation(draft):
             return {"status": "not_needed", "response": draft}
         repair_prompt = _build_charter_recitation_repair_prompt(
             message=message,
@@ -1510,7 +1510,7 @@ The founder's current message is supplied separately as the user-role message. D
         repaired_text = repaired.response.strip()
         if (
             repaired_text
-            and not _looks_like_charter_recitation(repaired_text)
+            and not _looks_like_prompt_recitation(repaired_text)
             and not _looks_like_profile_fragment(repaired_text)
             and not _looks_like_authority_or_safety_spill(repaired_text)
         ):
@@ -2173,6 +2173,16 @@ The founder's current message is supplied separately as the user-role message. D
         if kind == "step" and plan is not None and plan_step is not None:
             route["plan_id"] = plan["id"]
             route["plan_step_number"] = int(plan_step.get("step_number") or 0)
+        hybrid_dispatch = queued.get("dispatch") or {}
+        if engine == "hybrid" and hybrid_dispatch.get("status") == "approval_required":
+            # Hybrid has already performed its local assessment. Its next gate
+            # is the scoped build lease, not a missing native/bridge engine.
+            route.update(
+                status="approval_required",
+                approval_request_id=hybrid_dispatch.get("approval_request_id"),
+                assessment=hybrid_dispatch.get("assessment") or {},
+                build_session=hybrid_dispatch.get("build_session") or {},
+            )
         if queued.get("auto_invoked"):
             # The directed run already executed this turn — report what really
             # happened instead of pointing at an Inbox item.
@@ -3344,6 +3354,20 @@ def _looks_like_charter_recitation(text: str) -> bool:
     }
     scripted_hits = sum(1 for line in scripted_lines if line in normalized.replace("'", ""))
     return scripted_hits >= 2
+
+
+def _looks_like_prompt_recitation(text: str) -> bool:
+    """Detect a model echoing retrieved operating instructions as its reply."""
+    if _looks_like_charter_recitation(text):
+        return True
+    normalized = text.strip()
+    if not re.search(
+        r"(?im)^i(?:'m| am) using (?:the )?[^\n]{1,120}\bskill to\b",
+        normalized,
+    ):
+        return False
+    step_headings = re.findall(r"(?im)^#{2,6}\s*step\s+\d+\b", normalized)
+    return len(step_headings) >= 2 and "```" in normalized
 
 
 # A chat turn cannot start background work — runtime.respond only generates a
@@ -4565,6 +4589,16 @@ def _render_build_route_block(route: dict[str, Any]) -> str:
         return (
             f"Started the {noun} - {task} - and stopped on one call that's yours to make: "
             f"{q_text}{options_line} Answer here and I'll run it through.{inbox_line}"
+        )
+    if status == "approval_required" and route.get("engine") == "hybrid":
+        approval_id = route.get("approval_request_id")
+        approval_line = f" approval #{approval_id}" if approval_id else " the scoped build-lease approval"
+        tier = str((route.get("assessment") or {}).get("recommended_tier") or "").strip()
+        tier_line = f" ({tier} tier)" if tier else ""
+        return (
+            f"The local assessment is complete for the {noun} - {task}.{target_line} "
+            f"The next gate is{approval_line}{tier_line}; approve it in Inbox and the hybrid build runs "
+            "under that project-scoped lease. The engine is configured and ready."
         )
     if status == "run_failed":
         return (

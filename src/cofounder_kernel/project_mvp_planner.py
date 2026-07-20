@@ -270,7 +270,9 @@ def _planning_messages(
         "question, one recommendation, and 2-3 concrete options with impacts. External "
         "authority boundaries must use only the schema enum. Accepted founder answers are "
         "binding founder constraints. You must not return needs_decision for a choice already "
-        "answered there. Return JSON matching the schema."
+        "answered there. If rejected_duplicate_decision is present, the prior response was "
+        "invalid: use the accepted answer and return criteria instead. Return JSON matching "
+        "the schema."
     )
     header = {
         "name": str(project.get("name") or ""),
@@ -278,6 +280,9 @@ def _planning_messages(
         "distribution_targets": list(project.get("distribution_targets") or []),
         "accepted_founder_answers": list(
             (project.get("metadata") or {}).get("planner_founder_answers") or []
+        ),
+        "rejected_duplicate_decision": str(
+            (project.get("metadata") or {}).get("planner_rejected_duplicate_decision") or ""
         ),
     }
     sections = [f"PROJECT\n{json.dumps(header, sort_keys=True)}"]
