@@ -648,6 +648,64 @@ def test_directed_workspace_run_auto_invokes_and_completes_item(tmp_path: Path, 
     assert not client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
 
 
+def test_directed_delegation_unique_key_never_dispatches_completed_item_twice(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+    target = tmp_path / "SomeProject"
+    target.mkdir()
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    calls = {"count": 0}
+
+    def fake_agent_run(
+        self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False
+    ):
+        calls["count"] += 1
+        return {
+            "ok": True,
+            "status": "ok",
+            "error": "",
+            "founder_question": None,
+            "model": "qwen3:14b",
+            "provider": {
+                "provider": "ollama",
+                "endpoint_host": "127.0.0.1",
+                "verified_local": True,
+            },
+            "workspace": str(workspace or ""),
+            "rounds": 1,
+            "used_tools": True,
+            "steps": [],
+            "changed_files": [],
+            "response": "Already complete.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_config(tmp_path, enabled=True, auto_invoke=True, engine="native"))
+    service = app.state.delegation
+
+    first = service.queue_delegation(
+        task="build the feature",
+        workspace=str(target),
+        directed=True,
+        unique_key="project-autonomy:1:plan:criterion:1:0",
+    )
+    second = service.queue_delegation(
+        task="build the feature",
+        workspace=str(target),
+        directed=True,
+        unique_key="project-autonomy:1:plan:criterion:1:0",
+    )
+
+    assert first["auto_invoked"] is True
+    assert second["existing"] is True
+    assert second["dispatch"]["ok"] is True
+    assert calls["count"] == 1
+
+
 def test_undirected_workspace_run_still_waits_for_founder(tmp_path: Path, monkeypatch) -> None:
     """Without the directed flag, a workspace-targeted run keeps the conservative
     posture: queued for the founder, never auto-dispatched."""

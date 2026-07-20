@@ -339,6 +339,33 @@ class ProjectAutonomyReporter:
             },
         )
 
+    def bind_run(self, project_id: int, *, run_id: int) -> dict[str, Any]:
+        """Attach a recovered/resumed building phase to its current local run."""
+        project = self.get_project(project_id)
+        state = self._mutable_state(project)
+        if state.get("phase") not in {"building", "verifying"}:
+            raise ValueError(
+                f"Cannot bind a run while project phase is {state.get('phase')}."
+            )
+        bound = _positive_int(run_id)
+        if bound is None:
+            raise ValueError("A resumed autonomy run requires a positive run_id.")
+        if state.get("active_run_id") == bound:
+            return project
+        state["active_run_id"] = bound
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "increment_run_bound",
+                "metadata": {
+                    "phase": state.get("phase"),
+                    "criterion_id": state.get("current_criterion_id"),
+                    "run_id": bound,
+                },
+            },
+        )
+
     def record_increment(
         self,
         project_id: int,

@@ -191,6 +191,62 @@ class ProjectAutonomyStore:
             )
         return int(cur.rowcount or 0) == 1
 
+    def renew(
+        self,
+        project_id: int,
+        *,
+        owner: str,
+        run_id: str,
+        lease_seconds: int,
+    ) -> dict[str, Any] | None:
+        project_id = _project_id(project_id)
+        owner = _required_text(owner, "Lease owner")
+        run_id = _required_text(run_id, "Lease run_id")
+        if isinstance(lease_seconds, bool) or int(lease_seconds) <= 0:
+            raise ValueError("lease_seconds must be a positive integer.")
+        now_dt = datetime.now(UTC)
+        expires_at = (now_dt + timedelta(seconds=int(lease_seconds))).isoformat()
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM project_autonomy_leases WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if (
+                row is None
+                or str(row["owner"]) != owner
+                or str(row["run_id"]) != run_id
+                or _parse_utc(row["expires_at"]) <= now_dt
+            ):
+                return None
+            conn.execute(
+                "UPDATE project_autonomy_leases SET expires_at = ? WHERE project_id = ?",
+                (expires_at, project_id),
+            )
+            renewed = conn.execute(
+                "SELECT * FROM project_autonomy_leases WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+        return dict(renewed) if renewed is not None else None
+
+    def clear_expired_leases(self) -> int:
+        now_dt = datetime.now(UTC)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT project_id, expires_at FROM project_autonomy_leases"
+            ).fetchall()
+            expired = [
+                int(row["project_id"])
+                for row in rows
+                if _parse_utc(row["expires_at"]) <= now_dt
+            ]
+            if expired:
+                conn.executemany(
+                    "DELETE FROM project_autonomy_leases WHERE project_id = ?",
+                    [(project_id,) for project_id in expired],
+                )
+        return len(expired)
+
     def due_outbox(self, limit: int = 50) -> list[dict[str, Any]]:
         if isinstance(limit, bool) or int(limit) <= 0:
             raise ValueError("limit must be a positive integer.")

@@ -224,6 +224,7 @@ class DelegationService:
         auto_invoke: bool | None = None,
         workspace: str = "",
         directed: bool = False,
+        unique_key: str | None = None,
     ) -> dict[str, Any]:
         """Queue (and, when authorized, immediately run) a delegated build.
 
@@ -275,9 +276,34 @@ class DelegationService:
             priority=60,
             source="founder.delegation" if directed else "delegation",
             metadata=metadata,
-            unique_key=f"{queue_action}:{utc_now()}",
+            unique_key=(
+                str(unique_key).strip()
+                if unique_key is not None and str(unique_key).strip()
+                else f"{queue_action}:{utc_now()}"
+            ),
         )
         payload = result.as_dict()
+        if not result.created:
+            existing = self.db.get_work_item(result.item_id)
+            existing_result = dict(existing.result) if existing and existing.result else {}
+            already_dispatched = bool(
+                existing
+                and (
+                    existing.status in {"running", "done", "error"}
+                    or "handler" in existing_result
+                    or "ok" in existing_result
+                )
+            )
+            if already_dispatched:
+                return payload | {
+                    "auto_invoked": bool(existing_result),
+                    "existing": True,
+                    "dispatch": existing_result,
+                    "reason": "existing unique delegation reused; no duplicate dispatch",
+                }
+            # A crash can happen after the unique approved item is inserted but
+            # before its directed dispatch begins. That item is safe to resume
+            # exactly once; the terminal/running cases above never rerun.
 
         # Budgeted auto-invoke: the authorized bypass. Only when auto is on, an
         # engine can actually run (native agent wired, or a bridge command
