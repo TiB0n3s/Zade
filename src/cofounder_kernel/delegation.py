@@ -686,6 +686,7 @@ class DelegationService:
             "Use the founder's written UI answer, state how it was applied, and complete "
             "the task end to end."
         )
+        linked_parent_id = _delegation_parent_work_item_id(item)
         decision_item_id = None
         error = ""
         try:
@@ -710,6 +711,7 @@ class DelegationService:
                     "brief": resume_brief,
                     "workspace": workspace,
                     "founder_decision": True,
+                    "parent_work_item_id": linked_parent_id,
                 },
                 unique_key=f"{DELEGATION_RUN_ACTION}:decision:{utc_now()}",
             )
@@ -729,6 +731,7 @@ class DelegationService:
                 "question": question,
                 "options": options,
                 "decision_item_id": decision_item_id,
+                "parent_work_item_id": linked_parent_id,
                 "rounds": result.get("rounds"),
                 "changed_files": result.get("changed_files", []),
             },
@@ -745,6 +748,7 @@ class DelegationService:
             "changed_files": result.get("changed_files", []),
             "founder_question": {"question": question, "options": options},
             "decision_item_id": decision_item_id,
+            "parent_work_item_id": linked_parent_id,
             "artifact": str(result.get("response") or ""),
             "error": error,
         }
@@ -833,6 +837,14 @@ class DelegationService:
             ):
                 count += 1
         return count
+
+
+def _delegation_parent_work_item_id(item: WorkItem) -> int:
+    """Keep every follow-up decision linked to the original delegated run."""
+    candidate = (item.metadata or {}).get("parent_work_item_id")
+    if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate > 0:
+        return candidate
+    return item.id
 
 
 def _target_workspace_problem(workspace: str) -> str:

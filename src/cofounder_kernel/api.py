@@ -541,6 +541,7 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         build_service=build_service,
     )
     delegation.register_into(handlers)
+    work_queue.set_delegation_dispatcher(handlers.dispatch)
     # Let the chat runtime route founder build commands ("build this out for me")
     # into a gated delegation brief instead of a text-only architecture outline.
     runtime.delegation = delegation

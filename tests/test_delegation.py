@@ -823,6 +823,53 @@ def test_approved_delegation_needs_decision_keeps_parent_blocked(tmp_path: Path,
     assert "needs_decision" in parent["last_error"]
 
 
+def test_autonomous_queue_dispatches_registered_delegation_handler_and_blocks_parent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The autonomous queue reaches the registered delegation handler and
+    keeps the parent result when that handler asks the founder a question."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.authority import AuthorityDecision, AuthorityResult
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
+        return {
+            "ok": False,
+            "status": "needs_decision",
+            "founder_question": {"question": "Use SQLite or Postgres?", "options": ["SQLite", "Postgres"]},
+            "model": "qwen3:14b",
+            "steps": [],
+            "changed_files": [],
+            "response": "Paused for the founder.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    app = create_app(_config(tmp_path, enabled=True, auto_invoke=False, engine="native"))
+    monkeypatch.setattr(
+        app.state.work_queue.authority,
+        "evaluate",
+        lambda _request: AuthorityResult(
+            decision=AuthorityDecision.ALLOW,
+            reason="test autonomous delegation grant",
+            matched_rule="test.allow",
+        ),
+    )
+
+    queued = app.state.delegation.queue_delegation(task="add persistence", auto_invoke=False)
+    run = app.state.work_queue.run_next()
+
+    assert queued["status"] == "pending"
+    assert run.status == "blocked"
+    assert run.result["status"] == "needs_decision"
+    parent = app.state.db.get_work_item(queued["item_id"])
+    assert parent is not None
+    assert parent.status == "blocked"
+    assert parent.result["status"] == "needs_decision"
+    assert "needs_decision" in parent.last_error
+
+
 def test_directed_delegation_failed_verification_keeps_parent_non_complete(tmp_path: Path, monkeypatch) -> None:
     """A handler success cannot close the parent when its mandatory check failed."""
     monkeypatch.setattr(OllamaClient, "health", fake_health)
@@ -854,6 +901,120 @@ def test_directed_delegation_failed_verification_keeps_parent_non_complete(tmp_p
     )
     assert parent["result"]["auto_verification"]["ok"] is False
     assert "failed verification" in parent["last_error"]
+
+
+def test_resolved_founder_decision_reconciles_original_parent_on_success(tmp_path: Path, monkeypatch) -> None:
+    """A completed resume closes the original blocked delegation parent with
+    the resumed handler result, rather than leaving a stale block behind."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    outcomes = iter(
+        (
+            {
+                "ok": False,
+                "status": "needs_decision",
+                "founder_question": {"question": "Use SQLite or Postgres?", "options": ["SQLite", "Postgres"]},
+                "model": "qwen3:14b",
+                "steps": [],
+                "changed_files": [],
+                "response": "Paused for the founder.",
+            },
+            {
+                "ok": True,
+                "status": "ok",
+                "model": "qwen3:14b",
+                "steps": [],
+                "changed_files": ["src/app.py"],
+                "response": "Implemented the founder's choice.",
+            },
+        )
+    )
+    monkeypatch.setattr(
+        CodingAgentService,
+        "run",
+        lambda self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False: next(outcomes),
+    )
+    client = TestClient(create_app(_config(tmp_path, enabled=True, auto_invoke=True, engine="native")))
+
+    initial = client.post("/delegation/run", json={"task": "add persistence", "directed": True}).json()
+    decision_id = initial["dispatch"]["decision_item_id"]
+    decision = next(
+        item
+        for item in client.get("/work/queue", params={"status": "approval_required"}).json()["items"]
+        if item["id"] == decision_id
+    )
+    assert decision["metadata"]["parent_work_item_id"] == initial["item_id"]
+
+    resumed = client.post(
+        f"/work/items/{decision_id}/approve",
+        json={"resolved_by": "founder", "dispatch": True},
+    ).json()
+
+    assert resumed["dispatch_result"]["status"] == "ok"
+    parent = next(
+        item
+        for item in client.get("/work/queue", params={"status": "done"}).json()["items"]
+        if item["id"] == initial["item_id"]
+    )
+    assert parent["result"]["status"] == "ok"
+    assert parent["last_error"] == ""
+
+
+def test_resolved_founder_decision_reconciles_original_parent_on_error(tmp_path: Path, monkeypatch) -> None:
+    """A failed resume makes the original parent visibly error with the
+    resumed result instead of leaving it blocked forever."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    outcomes = iter(
+        (
+            {
+                "ok": False,
+                "status": "needs_decision",
+                "founder_question": {"question": "Use SQLite or Postgres?", "options": ["SQLite", "Postgres"]},
+                "model": "qwen3:14b",
+                "steps": [],
+                "changed_files": [],
+                "response": "Paused for the founder.",
+            },
+            {
+                "ok": False,
+                "status": "flow_error",
+                "error": "The resumed implementation failed.",
+                "model": "qwen3:14b",
+                "steps": [],
+                "changed_files": [],
+                "response": "Could not implement the chosen approach.",
+            },
+        )
+    )
+    monkeypatch.setattr(
+        CodingAgentService,
+        "run",
+        lambda self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False: next(outcomes),
+    )
+    client = TestClient(create_app(_config(tmp_path, enabled=True, auto_invoke=True, engine="native")))
+
+    initial = client.post("/delegation/run", json={"task": "add persistence", "directed": True}).json()
+    decision_id = initial["dispatch"]["decision_item_id"]
+    resumed = client.post(
+        f"/work/items/{decision_id}/approve",
+        json={"resolved_by": "founder", "dispatch": True},
+    ).json()
+
+    assert resumed["dispatch_result"]["status"] == "flow_error"
+    parent = next(
+        item
+        for item in client.get("/work/queue", params={"status": "error"}).json()["items"]
+        if item["id"] == initial["item_id"]
+    )
+    assert parent["result"]["status"] == "flow_error"
+    assert parent["last_error"] == "The resumed implementation failed."
 
 
 def test_founder_decision_item_resolves_without_typed_phrase(tmp_path: Path, monkeypatch) -> None:

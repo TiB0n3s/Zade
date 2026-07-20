@@ -541,6 +541,12 @@ class ApprovalService:
         result = {"approval_dispatch": True, **result}
         if item.action == "external.delegation.run":
             item_status, outcome_error = delegated_work_item_state(result)
+            self._reconcile_resumed_delegation_parent(
+                item,
+                result=result,
+                item_status=item_status,
+                outcome_error=outcome_error,
+            )
             if item_status != "done":
                 self.db.update_work_item(
                     item.id,
@@ -610,6 +616,53 @@ class ApprovalService:
             "work_item": asdict(done) if done else None,
             "audit_id": audit_id,
         }
+
+    def _reconcile_resumed_delegation_parent(
+        self,
+        item: Any,
+        *,
+        result: dict[str, Any],
+        item_status: str,
+        outcome_error: str,
+    ) -> None:
+        """Apply a terminal founder-decision resume outcome to its root run.
+
+        A decision child is an interruption of the original delegated work, not
+        a replacement for it.  Its explicit root-parent link lets the queue
+        show the original work as complete or failed once the resumed run has a
+        terminal result.
+        """
+        if not _is_founder_decision(item) or item_status not in {"done", "error"}:
+            return
+        metadata = getattr(item, "metadata", {}) or {}
+        parent_id = metadata.get("parent_work_item_id")
+        if isinstance(parent_id, bool) or not isinstance(parent_id, int) or parent_id <= 0:
+            return
+        if parent_id == item.id:
+            return
+        parent = self.db.get_work_item(parent_id)
+        if parent is None or parent.kind != "delegation_run" or parent.action != item.action:
+            return
+        self.db.update_work_item(
+            parent.id,
+            status=item_status,
+            authority_decision=parent.authority_decision,
+            result=result,
+            error=outcome_error,
+        )
+        self.db.audit(
+            actor="approval",
+            action="delegation.parent.reconcile",
+            target=item.action,
+            permission_tier=parent.permission_tier,
+            status=item_status,
+            details={
+                "parent_work_item_id": parent.id,
+                "decision_work_item_id": item.id,
+                "result": result,
+                "error": outcome_error,
+            },
+        )
 
     def _load_open_request(self, request_id: int) -> ApprovalRequest:
         """Load a request the founder can still act on: pending or deferred.

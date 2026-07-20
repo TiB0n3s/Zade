@@ -15,6 +15,7 @@ from .ingestion import IngestionService, SUPPORTED_TEXT_EXTENSIONS
 
 
 InventoryProvider = Callable[[], dict[str, Any]]
+DelegationDispatcher = Callable[[WorkItem], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,12 @@ class WorkQueueService:
         self.authority = authority
         self.ingestion = ingestion
         self.inventory_provider = inventory_provider
+        self._delegation_dispatcher: DelegationDispatcher | None = None
+
+    def set_delegation_dispatcher(self, dispatcher: DelegationDispatcher) -> None:
+        """Use the registered delegation handler when the autonomous queue runs
+        an already-authorized delegation item."""
+        self._delegation_dispatcher = dispatcher
 
     def enqueue(
         self,
@@ -367,6 +374,10 @@ class WorkQueueService:
             )
 
     def _dispatch(self, item: WorkItem) -> dict[str, Any]:
+        if item.action == "external.delegation.run":
+            if self._delegation_dispatcher is None:
+                raise ValueError("No delegation dispatcher is configured for work action: external.delegation.run")
+            return self._delegation_dispatcher(item)
         if item.action == "brief.daily.prepare":
             return self._prepare_daily_brief(item)
         if item.action == "self.inventory.snapshot":
