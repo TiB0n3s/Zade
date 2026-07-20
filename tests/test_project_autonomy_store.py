@@ -219,6 +219,31 @@ def test_release_requires_matching_owner_and_run(tmp_path: Path) -> None:
     assert store.release(project_id, owner="worker", run_id="run-1") is True
 
 
+def test_recovery_clears_lease_owned_by_a_dead_kernel_process(tmp_path: Path) -> None:
+    db = migrated_db(tmp_path)
+    project_id = make_project(db, tmp_path)
+    store = ProjectAutonomyStore(db)
+    store.claim(
+        project_id,
+        owner="zade-project-autonomy:999999",
+        run_id="abandoned-run",
+        lease_seconds=900,
+        expected_version=0,
+    )
+
+    cleared = store.clear_orphaned_process_leases(is_process_alive=lambda _pid: False)
+
+    assert cleared == 1
+    recovered = store.claim(
+        project_id,
+        owner="zade-project-autonomy:current",
+        run_id="current-run",
+        lease_seconds=900,
+        expected_version=0,
+    )
+    assert recovered is not None
+
+
 def test_outbox_dedupe_preserves_undelivered_row(tmp_path: Path) -> None:
     db = migrated_db(tmp_path)
     project_id = make_project(db, tmp_path)

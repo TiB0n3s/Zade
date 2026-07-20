@@ -177,6 +177,7 @@ class ProjectAutonomyOrchestrator:
 
     def recover(self) -> dict[str, int]:
         expired = self.store.clear_expired_leases()
+        orphaned = self.store.clear_orphaned_process_leases()
         unfinished = 0
         for project in self.reporter.list_views(limit=500):
             if _is_runnable(project.get("autonomy") or {}):
@@ -184,6 +185,7 @@ class ProjectAutonomyOrchestrator:
         self.wake(reason="startup recovery")
         return {
             "expired_leases_cleared": expired,
+            "orphaned_leases_cleared": orphaned,
             "unfinished_seen": unfinished,
             "duplicate_runs_created": 0,
         }

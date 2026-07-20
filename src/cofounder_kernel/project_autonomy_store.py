@@ -9,7 +9,9 @@ version and a single-writer lease per project.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -246,6 +248,29 @@ class ProjectAutonomyStore:
                     [(project_id,) for project_id in expired],
                 )
         return len(expired)
+
+    def clear_orphaned_process_leases(
+        self, *, is_process_alive: Callable[[int], bool] | None = None
+    ) -> int:
+        """Release active leases left behind by a forcibly stopped kernel process."""
+        alive = is_process_alive or _process_is_alive
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT project_id, owner FROM project_autonomy_leases"
+            ).fetchall()
+            orphaned = [
+                (int(row["project_id"]), str(row["owner"]))
+                for row in rows
+                if (pid := _autonomy_owner_pid(str(row["owner"]))) is not None
+                and not alive(pid)
+            ]
+            if orphaned:
+                conn.executemany(
+                    "DELETE FROM project_autonomy_leases WHERE project_id = ? AND owner = ?",
+                    orphaned,
+                )
+        return len(orphaned)
 
     def due_outbox(self, limit: int = 50) -> list[dict[str, Any]]:
         if isinstance(limit, bool) or int(limit) <= 0:
@@ -498,3 +523,26 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _autonomy_owner_pid(owner: str) -> int | None:
+    prefix = "zade-project-autonomy:"
+    if not owner.startswith(prefix):
+        return None
+    try:
+        pid = int(owner.removeprefix(prefix))
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _process_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
