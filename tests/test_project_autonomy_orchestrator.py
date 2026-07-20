@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from cofounder_kernel import project_autonomy_orchestrator as autonomy_orchestrator
 from cofounder_kernel.config import (
     DelegationConfig,
     KernelConfig,
@@ -38,6 +39,24 @@ CRITERIA = [
         "depends_on": ["mvp-one"],
     },
 ]
+
+
+def test_windows_post_commit_check_resolves_command_shim(monkeypatch) -> None:
+    """The coding agent records `npm`, while Windows exposes npm.cmd."""
+    monkeypatch.setattr(autonomy_orchestrator.os, "name", "nt")
+    monkeypatch.setattr(
+        autonomy_orchestrator.shutil,
+        "which",
+        lambda executable: r"C:\\Program Files\\nodejs\\npm.CMD"
+        if executable == "npm"
+        else None,
+    )
+
+    assert autonomy_orchestrator._resolve_check_argv(["npm", "exec", "--no"]) == [
+        r"C:\\Program Files\\nodejs\\npm.CMD",
+        "exec",
+        "--no",
+    ]
 
 
 class FakePlanner:

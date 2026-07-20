@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -965,7 +966,7 @@ def _run_declared_verification(root: Path, commands: list[Any]) -> dict[str, Any
 def _run_check(root: Path, raw_argv: Any) -> dict[str, Any]:
     if not isinstance(raw_argv, list) or not raw_argv or not all(str(item).strip() for item in raw_argv):
         raise ValueError("Verification command is missing an audited argv list.")
-    argv = [str(item) for item in raw_argv]
+    argv = _resolve_check_argv([str(item) for item in raw_argv])
     executable = Path(argv[0]).name.casefold()
     if executable not in _SAFE_VERIFY_EXECUTABLES:
         raise ValueError(f"Post-commit verification executable is not allowlisted: {argv[0]}")
@@ -991,6 +992,19 @@ def _run_check(root: Path, raw_argv: Any) -> dict[str, Any]:
         "returncode": int(result.returncode),
         "output": output[:20_000],
     }
+
+
+def _resolve_check_argv(argv: list[str]) -> list[str]:
+    """Resolve Windows command shims before direct subprocess execution.
+
+    The audited coding-agent checks use portable command names such as `npm`,
+    but Windows exposes the executable as npm.cmd. PowerShell resolves that
+    shim automatically; subprocess does not.
+    """
+    if os.name != "nt" or not argv:
+        return argv
+    resolved = shutil.which(argv[0])
+    return [resolved, *argv[1:]] if resolved else argv
 
 
 def _decision_options(question: dict[str, Any]) -> list[dict[str, str]]:
