@@ -163,7 +163,7 @@ class ProjectMvpPlanner:
             num_predict=4096,
         )
         try:
-            payload = json.loads(str(result.response or ""))
+            payload = _parse_planner_json(result.response)
         except json.JSONDecodeError as exc:
             raise ValueError("The local MVP planner returned invalid structured JSON.") from exc
         if not isinstance(payload, dict):
@@ -217,6 +217,15 @@ def _planning_schema(project: dict[str, Any]) -> dict[str, Any]:
     schema = json.loads(json.dumps(MVP_PLAN_SCHEMA))
     schema["properties"]["needs_decision"] = {"type": "null"}
     return schema
+
+
+def _parse_planner_json(response: Any) -> Any:
+    text = str(response or "").strip()
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+    return json.loads(text)
 
 
 def _read_project_documents(root: Path) -> list[_Document]:

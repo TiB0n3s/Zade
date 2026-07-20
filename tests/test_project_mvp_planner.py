@@ -17,14 +17,14 @@ It must also keep crisis contact information available without a network.
 
 
 class FakeOllama:
-    def __init__(self, payload: dict[str, Any]):
+    def __init__(self, payload: dict[str, Any] | str):
         self.payload = payload
         self.calls: list[dict[str, Any]] = []
 
     def chat(self, **kwargs: Any) -> GenerateResult:
         self.calls.append(kwargs)
         return GenerateResult(
-            response=json.dumps(self.payload),
+            response=self.payload if isinstance(self.payload, str) else json.dumps(self.payload),
             model=str(kwargs.get("model") or "local-coder"),
             raw={},
         )
@@ -115,6 +115,20 @@ def test_planner_returns_stable_source_cited_criteria(tmp_path: Path) -> None:
     assert call["think"] is False
     assert call["format"] == MVP_PLAN_SCHEMA
     assert call["messages"][0]["role"] == "system"
+
+
+def test_planner_accepts_a_json_plan_wrapped_in_a_markdown_fence(tmp_path: Path) -> None:
+    root = make_documented_project(tmp_path)
+    response = "```json\n" + json.dumps(valid_payload()) + "\n```"
+
+    result = ProjectMvpPlanner(
+        config=config_for(root), ollama=FakeOllama(response)
+    ).plan(project_record(root))
+
+    assert [item["id"] for item in result.criteria] == [
+        "mvp-resource-search",
+        "mvp-crisis-access",
+    ]
 
 
 def test_planner_prompt_treats_founder_answers_as_binding_constraints(
