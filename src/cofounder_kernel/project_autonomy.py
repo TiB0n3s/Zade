@@ -302,6 +302,12 @@ class ProjectAutonomyReporter:
     def resume(self, project_id: int) -> dict[str, Any]:
         project = self.get_project(project_id)
         state = self._state_for_project(project)
+        if state.get("phase") == "blocked" and not state.get("mvp_criteria"):
+            state.update({
+                "phase": "planning", "blocking_type": None, "blocking_reason": None,
+                "active_run_id": None, "next_action": "re-plan the documented MVP from recorded founder answers",
+            })
+            return self._transition(project, state, event={"event_type": "autonomy_resumed", "metadata": {"phase": "planning"}})
         if state.get("paused") is not True:
             return project
         state.update(
