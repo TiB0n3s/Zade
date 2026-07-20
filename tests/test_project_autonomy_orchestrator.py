@@ -482,7 +482,7 @@ def test_two_urgent_projects_claim_concurrently_but_never_twice_each(tmp_path: P
         orchestrator.release_claim(claim)
 
 
-def test_repairs_use_unique_work_keys_and_block_after_budget(tmp_path: Path) -> None:
+def test_repairs_use_unique_work_keys_and_requeue_after_budget(tmp_path: Path) -> None:
     delegation = FakeDelegation([failed_dispatch(f"failure {index}") for index in range(4)])
     orchestrator, reporter, db, config, _ = make_services(
         tmp_path, delegation=delegation, repairs=3
@@ -491,7 +491,7 @@ def test_repairs_use_unique_work_keys_and_block_after_budget(tmp_path: Path) -> 
 
     result = orchestrator.run_once()
 
-    assert result["status"] == "blocked"
+    assert result["status"] == "repair_pending"
     assert len(delegation.calls) == 4
     assert len({call["unique_key"] for call in delegation.calls}) == 4
     assert [call["unique_key"].rsplit(":", 1)[-1] for call in delegation.calls] == [
@@ -501,8 +501,10 @@ def test_repairs_use_unique_work_keys_and_block_after_budget(tmp_path: Path) -> 
         "3",
     ]
     state = reporter.state(project_id)
-    assert state["phase"] == "blocked"
-    assert state["blocking_type"] == "error"
+    assert state["phase"] == "ready_for_next_increment"
+    assert state["blocking_type"] is None
+    assert state["blocking_reason"] is None
+    assert "automated repair" in state["next_action"]
     assert subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=root,
@@ -513,6 +515,17 @@ def test_repairs_use_unique_work_keys_and_block_after_budget(tmp_path: Path) -> 
     assert not list((root / "src").glob("increment-*.txt"))
     quarantined = config.paths.data_dir / "project-autonomy-failed-attempts" / str(project_id)
     assert len(list(quarantined.glob("*/untracked/src/increment-*.txt"))) == 4
+    assert not [
+        event
+        for event in db.list_project_events(project_id, limit=None)
+        if event["event_type"] == "build_blocked"
+    ]
+    repair_events = [
+        event
+        for event in db.list_project_events(project_id, limit=None)
+        if event["event_type"] == "mechanical_repair_requeued"
+    ]
+    assert len(repair_events) == 1
 
 
 def test_destructive_manifest_rewrite_is_quarantined_without_retry(tmp_path: Path) -> None:
@@ -608,6 +621,10 @@ def test_repair_can_pass_and_records_only_post_commit_evidence(tmp_path: Path) -
     criterion = reporter.state(project_id)["mvp_criteria"][0]
     assert result["status"] == "criterion_complete"
     assert len(delegation.calls) == 2
+    assert (root / "src" / "increment-1.txt").is_file()
+    assert (root / "src" / "increment-2.txt").is_file()
+    quarantined = config.paths.data_dir / "project-autonomy-failed-attempts" / str(project_id)
+    assert not quarantined.exists()
     assert criterion["verification"]["ok"] is True
     assert criterion["commit"] == subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True

@@ -37,7 +37,13 @@ PHASES = (
 
 ALLOWED_TRANSITIONS = {
     "planning": {"building", "needs_decision", "blocked"},
-    "building": {"verifying", "needs_decision", "approval_required", "blocked"},
+    "building": {
+        "verifying",
+        "ready_for_next_increment",
+        "needs_decision",
+        "approval_required",
+        "blocked",
+    },
     "verifying": {
         "ready_for_next_increment",
         "needs_decision",
@@ -430,6 +436,56 @@ class ProjectAutonomyReporter:
             },
         )
 
+    def requeue_mechanical_repair(
+        self,
+        project_id: int,
+        *,
+        criterion_id: str,
+        verification_output: str,
+        attempts: int,
+    ) -> dict[str, Any]:
+        """Return a mechanically failing increment to the autonomous repair queue.
+
+        Compiler, analyzer, and test failures are implementation work. They are
+        not founder boundaries and must not turn into a terminal project block.
+        """
+        project = self.get_project(project_id)
+        state = self._mutable_state(project)
+        criterion = _find_criterion(state, criterion_id)
+        if criterion.get("status") == "complete":
+            raise ValueError(f"MVP criterion already complete: {criterion_id}")
+        self._require_transition(
+            state,
+            "ready_for_next_increment",
+            operation="requeue mechanical repair",
+        )
+        reason = str(verification_output or "mechanical verification failed").strip()
+        criterion["status"] = "pending"
+        criterion["last_repair_failure"] = reason[:2000]
+        criterion["repair_attempts"] = max(int(attempts), 1)
+        state.update(
+            {
+                "phase": "ready_for_next_increment",
+                "active_run_id": None,
+                "blocking_type": None,
+                "blocking_reason": None,
+                "next_action": f"continue automated repair for criterion {criterion_id}",
+            }
+        )
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "mechanical_repair_requeued",
+                "detail": reason[:400],
+                "metadata": {
+                    "phase": "ready_for_next_increment",
+                    "criterion_id": criterion_id,
+                    "attempts": max(int(attempts), 1),
+                },
+            },
+        )
+
     def bind_run(self, project_id: int, *, run_id: int) -> dict[str, Any]:
         """Attach a recovered/resumed building phase to its current local run."""
         project = self.get_project(project_id)
@@ -552,6 +608,8 @@ class ProjectAutonomyReporter:
             }
         )
         criterion.pop("blocked_reason", None)
+        criterion.pop("last_repair_failure", None)
+        criterion.pop("repair_attempts", None)
         state.update(
             {
                 "phase": "ready_for_next_increment",

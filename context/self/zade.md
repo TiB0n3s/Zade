@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `7a4fdd7` 2026-07-20 - fix: protect dependency manifests during autonomy
 - `52cbede` 2026-07-20 - fix: dispatch and reconcile delegated decisions
 - `9cb076e` 2026-07-20 - fix: keep incomplete delegation work visible
 - `3079586` 2026-07-20 - fix: auto-resolve local autonomy choices
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `cb2db27` 2026-07-20 - Recovery
 - `19a562f` 2026-07-20 - fix: preserve autonomy version while planning MVP
 - `8e725ca` 2026-07-20 - fix: continue after corrected MVP planner response
-- `75f355c` 2026-07-20 - fix: expose autonomous worker planning failures
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

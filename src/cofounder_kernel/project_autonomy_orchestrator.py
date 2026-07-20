@@ -425,6 +425,7 @@ class ProjectAutonomyOrchestrator:
 
         failure_output = ""
         attempts = self.config.project_intake.autonomy_repair_attempts + 1
+        increment_head = _git_checked(root, "rev-parse", "HEAD").stdout.strip()
         for attempt in range(attempts):
             self._renew(claim)
             current = self.reporter.state(project_id)
@@ -548,26 +549,19 @@ class ProjectAutonomyOrchestrator:
                 }
             problem = _dispatch_problem(dispatch)
             if problem:
-                quarantine = _quarantine_and_restore_attempt(
-                    root,
-                    expected_head=attempt_head,
-                    quarantine_root=quarantine_root,
-                )
-                if quarantine is not None:
-                    self.db.append_project_event(
-                        project_id,
-                        event_type="autonomy_attempt_quarantined",
-                        detail=f"Attempt {attempt + 1} failed verification and was rolled back.",
-                        metadata={
-                            "attempt": attempt + 1,
-                            "criterion_id": criterion["id"],
-                            "quarantine_path": str(quarantine),
-                        },
-                    )
                 failure_output = (
-                    f"{problem}\n\nThe failed attempt was rolled back to the clean Git "
-                    "checkpoint. Re-implement from the existing project; do not depend on "
-                    "files or manifest changes from the prior attempt."
+                    f"{problem}\n\nRepair the current working tree in place. Preserve the "
+                    "implementation already present, correct the reported mechanical failure, "
+                    "and rerun the project checks."
+                )
+                self.db.append_project_event(
+                    project_id,
+                    event_type="autonomy_repair_continuing",
+                    detail=f"Attempt {attempt + 1} failed mechanical verification; repair in place.",
+                    metadata={
+                        "attempt": attempt + 1,
+                        "criterion_id": criterion["id"],
+                    },
                 )
                 continue
             try:
@@ -589,16 +583,36 @@ class ProjectAutonomyOrchestrator:
             return self._complete_if_ready(project_id, root, verification)
 
         reason = failure_output or "local delegated execution did not produce passing evidence"
-        self.reporter.report_blocked(
+        current_head = _git_checked(root, "rev-parse", "HEAD").stdout.strip()
+        quarantine = None
+        if current_head == increment_head:
+            quarantine = _quarantine_and_restore_attempt(
+                root,
+                expected_head=increment_head,
+                quarantine_root=quarantine_root,
+            )
+        if quarantine is not None:
+            self.db.append_project_event(
+                project_id,
+                event_type="autonomy_attempt_quarantined",
+                detail=(
+                    f"Repair budget exhausted after {attempts} attempts; the cumulative "
+                    "working tree was quarantined before automatic requeue."
+                ),
+                metadata={
+                    "attempt": attempts,
+                    "criterion_id": criterion["id"],
+                    "quarantine_path": str(quarantine),
+                },
+            )
+        self.reporter.requeue_mechanical_repair(
             project_id,
-            reason=reason[:400],
             criterion_id=criterion["id"],
             verification_output=reason,
             attempts=attempts,
-            needed="repair the local verification failure or clarify the documented criterion",
         )
         return {
-            "status": "blocked",
+            "status": "repair_pending",
             "project_id": project_id,
             "criterion_id": criterion["id"],
             "attempts": attempts,
