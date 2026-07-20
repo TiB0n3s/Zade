@@ -259,6 +259,37 @@ class WorkQueueService:
         self.db.update_work_item(item.id, status="running", authority_decision=authority.decision.value)
         try:
             result = self._dispatch(item)
+            if item.action == "external.delegation.run":
+                item_status, outcome_error = delegated_work_item_state(result)
+                if item_status != "done":
+                    self.db.update_work_item(
+                        item.id,
+                        status=item_status,
+                        authority_decision=authority.decision.value,
+                        result=result,
+                        error=outcome_error,
+                    )
+                    self.db.audit(
+                        actor="work.queue",
+                        action="work.run",
+                        target=item.action,
+                        permission_tier=item.permission_tier,
+                        status=item_status,
+                        details={
+                            "item_id": item.id,
+                            "authority": authority.as_dict(),
+                            "result": result,
+                            "error": outcome_error,
+                        },
+                    )
+                    return RunResult(
+                        item_id=item.id,
+                        status=item_status,
+                        action=item.action,
+                        authority=authority.as_dict(),
+                        result=result,
+                        error=outcome_error,
+                    )
             result_failure = _work_action_result_failure(result)
             if result_failure:
                 self.db.update_work_item(
@@ -506,6 +537,33 @@ def _work_action_result_failure(result: dict[str, Any]) -> str:
         error = str(result.get("error") or "").strip()
         return f"Work action returned status={status}: {error}" if error else f"Work action returned status={status}."
     return ""
+
+
+def delegated_work_item_state(result: dict[str, Any]) -> tuple[str, str]:
+    """Map a delegated handler result to the parent work-item lifecycle.
+
+    Delegation can successfully *file* a decision or approval without finishing
+    the delegated task.  Those outcomes must remain actionable on the parent
+    rather than being collapsed into a completed queue item.
+    """
+    if not isinstance(result, dict):
+        return "error", "Delegated run returned an invalid result."
+    status = str(result.get("status") or "").strip().lower()
+    error = str(result.get("error") or "").strip()
+    if status == "needs_decision":
+        return "blocked", error or "Delegated run needs_decision."
+    if status == "approval_required":
+        return "approval_required", error or "Delegated run requires approval."
+    if status == "blocked":
+        return "blocked", error or "Delegated run is blocked."
+    if result.get("ok") is not True or status != "ok":
+        return "error", error or f"Delegated run returned status={status or 'unknown'}."
+    verification = result.get("auto_verification")
+    if isinstance(verification, dict) and verification.get("ok") is False:
+        return "error", error or "Delegated run failed verification."
+    if error:
+        return "error", error
+    return "done", ""
 
 
 def _source_is_founder_command(source: str, metadata: dict[str, Any]) -> bool:

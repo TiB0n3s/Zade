@@ -28,7 +28,7 @@ from typing import Any, Callable
 from .config import KernelConfig
 from .db import KernelDatabase, WorkItem, utc_now
 from .founder import FounderService
-from .autonomy import WorkQueueService
+from .autonomy import WorkQueueService, delegated_work_item_state
 
 DELEGATION_RUN_ACTION = "external.delegation.run"
 HYBRID_ASSESS_ACTION = "local.assessment.prepare"
@@ -358,10 +358,7 @@ class DelegationService:
     def _finalize_auto_invoked_item(self, item_id: int, dispatch: dict[str, Any]) -> None:
         """Record the auto-invoked run's outcome on its own work item."""
         try:
-            ok = bool(dispatch.get("ok"))
-            status = str(dispatch.get("status") or "")
-            item_status = "done" if ok or status == "needs_decision" else "error"
-            error = "" if item_status == "done" else str(dispatch.get("error") or status)[:400]
+            item_status, error = delegated_work_item_state(dispatch)
             self.db.update_work_item(item_id, status=item_status, result=dispatch, error=error)
         except Exception:  # noqa: BLE001 - bookkeeping must not discard the dispatch result
             pass

@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import Any, Callable
 
 from .authority import AuthorityDecision, AuthorityPolicy, AuthorityRequest
+from .autonomy import delegated_work_item_state
 from .db import ApprovalRequest, KernelDatabase
 from .handlers import ActionHandlerRegistry
 
@@ -538,6 +539,31 @@ class ApprovalService:
             raise
 
         result = {"approval_dispatch": True, **result}
+        if item.action == "external.delegation.run":
+            item_status, outcome_error = delegated_work_item_state(result)
+            if item_status != "done":
+                self.db.update_work_item(
+                    item.id,
+                    status=item_status,
+                    authority_decision=item.authority_decision,
+                    result=result,
+                    error=outcome_error,
+                )
+                failed = self.db.get_work_item(item.id)
+                audit_id = self.db.audit(
+                    actor="approval",
+                    action="approval.dispatch",
+                    target=item.action,
+                    permission_tier=item.permission_tier,
+                    status=item_status,
+                    details={"work_item_id": item.id, "result": result, "error": outcome_error},
+                )
+                return {
+                    "dispatch": "dispatch_failed",
+                    "result": result,
+                    "work_item": asdict(failed) if failed else None,
+                    "audit_id": audit_id,
+                }
         handler_failure = _handler_result_failure(item.action, result)
         if handler_failure:
             self.db.update_work_item(

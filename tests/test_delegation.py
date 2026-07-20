@@ -773,9 +773,87 @@ def test_directed_needs_decision_files_founder_question(tmp_path: Path, monkeypa
     # The resume brief keeps the original task and surfaces the question.
     assert "## Founder decision" in decision["metadata"]["brief"]
     assert decision["metadata"]["task"] == "add persistence"
-    # The original run item is closed (its outcome is the decision item).
-    done = client.get("/work/queue", params={"status": "done"}).json()["items"]
-    assert any(item["id"] == result["item_id"] for item in done)
+    # The parent remains visibly blocked until the founder answers the filed
+    # question; filing a decision is not completing the delegated work.
+    parent = next(
+        item
+        for item in client.get("/work/queue", params={"status": "blocked"}).json()["items"]
+        if item["id"] == result["item_id"]
+    )
+    assert parent["result"]["status"] == "needs_decision"
+    assert "needs_decision" in parent["last_error"]
+
+
+def test_approved_delegation_needs_decision_keeps_parent_blocked(tmp_path: Path, monkeypatch) -> None:
+    """The approved handler path applies the same non-completion lifecycle
+    when it files a founder decision."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
+        return {
+            "ok": False,
+            "status": "needs_decision",
+            "founder_question": {"question": "Use SQLite or Postgres?", "options": ["SQLite", "Postgres"]},
+            "model": "qwen3:14b",
+            "steps": [],
+            "changed_files": [],
+            "response": "Paused for the founder.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    client = TestClient(create_app(_config(tmp_path, enabled=True, auto_invoke=False, engine="native")))
+    queued = client.post("/delegation/run", json={"task": "add persistence"}).json()
+
+    approved = client.post(
+        f"/work/items/{queued['item_id']}/approve",
+        json={"resolved_by": "founder", "dispatch": True, "typed_confirmation": PHRASE},
+    ).json()
+
+    assert approved["dispatch_result"]["status"] == "needs_decision"
+    parent = next(
+        item
+        for item in client.get("/work/queue", params={"status": "blocked"}).json()["items"]
+        if item["id"] == queued["item_id"]
+    )
+    assert parent["status"] == "blocked"
+    assert parent["result"]["status"] == "needs_decision"
+    assert "needs_decision" in parent["last_error"]
+
+
+def test_directed_delegation_failed_verification_keeps_parent_non_complete(tmp_path: Path, monkeypatch) -> None:
+    """A handler success cannot close the parent when its mandatory check failed."""
+    monkeypatch.setattr(OllamaClient, "health", fake_health)
+    monkeypatch.setattr(OllamaClient, "embed", fake_embed)
+
+    from cofounder_kernel.coding_agent import CodingAgentService
+
+    def fake_agent_run(self, *, task, workspace=None, context="", max_rounds=None, model=None, verify_always=False):
+        return {
+            "ok": True,
+            "status": "ok",
+            "model": "qwen3:14b",
+            "steps": [],
+            "changed_files": ["src/app.py"],
+            "auto_verification": {"ok": False, "error": "pytest failed"},
+            "response": "Implemented the change, but pytest failed.",
+        }
+
+    monkeypatch.setattr(CodingAgentService, "run", fake_agent_run)
+    client = TestClient(create_app(_config(tmp_path, enabled=True, auto_invoke=True, engine="native")))
+
+    result = client.post("/delegation/run", json={"task": "fix the app", "directed": True}).json()
+
+    assert result["dispatch"]["status"] == "ok"
+    parent = next(
+        item
+        for item in client.get("/work/queue", params={"status": "error"}).json()["items"]
+        if item["id"] == result["item_id"]
+    )
+    assert parent["result"]["auto_verification"]["ok"] is False
+    assert "failed verification" in parent["last_error"]
 
 
 def test_founder_decision_item_resolves_without_typed_phrase(tmp_path: Path, monkeypatch) -> None:
