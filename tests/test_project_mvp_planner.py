@@ -117,6 +117,21 @@ def test_planner_returns_stable_source_cited_criteria(tmp_path: Path) -> None:
     assert call["messages"][0]["role"] == "system"
 
 
+def test_planner_prompt_treats_founder_answers_as_binding_constraints(
+    tmp_path: Path,
+) -> None:
+    root = make_documented_project(tmp_path)
+    project = project_record(root)
+    project["metadata"] = {"planner_founder_answers": ["Stick to current ABIs."]}
+    fake = FakeOllama(valid_payload())
+
+    ProjectMvpPlanner(config=config_for(root), ollama=fake).plan(project)
+
+    system_prompt = fake.calls[0]["messages"][0]["content"]
+    assert "accepted founder answers are binding founder constraints" in system_prompt.lower()
+    assert "must not return needs_decision for a choice already answered there" in system_prompt.lower()
+
+
 def test_planner_prompt_excludes_code_generated_and_legacy_material(tmp_path: Path) -> None:
     root = make_documented_project(tmp_path, "The Dark Index")
     (root / "app.py").write_text("SECRET_SOURCE_CODE", encoding="utf-8")

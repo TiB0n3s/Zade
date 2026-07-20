@@ -268,7 +268,9 @@ def _planning_messages(
         "mechanically testable acceptance checks. If the documents leave a consequential "
         "product or architecture choice unresolved, return needs_decision with the exact "
         "question, one recommendation, and 2-3 concrete options with impacts. External "
-        "authority boundaries must use only the schema enum. Return JSON matching the schema."
+        "authority boundaries must use only the schema enum. Accepted founder answers are "
+        "binding founder constraints. You must not return needs_decision for a choice already "
+        "answered there. Return JSON matching the schema."
     )
     header = {
         "name": str(project.get("name") or ""),
