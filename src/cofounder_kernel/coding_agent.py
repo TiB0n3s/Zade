@@ -861,6 +861,87 @@ class CodingAgentService:
                     }
             return handler(args)
 
+        protected_manifests = {
+            "package.json",
+            "package-lock.json",
+            "pubspec.yaml",
+            "pubspec.lock",
+            "pyproject.toml",
+            "poetry.lock",
+            "cargo.toml",
+            "cargo.lock",
+            "go.mod",
+            "go.sum",
+        }
+
+        def is_protected_manifest(target: Path) -> bool:
+            return target.is_file() and target.name.casefold() in protected_manifests
+
+        def guarded_full_file_write(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                target = self._resolve_in_workspace(root, str(args.get("path") or ""))
+                relative = str(target.relative_to(root)).replace("\\", "/")
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+            if is_protected_manifest(target):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"{relative} is a protected dependency manifest and cannot be "
+                        "overwritten wholesale. Preserve the existing file: use "
+                        "replace_in_file for a surgical edit or the ecosystem package "
+                        "manager through run_command."
+                    ),
+                }
+            return guarded_write(lambda values: self._tool_write_file(root, values), args)
+
+        def guarded_replace(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                target = self._resolve_in_workspace(root, str(args.get("path") or ""))
+                relative = str(target.relative_to(root)).replace("\\", "/")
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+            if is_protected_manifest(target):
+                original = target.read_text(encoding="utf-8", errors="replace")
+                old_text = str(args.get("old_text") or "")
+                new_text = str(args.get("new_text") or "")
+                if old_text and original.count(old_text) == 1:
+                    candidate = original.replace(old_text, new_text, 1)
+                    original_lines = [line for line in original.splitlines() if line.strip()]
+                    candidate_lines = [line for line in candidate.splitlines() if line.strip()]
+                    cursor = 0
+                    for line in original_lines:
+                        while cursor < len(candidate_lines) and candidate_lines[cursor] != line:
+                            cursor += 1
+                        if cursor >= len(candidate_lines):
+                            return {
+                                "ok": False,
+                                "error": (
+                                    f"{relative} is a protected dependency manifest. A "
+                                    "surgical edit must preserve every existing manifest line "
+                                    "in order; use the ecosystem package manager when an "
+                                    "existing entry must change."
+                                ),
+                            }
+                        cursor += 1
+            return guarded_write(lambda values: self._tool_replace(root, values), args)
+
+        def guarded_delete(args: dict[str, Any]) -> dict[str, Any]:
+            try:
+                target = self._resolve_in_workspace(root, str(args.get("path") or ""))
+                relative = str(target.relative_to(root)).replace("\\", "/")
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "error": str(exc)}
+            if is_protected_manifest(target):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"{relative} is a protected dependency manifest and cannot be "
+                        "deleted. Preserve it and make only the required additive change."
+                    ),
+                }
+            return guarded_write(lambda values: self._tool_delete_file(root, values), args)
+
         if progress_notes is not None:
             add(
                 AgentTool(
@@ -971,9 +1052,7 @@ class CodingAgentService:
                     },
                     "required": ["path", "content"],
                 },
-                handler=lambda args: guarded_write(
-                    lambda values: self._tool_write_file(root, values), args
-                ),
+                handler=guarded_full_file_write,
                 writes=True,
             )
         )
@@ -986,9 +1065,7 @@ class CodingAgentService:
                     "properties": {"path": {"type": "string"}},
                     "required": ["path"],
                 },
-                handler=lambda args: guarded_write(
-                    lambda values: self._tool_delete_file(root, values), args
-                ),
+                handler=guarded_delete,
                 writes=True,
             )
         )
@@ -1008,9 +1085,7 @@ class CodingAgentService:
                     },
                     "required": ["path", "old_text", "new_text"],
                 },
-                handler=lambda args: guarded_write(
-                    lambda values: self._tool_replace(root, values), args
-                ),
+                handler=guarded_replace,
                 writes=True,
             )
         )

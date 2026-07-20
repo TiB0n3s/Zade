@@ -346,6 +346,127 @@ def test_unallowlisted_command_is_refused(tmp_path: Path, fixture_repo: Path) ->
     assert "not allowlisted" in str(tool_messages[0]["content"])
 
 
+def test_existing_dependency_manifest_cannot_be_overwritten_wholesale(tmp_path: Path) -> None:
+    workspace = tmp_path / "flutter-workspace"
+    workspace.mkdir()
+    manifest = workspace / "pubspec.yaml"
+    original = (
+        "name: preserved_app\n"
+        "dependencies:\n"
+        "  flutter:\n"
+        "    sdk: flutter\n"
+        "  sqflite: ^2.4.3\n"
+    )
+    manifest.write_text(original, encoding="utf-8")
+    svc, ollama = _service(
+        tmp_path,
+        workspace,
+        [
+            {
+                "tool_calls": [
+                    _call(
+                        "write_file",
+                        path="pubspec.yaml",
+                        content=(
+                            "name: replaced_app\n"
+                            "dependencies:\n"
+                            "  firebase_core: ^4.0.0\n"
+                        ),
+                    )
+                ]
+            },
+            {"content": "I preserved the manifest."},
+        ],
+    )
+
+    svc.run(task="Add an authenticated cloud backup dependency")
+
+    assert manifest.read_text(encoding="utf-8") == original
+    tool_messages = [
+        message
+        for message in ollama.calls[1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert tool_messages
+    assert "protected dependency manifest" in str(tool_messages[-1]["content"])
+    assert "replace_in_file" in str(tool_messages[-1]["content"])
+
+
+def test_dependency_manifest_replacement_must_preserve_existing_lines(tmp_path: Path) -> None:
+    workspace = tmp_path / "flutter-workspace"
+    workspace.mkdir()
+    manifest = workspace / "pubspec.yaml"
+    original = (
+        "name: preserved_app\n"
+        "dependencies:\n"
+        "  flutter:\n"
+        "    sdk: flutter\n"
+        "  sqflite: ^2.4.3\n"
+    )
+    manifest.write_text(original, encoding="utf-8")
+    svc, ollama = _service(
+        tmp_path,
+        workspace,
+        [
+            {
+                "tool_calls": [
+                    _call(
+                        "replace_in_file",
+                        path="pubspec.yaml",
+                        old_text=original,
+                        new_text=(
+                            "name: replaced_app\n"
+                            "dependencies:\n"
+                            "  firebase_core: ^4.0.0\n"
+                        ),
+                    )
+                ]
+            },
+            {"content": "I preserved the manifest."},
+        ],
+    )
+
+    svc.run(task="Add an authenticated cloud backup dependency")
+
+    assert manifest.read_text(encoding="utf-8") == original
+    tool_messages = [
+        message
+        for message in ollama.calls[1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert tool_messages
+    assert "must preserve every existing manifest line" in str(
+        tool_messages[-1]["content"]
+    )
+
+
+def test_existing_dependency_manifest_cannot_be_deleted(tmp_path: Path) -> None:
+    workspace = tmp_path / "flutter-workspace"
+    workspace.mkdir()
+    manifest = workspace / "pubspec.yaml"
+    original = "name: preserved_app\ndependencies:\n  http: ^1.6.0\n"
+    manifest.write_text(original, encoding="utf-8")
+    svc, ollama = _service(
+        tmp_path,
+        workspace,
+        [
+            {"tool_calls": [_call("delete_file", path="pubspec.yaml")]},
+            {"content": "I preserved the manifest."},
+        ],
+    )
+
+    svc.run(task="Adjust cloud backup dependencies")
+
+    assert manifest.read_text(encoding="utf-8") == original
+    tool_messages = [
+        message
+        for message in ollama.calls[1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert tool_messages
+    assert "protected dependency manifest" in str(tool_messages[-1]["content"])
+
+
 def test_npx_stays_off_the_allowlist(tmp_path: Path, fixture_repo: Path) -> None:
     # npm/node are allowlisted for JS-project maintenance, but npx executes
     # arbitrary packages by design and must stay refused.

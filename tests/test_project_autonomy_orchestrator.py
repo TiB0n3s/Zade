@@ -515,6 +515,87 @@ def test_repairs_use_unique_work_keys_and_block_after_budget(tmp_path: Path) -> 
     assert len(list(quarantined.glob("*/untracked/src/increment-*.txt"))) == 4
 
 
+def test_destructive_manifest_rewrite_is_quarantined_without_retry(tmp_path: Path) -> None:
+    class ManifestReplacingDelegation:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def queue_delegation(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls.append(kwargs)
+            root = Path(kwargs["workspace"])
+            (root / "pubspec.yaml").write_text(
+                "name: replaced_app\ndependencies:\n  firebase_core: ^4.0.0\n",
+                encoding="utf-8",
+            )
+            return {"dispatch": passing_dispatch()}
+
+    delegation = ManifestReplacingDelegation()
+    orchestrator, reporter, db, config, _ = make_services(
+        tmp_path, delegation=delegation, repairs=3  # type: ignore[arg-type]
+    )
+    project_id, root = make_project(db, config, "The Dark Index")
+    original = (
+        "name: the_dark_index\n"
+        "description: Private-first collection\n"
+        "publish_to: none\n"
+        "version: 0.1.0+1\n"
+        "environment:\n"
+        "  sdk: ^3.12.2\n"
+        "dependencies:\n"
+        "  flutter:\n"
+        "    sdk: flutter\n"
+        "  sqflite: ^2.4.3\n"
+        "  path: ^1.9.1\n"
+        "dev_dependencies:\n"
+        "  flutter_test:\n"
+        "    sdk: flutter\n"
+        "flutter:\n"
+        "  uses-material-design: true\n"
+    )
+    (root / "pubspec.yaml").write_text(original, encoding="utf-8")
+    subprocess.run(["git", "add", "pubspec.yaml"], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "add manifest",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "blocked"
+    assert "protected dependency manifest" in result["reason"]
+    assert len(delegation.calls) == 1
+    assert reporter.state(project_id)["phase"] == "blocked"
+    assert (root / "pubspec.yaml").read_text(encoding="utf-8") == original
+    assert subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
+    events = db.list_project_events(project_id, limit=None)
+    quarantines = [
+        event
+        for event in events
+        if event["event_type"] == "autonomy_attempt_quarantined"
+        and event.get("metadata", {}).get("failure_class")
+        == "protected_manifest_rewrite"
+    ]
+    assert len(quarantines) == 1
+
+
 def test_repair_can_pass_and_records_only_post_commit_evidence(tmp_path: Path) -> None:
     delegation = FakeDelegation([failed_dispatch(), passing_dispatch()])
     orchestrator, reporter, db, config, _ = make_services(

@@ -25,6 +25,13 @@ from .project_mvp_planner import MvpPlanResult, ProjectMvpPlanner
 _PRIORITY_ORDER = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
 _TERMINAL_PHASES = {"mvp_complete", "needs_decision", "approval_required", "blocked"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_PROTECTED_DEPENDENCY_MANIFESTS = {
+    "package.json",
+    "pubspec.yaml",
+    "pyproject.toml",
+    "cargo.toml",
+    "go.mod",
+}
 _SAFE_VERIFY_EXECUTABLES = {
     "python",
     "python.exe",
@@ -442,6 +449,49 @@ class ProjectAutonomyOrchestrator:
                 unique_key=unique_key,
             )
             dispatch = result.get("dispatch") if isinstance(result.get("dispatch"), dict) else {}
+            manifest_problem = _protected_manifest_rewrite_problem(root, attempt_head)
+            if manifest_problem:
+                quarantine = _quarantine_and_restore_attempt(
+                    root,
+                    expected_head=attempt_head,
+                    quarantine_root=quarantine_root,
+                )
+                reason = (
+                    "Autonomous attempt rewrote a protected dependency manifest: "
+                    f"{manifest_problem}"
+                )
+                self.db.append_project_event(
+                    project_id,
+                    event_type="autonomy_attempt_quarantined",
+                    detail=(
+                        f"Attempt {attempt + 1} violated dependency-manifest integrity "
+                        "and was rolled back without retry."
+                    ),
+                    metadata={
+                        "attempt": attempt + 1,
+                        "criterion_id": criterion["id"],
+                        "failure_class": "protected_manifest_rewrite",
+                        "quarantine_path": str(quarantine) if quarantine is not None else None,
+                    },
+                )
+                self.reporter.report_blocked(
+                    project_id,
+                    reason=reason[:400],
+                    criterion_id=criterion["id"],
+                    verification_output=reason,
+                    attempts=attempt + 1,
+                    needed=(
+                        "preserve the existing dependency manifest and make only "
+                        "additive package changes"
+                    ),
+                )
+                return {
+                    "status": "blocked",
+                    "project_id": project_id,
+                    "criterion_id": criterion["id"],
+                    "attempts": attempt + 1,
+                    "reason": reason[:400],
+                }
             local_choice = _reversible_local_implementation_choice(dispatch)
             if local_choice:
                 quarantine = _quarantine_and_restore_attempt(
@@ -1264,6 +1314,39 @@ def _positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _protected_manifest_rewrite_problem(root: Path, expected_head: str) -> str:
+    changed = _git_checked(root, "diff", "--name-only", expected_head, "--").stdout.splitlines()
+    for relative in changed:
+        normalized = relative.strip().replace("\\", "/")
+        if not normalized or Path(normalized).name.casefold() not in _PROTECTED_DEPENDENCY_MANIFESTS:
+            continue
+        baseline = _git(root, "show", f"{expected_head}:{normalized}")
+        if baseline.returncode != 0:
+            # A newly created manifest has no committed baseline to preserve.
+            continue
+        target = (root / normalized).resolve()
+        if not target.is_relative_to(root.resolve()) or not target.is_file():
+            return f"{normalized} was deleted"
+        baseline_lines = [
+            line
+            for line in baseline.stdout.splitlines()
+            if line.strip() and not line.lstrip().startswith(("#", "//"))
+        ]
+        candidate_lines = {
+            line
+            for line in target.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip() and not line.lstrip().startswith(("#", "//"))
+        }
+        missing = [line for line in baseline_lines if line not in candidate_lines]
+        allowed_missing = max(3, (len(baseline_lines) + 3) // 4)
+        if len(missing) > allowed_missing:
+            return (
+                f"{normalized} removed {len(missing)} of {len(baseline_lines)} "
+                "existing nonblank lines"
+            )
+    return ""
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
