@@ -47,7 +47,7 @@ ALLOWED_TRANSITIONS = {
     "ready_for_next_increment": {"building", "mvp_complete", "needs_decision", "blocked"},
     "needs_decision": {"building", "blocked"},
     "approval_required": {"building", "blocked"},
-    "blocked": {"planning", "building"},
+    "blocked": {"planning", "building", "ready_for_next_increment"},
     "mvp_complete": set(),
 }
 
@@ -308,6 +308,39 @@ class ProjectAutonomyReporter:
                 "active_run_id": None, "next_action": "re-plan the documented MVP from recorded founder answers",
             })
             return self._transition(project, state, event={"event_type": "autonomy_resumed", "metadata": {"phase": "planning"}})
+        if state.get("phase") == "blocked":
+            # This endpoint is an explicit founder recovery action. Requeue a
+            # blocked criterion after the underlying tooling or workspace has
+            # been repaired, rather than waking a permanently terminal state.
+            self._require_transition(
+                state, "ready_for_next_increment", operation="resume autonomy"
+            )
+            criterion_id = str(state.get("current_criterion_id") or "")
+            if criterion_id:
+                criterion = _find_criterion(state, criterion_id)
+                if criterion.get("status") == "blocked":
+                    criterion["status"] = "pending"
+                    criterion.pop("blocked_reason", None)
+            state.update(
+                {
+                    "phase": "ready_for_next_increment",
+                    "blocking_type": None,
+                    "blocking_reason": None,
+                    "active_run_id": None,
+                    "next_action": "retry the current documented MVP criterion",
+                }
+            )
+            return self._transition(
+                project,
+                state,
+                event={
+                    "event_type": "autonomy_resumed",
+                    "metadata": {
+                        "phase": "ready_for_next_increment",
+                        "criterion_id": criterion_id or None,
+                    },
+                },
+            )
         if state.get("paused") is not True:
             return project
         state.update(

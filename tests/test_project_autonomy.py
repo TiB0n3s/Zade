@@ -689,6 +689,31 @@ def test_blocked_notification_carries_real_failure_detail(tmp_path: Path) -> Non
         reporter.report_blocked(project_id, reason="x", severity="info")
 
 
+def test_founder_resume_requeues_a_blocked_documented_criterion(tmp_path: Path) -> None:
+    """A founder's explicit resume is the recovery boundary after tooling is
+    repaired. It must not leave the current criterion permanently blocked."""
+    reporter, db = make_reporter(tmp_path)
+    project_id = make_project(db, tmp_path)
+    reporter.plan(project_id, criteria=CRITERIA)
+    reporter.begin_increment(project_id, criterion_id="auth")
+    reporter.report_blocked(
+        project_id,
+        criterion_id="auth",
+        reason="local verifier was unavailable",
+    )
+
+    resumed = reporter.resume(project_id)
+    state = resumed["metadata"]["autonomy"]
+
+    assert state["phase"] == "ready_for_next_increment"
+    assert state["blocking_type"] is None
+    assert state["blocking_reason"] is None
+    assert state["active_run_id"] is None
+    criterion = next(item for item in state["mvp_criteria"] if item["id"] == "auth")
+    assert criterion["status"] == "pending"
+    assert "blocked_reason" not in criterion
+
+
 def test_routine_increment_records_ledger_but_never_notifies(tmp_path: Path) -> None:
     bus = FakeBus()
     reporter, db = make_reporter(tmp_path, bus=bus)
