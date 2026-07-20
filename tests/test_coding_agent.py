@@ -728,6 +728,16 @@ def test_verification_plan_adds_tsc_for_typescript_workspaces(tmp_path: Path) ->
     assert ["npm", "exec", "--no", "--", "tsc", "--noEmit"] in checks
     assert unchecked == ["notes.txt"]
 
+    # Delegated work must still verify the workspace when a model reports no
+    # changed files. Without this, TypeScript apps that expose only a
+    # typecheck command are incorrectly marked "UNVERIFIED".
+    mode, checks, unchecked = svc._verification_plan(
+        no_test_ws, [], force_workspace=True
+    )
+    assert mode == "tests"
+    assert checks == [["npm", "exec", "--no", "--", "tsc", "--noEmit"]]
+    assert unchecked == []
+
 
 def test_verification_plan_uses_offline_flutter_checks(tmp_path: Path) -> None:
     flutter_ws = tmp_path / "flutter-ws"

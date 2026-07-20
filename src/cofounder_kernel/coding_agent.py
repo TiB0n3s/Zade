@@ -626,6 +626,11 @@ class CodingAgentService:
             if tsc_argv is not None:
                 checks.append(tsc_argv)
             return "tests", checks, []
+        # Delegated execution verifies the desired workspace state even when
+        # the model reports no diff. A TypeScript app may intentionally have
+        # no test script but still expose a reliable local type check.
+        if force_workspace and tsc_argv is not None:
+            return "tests", [tsc_argv], []
         py_files = [f for f in changed if f.lower().endswith(".py")]
         json_files = [f for f in changed if f.lower().endswith(".json")]
         ts_files = (
