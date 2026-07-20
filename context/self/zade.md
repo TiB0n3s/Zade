@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `5d26244` 2026-07-20 - fix: isolate failed autonomy attempts
 - `2133a65` 2026-07-20 - fix: resolve Windows verifier command shims
 - `6ed895c` 2026-07-20 - fix: requeue blocked autonomy on founder resume
 - `ae168b7` 2026-07-20 - fix: verify TypeScript workspaces without test scripts
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `31dd3f2` 2026-07-20 - fix: recover leases from stopped autonomy workers
 - `2799d88` 2026-07-20 - fix: bound MVP planner input to founder documents
 - `1918966` 2026-07-20 - fix: force corrected MVP plans to use founder decisions
-- `36992ce` 2026-07-20 - fix: resume blocked unplanned projects
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

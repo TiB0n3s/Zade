@@ -449,6 +449,62 @@ def test_resolve_decision_injects_answer_into_paused_work_item_and_resumes(tmp_p
     ]
 
 
+def test_resolve_done_resume_only_decision_repairs_stale_waiting_project(
+    tmp_path: Path,
+) -> None:
+    class RejectDoneApprovals:
+        def approve_work_item(self, *_args, **_kwargs):
+            raise AssertionError("A done resume-only item must not be approved again.")
+
+    service, config, db = make_service(tmp_path, approvals=RejectDoneApprovals())
+    project_root = config.paths.project_intake_dir / "The Dark Index"
+    project_root.mkdir(parents=True)
+    (project_root / "project.md").write_text(MOBILE_MANIFEST, encoding="utf-8")
+    project = service.scan(auto_run=False)["projects"][0]
+    decision_id, _created = db.enqueue_work_item(
+        kind="founder_decision",
+        title="Decision needed",
+        detail="Choose local storage",
+        action="external.delegation.run",
+        target="native-coding-agent",
+        permission_tier="L3_EXTERNAL_ACTION",
+        metadata={
+            "brief": "Resume the offline collection criterion.",
+            "workspace": str(project_root.resolve()),
+            "founder_decision": True,
+            "project_autonomy": True,
+            "project_autonomy_resume_only": True,
+            "project_id": project["id"],
+        },
+    )
+    db.update_work_item(decision_id, status="done")
+    listener_calls = []
+    service.set_decision_listener(
+        lambda project_id, answer, context: listener_calls.append(
+            (project_id, answer, context)
+        )
+    )
+
+    resumed = service.resolve_decision(
+        decision_id,
+        "Use on-device SQLite.",
+        resolved_by="founder.direct",
+    )
+
+    assert resumed["id"] == project["id"]
+    assert listener_calls == [
+        (
+            project["id"],
+            "Use on-device SQLite.",
+            {
+                "decision_id": decision_id,
+                "resolved_by": "founder.direct",
+                "work_item_id": decision_id,
+            },
+        )
+    ]
+
+
 def test_parse_project_decision_reply_requires_explicit_decision_id() -> None:
     assert parse_project_decision_reply("decision 42: Use SQLite") == (42, "Use SQLite")
     assert parse_project_decision_reply("/decision #17 - Choose option B") == (17, "Choose option B")

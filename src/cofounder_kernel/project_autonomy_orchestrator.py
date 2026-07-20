@@ -442,6 +442,41 @@ class ProjectAutonomyOrchestrator:
                 unique_key=unique_key,
             )
             dispatch = result.get("dispatch") if isinstance(result.get("dispatch"), dict) else {}
+            local_choice = _reversible_local_implementation_choice(dispatch)
+            if local_choice:
+                quarantine = _quarantine_and_restore_attempt(
+                    root,
+                    expected_head=attempt_head,
+                    quarantine_root=quarantine_root,
+                )
+                decision_item_id = _positive_int(dispatch.get("decision_item_id"))
+                if decision_item_id is not None and self.db.get_work_item(decision_item_id) is not None:
+                    self.db.update_work_item(
+                        decision_item_id,
+                        status="done",
+                        result={
+                            "status": "local_implementation_choice_applied",
+                            "choice": local_choice,
+                            "resumed_by": "project_autonomy_orchestrator",
+                        },
+                    )
+                self.db.append_project_event(
+                    project_id,
+                    event_type="local_implementation_choice_applied",
+                    detail=local_choice,
+                    work_item_id=decision_item_id,
+                    metadata={
+                        "attempt": attempt + 1,
+                        "criterion_id": criterion["id"],
+                        "quarantine_path": str(quarantine) if quarantine is not None else None,
+                    },
+                )
+                failure_output = (
+                    "The kernel resolved a reversible, local implementation choice without "
+                    f"interrupting the founder: {local_choice}\n\n"
+                    "Apply this choice and complete the documented criterion."
+                )
+                continue
             boundary = self._classify_boundary(project, criterion, dispatch)
             if boundary is not None:
                 _quarantine_and_restore_attempt(
@@ -814,7 +849,9 @@ class ProjectAutonomyOrchestrator:
         decisions = [
             str(event.get("detail") or "")
             for event in self.db.list_project_events(project["id"], limit=100)
-            if event.get("event_type") == "decision_applied" and str(event.get("detail") or "").strip()
+            if event.get("event_type")
+            in {"decision_applied", "local_implementation_choice_applied"}
+            and str(event.get("detail") or "").strip()
         ]
         head = _git(root, "rev-parse", "HEAD").stdout.strip()
         state = self.reporter.state(project["id"])
@@ -829,9 +866,10 @@ class ProjectAutonomyOrchestrator:
             f"## Prior real verification failure\n{failure_output[:4000] or '(none)'}\n\n"
             "Implement only this criterion. Work inline in the registered repository. "
             "Preserve the existing project structure and dependency manifests. Never replace "
-            "package.json, pubspec.yaml, or lockfiles wholesale. Do not import a package that "
-            "is not already declared and locally installed; prefer existing dependencies and "
-            "platform APIs. Make the smallest coherent change that satisfies the criterion. "
+            "package.json, pubspec.yaml, or lockfiles wholesale. Prefer existing dependencies "
+            "and platform APIs. If an accepted local choice requires a new package, add it "
+            "through the ecosystem's package manager and preserve every unrelated manifest "
+            "entry. Make the smallest coherent change that satisfies the criterion. "
             "Use local tools and the supplied verification commands. Do not publish, buy, "
             "create an external account, accept legal terms, or cross another recorded "
             "authority boundary. Ask the founder only for a genuinely consequential choice; "
@@ -861,6 +899,55 @@ class ProjectAutonomyOrchestrator:
         if str(self.config.ollama.provider_policy) == "cloud_allowed":
             return "Project autonomy refuses cloud_allowed model inference."
         return ""
+
+
+def _reversible_local_implementation_choice(dispatch: dict[str, Any]) -> str:
+    """Select a safe local implementation detail instead of paging the founder."""
+    if str(dispatch.get("status") or "").strip().casefold() != "needs_decision":
+        return ""
+    question = dispatch.get("founder_question")
+    if not isinstance(question, dict):
+        return ""
+    raw_options = question.get("options") or []
+    options = [
+        str(item.get("option") if isinstance(item, dict) else item).strip()
+        for item in raw_options
+    ]
+    options = [item for item in options if item]
+    recommendation = str(question.get("recommendation") or "").strip()
+    combined = " ".join(
+        [str(question.get("question") or ""), recommendation, *options]
+    ).casefold()
+    local_markers = (
+        "package",
+        "dependency",
+        "local database",
+        "local storage",
+        "on-device",
+        "sharedpreferences",
+        "sqflite",
+        "library",
+    )
+    consequential_markers = (
+        "paid",
+        "purchase",
+        "subscription",
+        "cloud",
+        "external account",
+        "email account",
+        "publish",
+        "deploy",
+        "app store",
+        "legal",
+        "privacy policy",
+        "data retention",
+        "scope expansion",
+    )
+    if not any(marker in combined for marker in local_markers):
+        return ""
+    if any(marker in combined for marker in consequential_markers):
+        return ""
+    return recommendation or (options[0] if options else "")
 
 
 def _is_runnable(state: dict[str, Any]) -> bool:

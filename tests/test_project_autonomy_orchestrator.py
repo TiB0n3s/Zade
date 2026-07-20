@@ -593,6 +593,45 @@ def test_agent_decision_is_reclassified_into_canonical_project_ui(tmp_path: Path
     assert reporter.state(project_id)["phase"] == "needs_decision"
 
 
+def test_reversible_local_dependency_choice_is_applied_without_founder_interruption(
+    tmp_path: Path,
+) -> None:
+    dispatch = {
+        "status": "needs_decision",
+        "ok": True,
+        "founder_question": {
+            "question": (
+                "Should I add the sqflite package for the local database, or use "
+                "another local storage method?"
+            ),
+            "recommendation": "Add sqflite for on-device SQLite storage.",
+            "options": [
+                "Add sqflite package",
+                "Use SharedPreferences",
+            ],
+        },
+        "artifact": "Paused for a reversible local dependency choice.",
+    }
+    delegation = FakeDelegation([dispatch, passing_dispatch()])
+    orchestrator, reporter, db, config, _ = make_services(
+        tmp_path, delegation=delegation
+    )
+    project_id, _root = make_project(db, config, "The Dark Index")
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "criterion_complete"
+    assert len(delegation.calls) == 2
+    assert "Add sqflite for on-device SQLite storage." in delegation.calls[1]["brief"]
+    assert "add it through the ecosystem's package manager" in delegation.calls[1]["brief"]
+    assert reporter.state(project_id)["phase"] == "ready_for_next_increment"
+    assert any(
+        event["event_type"] == "local_implementation_choice_applied"
+        and "sqflite" in event["detail"]
+        for event in db.list_project_events(project_id, limit=None)
+    )
+
+
 def test_approval_boundary_is_classified_without_telegram_resolution(tmp_path: Path) -> None:
     dispatch = {
         "status": "approval_required",

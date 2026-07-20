@@ -227,6 +227,25 @@ class ProjectIntakeService:
             metadata={"decision_id": decision_id, "resolved_by": resolved_by},
         )
         resume_only = item.metadata.get("project_autonomy_resume_only") is True
+        if resume_only and item.status == "done":
+            should_notify_listener = True
+            if self.autonomy is not None:
+                state = self.autonomy.state(project["id"])
+                should_notify_listener = (
+                    state.get("phase") == "needs_decision"
+                    and _positive_int(state.get("decision_id")) == decision_id
+                )
+            if should_notify_listener and self._decision_listener is not None:
+                self._decision_listener(
+                    project["id"],
+                    clean_answer,
+                    {
+                        "decision_id": decision_id,
+                        "resolved_by": resolved_by,
+                        "work_item_id": decision_id,
+                    },
+                )
+            return self.get(project["id"])
         resumed = self.approvals.approve_work_item(
             decision_id,
             resolved_by=resolved_by,
