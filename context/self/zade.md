@@ -132,30 +132,18 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
-- `6a46744` 2026-07-19 - feat: wire durable project autonomy wake and recovery
-- `3f4d88b` 2026-07-19 - feat: run project intake through verified MVP completion
-- `85c0e77` 2026-07-19 - feat: derive durable MVP plans from project docs
-- `dea3e5a` 2026-07-19 - fix: unify project autonomy status truth
-- `b364dd9` 2026-07-19 - feat: resolve project boundaries through Zade UI
-- `7768ff3` 2026-07-19 - fix: enforce project autonomy evidence and transitions
-- `65d13ae` 2026-07-19 - feat: add transactional project autonomy store
-- `022bc70` 2026-07-19 - docs: plan project intake MVP autonomy implementation
-- `65a107c` 2026-07-19 - docs: design project intake MVP autonomy loop
-- `b37bd93` 2026-07-19 - test: update stale schema-version pins to v32
-- `d3a9259` 2026-07-19 - docs: orchestrator integration handoff for the project-autonomy contract
-- `346093e` 2026-07-19 - feat: project-autonomy truth and notification contract
-- `8ef1694` 2026-07-19 - docs: plan project intake autopilot
-- `e15c5f2` 2026-07-19 - docs: reset Dark Index intake design
-- `ca5b6c4` 2026-07-19 - fix: value-aware trading-brief concern detection + weekend awareness
-- `92cd8bb` 2026-07-19 - docs: design project intake autopilot
-- `8741571` 2026-07-19 - fix: auto-resolve cleared integrity warnings in run_integrity_check
-- `4f197bb` 2026-07-19 - feat: require fresh approval for renewed build leases
-- `0c46772` 2026-07-19 - fix: omit deprecated Anthropic sampling params
-- `623ddac` 2026-07-19 - feat: verify Android install and launch locally
-- `0bfc54b` 2026-07-19 - feat: retry interrupted local build tasks
-- `14066c5` 2026-07-19 - fix: feed verifier evidence into local retries
-- `6ed15f7` 2026-07-19 - fix: keep planning phases command free
-- `178c9d4` 2026-07-19 - fix: exclude generated outputs from verifier context
+- `19a562f` 2026-07-20 - fix: preserve autonomy version while planning MVP
+- `8e725ca` 2026-07-20 - fix: continue after corrected MVP planner response
+- `75f355c` 2026-07-20 - fix: expose autonomous worker planning failures
+- `31dd3f2` 2026-07-20 - fix: recover leases from stopped autonomy workers
+- `2799d88` 2026-07-20 - fix: bound MVP planner input to founder documents
+- `1918966` 2026-07-20 - fix: force corrected MVP plans to use founder decisions
+- `36992ce` 2026-07-20 - fix: resume blocked unplanned projects
+- `d0dd395` 2026-07-20 - fix: retry duplicate MVP decisions with founder answers
+- `802aa58` 2026-07-20 - fix: retain all founder answers for MVP planning
+- `fd3e450` 2026-07-20 - fix: block invalid project MVP plans safely
+- `818bb2a` 2026-07-20 - fix: bind founder answers in MVP planning
+- `5b11636` 2026-07-19 - fix: recover restored project scaffold verification
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
