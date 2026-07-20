@@ -487,7 +487,7 @@ def test_repairs_use_unique_work_keys_and_block_after_budget(tmp_path: Path) -> 
     orchestrator, reporter, db, config, _ = make_services(
         tmp_path, delegation=delegation, repairs=3
     )
-    project_id, _root = make_project(db, config, "Same Ground")
+    project_id, root = make_project(db, config, "Same Ground")
 
     result = orchestrator.run_once()
 
@@ -503,6 +503,16 @@ def test_repairs_use_unique_work_keys_and_block_after_budget(tmp_path: Path) -> 
     state = reporter.state(project_id)
     assert state["phase"] == "blocked"
     assert state["blocking_type"] == "error"
+    assert subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
+    assert not list((root / "src").glob("increment-*.txt"))
+    quarantined = config.paths.data_dir / "project-autonomy-failed-attempts" / str(project_id)
+    assert len(list(quarantined.glob("*/untracked/src/increment-*.txt"))) == 4
 
 
 def test_repair_can_pass_and_records_only_post_commit_evidence(tmp_path: Path) -> None:
@@ -653,6 +663,9 @@ def test_recovered_building_phase_can_repair_its_dirty_workspace(tmp_path: Path)
 
     assert result["status"] == "criterion_complete"
     assert reporter.state(project_id)["mvp_criteria"][0]["status"] == "complete"
+    assert not (root / "interrupted.txt").exists()
+    quarantined = config.paths.data_dir / "project-autonomy-failed-attempts" / str(project_id)
+    assert len(list(quarantined.glob("*/untracked/interrupted.txt"))) == 1
 
 
 def test_non_native_or_cloud_fallback_policy_fails_closed(tmp_path: Path) -> None:

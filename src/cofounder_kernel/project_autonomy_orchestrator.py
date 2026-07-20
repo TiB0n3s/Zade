@@ -261,11 +261,37 @@ class ProjectAutonomyOrchestrator:
             )
             return {"status": "blocked", "project_id": project_id, "reason": policy_problem}
 
+        quarantine_root = (
+            self.config.paths.data_dir
+            / "project-autonomy-failed-attempts"
+            / str(project_id)
+        )
         try:
-            _ensure_clean_repository(
-                root,
-                allow_dirty=str(state.get("phase") or "") in {"building", "verifying"},
-            )
+            # A recovered worker may inherit files from an interrupted attempt.
+            # Preserve those files outside the repo, restore the last commit,
+            # and start from a clean checkpoint. Never feed a half-applied
+            # attempt into the next model call.
+            _ensure_clean_repository(root, allow_dirty=True)
+            dirty = _git_checked(root, "status", "--porcelain").stdout.strip()
+            if dirty:
+                if str(state.get("phase") or "") not in {"building", "verifying"}:
+                    raise ValueError(
+                        "Repository has uncommitted changes before the autonomy increment: "
+                        + dirty[:800]
+                    )
+                checkpoint_head = _git_checked(root, "rev-parse", "HEAD").stdout.strip()
+                quarantine = _quarantine_and_restore_attempt(
+                    root,
+                    expected_head=checkpoint_head,
+                    quarantine_root=quarantine_root,
+                )
+                if quarantine is not None:
+                    self.db.append_project_event(
+                        project_id,
+                        event_type="autonomy_attempt_quarantined",
+                        detail="Recovered an interrupted build from a clean Git checkpoint.",
+                        metadata={"quarantine_path": str(quarantine)},
+                    )
         except ValueError as exc:
             self.reporter.report_blocked(
                 project_id,
@@ -395,6 +421,7 @@ class ProjectAutonomyOrchestrator:
         for attempt in range(attempts):
             self._renew(claim)
             current = self.reporter.state(project_id)
+            attempt_head = _git_checked(root, "rev-parse", "HEAD").stdout.strip()
             unique_key = (
                 f"project-autonomy:{project_id}:{current.get('plan_revision') or 'unplanned'}:"
                 f"{criterion['id']}:{increment}:{attempt}"
@@ -417,8 +444,18 @@ class ProjectAutonomyOrchestrator:
             dispatch = result.get("dispatch") if isinstance(result.get("dispatch"), dict) else {}
             boundary = self._classify_boundary(project, criterion, dispatch)
             if boundary is not None:
+                _quarantine_and_restore_attempt(
+                    root,
+                    expected_head=attempt_head,
+                    quarantine_root=quarantine_root,
+                )
                 return boundary
             if self.reporter.state(project_id).get("paused") is True:
+                _quarantine_and_restore_attempt(
+                    root,
+                    expected_head=attempt_head,
+                    quarantine_root=quarantine_root,
+                )
                 return {
                     "status": "paused",
                     "project_id": project_id,
@@ -426,7 +463,27 @@ class ProjectAutonomyOrchestrator:
                 }
             problem = _dispatch_problem(dispatch)
             if problem:
-                failure_output = problem
+                quarantine = _quarantine_and_restore_attempt(
+                    root,
+                    expected_head=attempt_head,
+                    quarantine_root=quarantine_root,
+                )
+                if quarantine is not None:
+                    self.db.append_project_event(
+                        project_id,
+                        event_type="autonomy_attempt_quarantined",
+                        detail=f"Attempt {attempt + 1} failed verification and was rolled back.",
+                        metadata={
+                            "attempt": attempt + 1,
+                            "criterion_id": criterion["id"],
+                            "quarantine_path": str(quarantine),
+                        },
+                    )
+                failure_output = (
+                    f"{problem}\n\nThe failed attempt was rolled back to the clean Git "
+                    "checkpoint. Re-implement from the existing project; do not depend on "
+                    "files or manifest changes from the prior attempt."
+                )
                 continue
             try:
                 commit = _commit_increment(root, criterion)
@@ -771,6 +828,10 @@ class ProjectAutonomyOrchestrator:
             f"## Recorded external boundaries\n{json.dumps(state.get('external_boundaries') or [])}\n\n"
             f"## Prior real verification failure\n{failure_output[:4000] or '(none)'}\n\n"
             "Implement only this criterion. Work inline in the registered repository. "
+            "Preserve the existing project structure and dependency manifests. Never replace "
+            "package.json, pubspec.yaml, or lockfiles wholesale. Do not import a package that "
+            "is not already declared and locally installed; prefer existing dependencies and "
+            "platform APIs. Make the smallest coherent change that satisfies the criterion. "
             "Use local tools and the supplied verification commands. Do not publish, buy, "
             "create an external account, accept legal terms, or cross another recorded "
             "authority boundary. Ask the founder only for a genuinely consequential choice; "
@@ -856,6 +917,84 @@ def _dispatch_problem(dispatch: dict[str, Any]) -> str:
     if isinstance(review, dict) and str(review.get("verdict") or "").casefold() == "fail":
         return f"Fresh-context verifier rejected the increment: {review.get('notes') or 'no notes'}"[:2000]
     return ""
+
+
+def _quarantine_and_restore_attempt(
+    root: Path,
+    *,
+    expected_head: str,
+    quarantine_root: Path,
+) -> Path | None:
+    """Preserve a failed attempt outside the repo, then restore clean HEAD.
+
+    Autonomy enters an attempt only from a clean Git checkpoint. Any tracked
+    diff or untracked file after a rejected dispatch therefore belongs to that
+    attempt. The evidence is copied to the kernel data directory before the
+    checkout is restored, so rollback is recoverable and never silently loses
+    a concurrent founder file.
+    """
+    status = _git_checked(root, "status", "--porcelain").stdout.strip()
+    if not status:
+        return None
+    current_head = _git_checked(root, "rev-parse", "HEAD").stdout.strip()
+    if current_head != expected_head:
+        raise ValueError(
+            "Autonomous attempt changed repository HEAD; refusing automatic rollback."
+        )
+    resolved_root = root.resolve()
+    resolved_quarantine_root = quarantine_root.resolve()
+    if resolved_quarantine_root == resolved_root or resolved_quarantine_root.is_relative_to(
+        resolved_root
+    ):
+        raise ValueError("Failed-attempt quarantine must be outside the project repository.")
+
+    quarantine = resolved_quarantine_root / f"{time.time_ns()}-{uuid.uuid4().hex[:8]}"
+    quarantine.mkdir(parents=True, exist_ok=False)
+    (quarantine / "metadata.json").write_text(
+        json.dumps(
+            {"project_path": str(resolved_root), "head": expected_head, "status": status},
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    patch = _git_checked(root, "diff", "--binary", "HEAD", "--").stdout
+    if patch:
+        (quarantine / "tracked.patch").write_text(patch, encoding="utf-8")
+
+    untracked_result = _git_checked(
+        root, "ls-files", "--others", "--exclude-standard", "-z"
+    ).stdout
+    untracked: list[Path] = []
+    for relative_text in (item for item in untracked_result.split("\0") if item):
+        source = (resolved_root / relative_text).resolve()
+        if not source.is_relative_to(resolved_root) or not source.is_file():
+            continue
+        relative = source.relative_to(resolved_root)
+        destination = quarantine / "untracked" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        untracked.append(source)
+
+    _git_checked(root, "restore", "--source=HEAD", "--staged", "--worktree", "--", ".")
+    for source in untracked:
+        if source.is_file():
+            source.unlink()
+        parent = source.parent
+        while parent != resolved_root:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+    remaining = _git_checked(root, "status", "--porcelain").stdout.strip()
+    if remaining:
+        raise ValueError(
+            "Failed autonomous attempt could not be restored to a clean checkpoint: "
+            + remaining[:800]
+        )
+    return quarantine
 
 
 def _ensure_clean_repository(root: Path, *, allow_dirty: bool = False) -> None:

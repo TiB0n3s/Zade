@@ -132,6 +132,11 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `2133a65` 2026-07-20 - fix: resolve Windows verifier command shims
+- `6ed895c` 2026-07-20 - fix: requeue blocked autonomy on founder resume
+- `ae168b7` 2026-07-20 - fix: verify TypeScript workspaces without test scripts
+- `2b43c58` 2026-07-20 - fix: accept fenced local MVP planner JSON
+- `cb2db27` 2026-07-20 - Recovery
 - `19a562f` 2026-07-20 - fix: preserve autonomy version while planning MVP
 - `8e725ca` 2026-07-20 - fix: continue after corrected MVP planner response
 - `75f355c` 2026-07-20 - fix: expose autonomous worker planning failures
@@ -139,11 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `2799d88` 2026-07-20 - fix: bound MVP planner input to founder documents
 - `1918966` 2026-07-20 - fix: force corrected MVP plans to use founder decisions
 - `36992ce` 2026-07-20 - fix: resume blocked unplanned projects
-- `d0dd395` 2026-07-20 - fix: retry duplicate MVP decisions with founder answers
-- `802aa58` 2026-07-20 - fix: retain all founder answers for MVP planning
-- `fd3e450` 2026-07-20 - fix: block invalid project MVP plans safely
-- `818bb2a` 2026-07-20 - fix: bind founder answers in MVP planning
-- `5b11636` 2026-07-19 - fix: recover restored project scaffold verification
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
