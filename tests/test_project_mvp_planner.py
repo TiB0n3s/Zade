@@ -220,14 +220,46 @@ def test_planner_prompt_excludes_native_build_artifacts(tmp_path: Path) -> None:
     assert "GENERATED_NATIVE_BUILD_ARTIFACT" not in prompt
 
 
-def test_planner_rejects_source_input_that_would_exhaust_model_context(tmp_path: Path) -> None:
+def test_planner_bounds_source_input_without_exhausting_model_context(tmp_path: Path) -> None:
     root = make_documented_project(tmp_path)
     (root / "long-spec.md").write_text("x" * 100_000, encoding="utf-8")
+    fake = FakeOllama(valid_payload())
 
-    with pytest.raises(ValueError, match="bounded planning prompt"):
-        ProjectMvpPlanner(config=config_for(root), ollama=FakeOllama(valid_payload())).plan(
-            project_record(root)
-        )
+    result = ProjectMvpPlanner(config=config_for(root), ollama=fake).plan(project_record(root))
+
+    assert result.criteria
+    prompt = "\n".join(str(message["content"]) for message in fake.calls[0]["messages"])
+    assert "x" * 100 not in prompt
+
+
+def test_continuation_prefers_product_docs_over_large_historical_handoffs(
+    tmp_path: Path,
+) -> None:
+    root = make_documented_project(tmp_path)
+    product_doc = root / "docs" / "product" / "post-mvp.md"
+    product_doc.parent.mkdir(parents=True)
+    product_doc.write_text("IPHONE_AND_WEB_SCOPE", encoding="utf-8")
+    (root / "old-handoff.md").write_text("HISTORICAL_SCOPE\n" * 7_000, encoding="utf-8")
+    project = project_record(root)
+    project["metadata"] = {"autonomy": {"scope_kind": "continuation", "mvp_achieved": True}}
+    payload = {
+        **valid_payload(),
+        "criteria": [
+            {
+                **valid_payload()["criteria"][0],
+                "id": "iphone-web-parity",
+                "source": "docs/product/post-mvp.md",
+            }
+        ],
+    }
+    fake = FakeOllama(payload)
+
+    result = ProjectMvpPlanner(config=config_for(root), ollama=fake).plan(project)
+
+    assert [criterion["id"] for criterion in result.criteria] == ["mvp-iphone-web-parity"]
+    prompt = "\n".join(str(message["content"]) for message in fake.calls[0]["messages"])
+    assert "IPHONE_AND_WEB_SCOPE" in prompt
+    assert "HISTORICAL_SCOPE" not in prompt
 
 
 def test_planner_rejects_project_outside_project_intake(tmp_path: Path) -> None:

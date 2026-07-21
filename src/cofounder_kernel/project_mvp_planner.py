@@ -147,7 +147,8 @@ class ProjectMvpPlanner:
 
     def plan(self, project: dict[str, Any]) -> MvpPlanResult:
         root = self._registered_root(project)
-        documents = _read_project_documents(root)
+        scope_kind = _scope_kind(project)
+        documents = _read_project_documents(root, scope_kind=scope_kind)
         if not documents:
             raise ValueError("No eligible project documents were found for MVP planning.")
         source_hash = _source_hash(documents)
@@ -170,7 +171,6 @@ class ProjectMvpPlanner:
             raise ValueError("The local MVP planner response must be a JSON object.")
 
         allowed_sources = {doc.relative_path.casefold(): doc.relative_path for doc in documents}
-        scope_kind = _scope_kind(project)
         criteria = _normalize_criteria(payload.get("criteria"), allowed_sources)
         if scope_kind == "continuation":
             completed = _completed_criterion_ids(project)
@@ -232,9 +232,15 @@ def _parse_planner_json(response: Any) -> Any:
     return json.loads(text)
 
 
-def _read_project_documents(root: Path) -> list[_Document]:
-    documents: list[_Document] = []
-    total_chars = 0
+def _read_project_documents(root: Path, *, scope_kind: str = "mvp") -> list[_Document]:
+    """Read a bounded, deterministic set of founder-authored planning sources.
+
+    Project histories often contain much more prose than fits safely in the
+    local model context.  Selection gives current product documentation and
+    the project manifest precedence, rather than turning a large historical
+    handoff into a permanent autonomy block.
+    """
+    candidates: list[_Document] = []
     for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
         directories[:] = sorted(
             name
@@ -256,16 +262,44 @@ def _read_project_documents(root: Path) -> list[_Document]:
             content = _normalize_document(resolved.read_text(encoding="utf-8-sig"))
             if not content:
                 continue
-            total_chars += len(content)
-            if total_chars > MAX_DOCUMENT_PROMPT_CHARS:
-                raise ValueError("Project documentation exceeds the bounded planning prompt.")
-            documents.append(
+            candidates.append(
                 _Document(
                     relative_path=resolved.relative_to(root).as_posix(),
                     content=content,
                 )
             )
-    return sorted(documents, key=lambda item: item.relative_path.casefold())
+    selected: list[_Document] = []
+    total_chars = 0
+    for document in sorted(
+        candidates,
+        key=lambda item: _document_priority(item.relative_path, scope_kind),
+    ):
+        if total_chars + len(document.content) > MAX_DOCUMENT_PROMPT_CHARS:
+            continue
+        selected.append(document)
+        total_chars += len(document.content)
+    if not selected:
+        raise ValueError("No project documentation fits within the bounded planning prompt.")
+    return sorted(selected, key=lambda item: item.relative_path.casefold())
+
+
+def _document_priority(relative_path: str, scope_kind: str) -> tuple[int, str]:
+    path = PurePosixPath(relative_path)
+    lowered = relative_path.casefold()
+    name = path.name.casefold()
+    if scope_kind == "continuation" and lowered.startswith("docs/product/"):
+        return (0, lowered)
+    if name in {"project.md", "project.markdown"}:
+        return (1, lowered)
+    if name in {"readme.md", "readme.markdown"}:
+        return (2, lowered)
+    if scope_kind == "continuation" and lowered.startswith("docs/"):
+        return (3, lowered)
+    if "handoff" in name:
+        return (4, lowered)
+    if name.startswith("mvp"):
+        return (5, lowered)
+    return (6, lowered)
 
 
 def _normalize_document(content: str) -> str:
