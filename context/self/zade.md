@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `0a98af1` 2026-07-21 - fix: recover stale continuation planning state
 - `37309dc` 2026-07-21 - fix: resume continuation decisions into planning
 - `8095b07` 2026-07-21 - fix: recover bounded continuation planning
 - `6d70f80` 2026-07-21 - fix: bound continuation planning sources
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `7a4fdd7` 2026-07-20 - fix: protect dependency manifests during autonomy
 - `52cbede` 2026-07-20 - fix: dispatch and reconcile delegated decisions
 - `9cb076e` 2026-07-20 - fix: keep incomplete delegation work visible
-- `3079586` 2026-07-20 - fix: auto-resolve local autonomy choices
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

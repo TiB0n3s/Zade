@@ -131,6 +131,41 @@ def test_planner_accepts_a_json_plan_wrapped_in_a_markdown_fence(tmp_path: Path)
     ]
 
 
+def test_planner_recovers_a_json_plan_wrapped_in_model_commentary(tmp_path: Path) -> None:
+    root = make_documented_project(tmp_path)
+    response = "Here is the documented plan:\n" + json.dumps(valid_payload()) + "\nEnd plan."
+
+    result = ProjectMvpPlanner(
+        config=config_for(root), ollama=FakeOllama(response)
+    ).plan(project_record(root))
+
+    assert [item["id"] for item in result.criteria] == [
+        "mvp-resource-search",
+        "mvp-crisis-access",
+    ]
+
+
+def test_planner_replaces_prose_verification_with_project_test_commands(tmp_path: Path) -> None:
+    root = make_documented_project(tmp_path)
+    (root / "package.json").write_text(
+        json.dumps({"scripts": {"test": "node --test", "typecheck": "tsc --noEmit"}}),
+        encoding="utf-8",
+    )
+    payload = valid_payload()
+    payload["criteria"][0]["verification_commands"] = [
+        "Verify resource search works in the browser."
+    ]
+
+    result = ProjectMvpPlanner(
+        config=config_for(root), ollama=FakeOllama(payload)
+    ).plan(project_record(root))
+
+    assert result.criteria[0]["verification_commands"] == [
+        "npm test",
+        "npm run typecheck",
+    ]
+
+
 def test_planner_prompt_treats_founder_answers_as_binding_constraints(
     tmp_path: Path,
 ) -> None:
@@ -166,8 +201,39 @@ def test_continuation_prompt_excludes_completed_mvp_and_keeps_external_actions_g
     header = fake.calls[0]["messages"][1]["content"]
     assert "remaining documented internal work" in system_prompt
     assert "external boundary" in system_prompt
+    assert "never ask for a production domain" in system_prompt
     assert "mvp-resource-search" in header
     assert [criterion["id"] for criterion in result.criteria] == ["mvp-crisis-access"]
+
+
+def test_continuation_treats_domain_questions_and_boundary_only_items_as_external(
+    tmp_path: Path,
+) -> None:
+    root = make_documented_project(tmp_path)
+    project = project_record(root)
+    project["metadata"] = {"autonomy": {"scope_kind": "continuation", "mvp_achieved": True}}
+    payload = valid_payload()
+    payload["criteria"] = [
+        {
+            **payload["criteria"][0],
+            "id": "website-external-boundaries",
+            "title": "Website external boundaries",
+            "description": "Production hosting remains an external boundary.",
+        }
+    ]
+    payload["needs_decision"] = {
+        "question": "What is the production domain?",
+        "recommendation": "Use the eventual primary domain.",
+        "options": [
+            {"option": "example.org", "impact": "primary domain"},
+            {"option": "example.com", "impact": "alternate domain"},
+        ],
+    }
+
+    result = ProjectMvpPlanner(config=config_for(root), ollama=FakeOllama(payload)).plan(project)
+
+    assert result.criteria == []
+    assert result.needs_decision is None
 
 
 def test_planner_correction_call_forbids_another_decision_request(tmp_path: Path) -> None:

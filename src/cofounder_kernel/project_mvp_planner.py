@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -171,12 +172,21 @@ class ProjectMvpPlanner:
             raise ValueError("The local MVP planner response must be a JSON object.")
 
         allowed_sources = {doc.relative_path.casefold(): doc.relative_path for doc in documents}
-        criteria = _normalize_criteria(payload.get("criteria"), allowed_sources)
+        criteria = _normalize_criteria(
+            payload.get("criteria"),
+            allowed_sources,
+            fallback_commands=_fallback_verification_commands(root),
+        )
         if scope_kind == "continuation":
             completed = _completed_criterion_ids(project)
             criteria = [item for item in criteria if item["id"] not in completed]
+            criteria = [
+                item for item in criteria if not _is_external_boundary_only_criterion(item)
+            ]
         boundaries = _normalize_boundaries(payload.get("external_boundaries"))
         needs_decision = _normalize_decision(payload.get("needs_decision"))
+        if scope_kind == "continuation" and _is_external_delivery_decision(needs_decision):
+            needs_decision = None
         if not criteria and needs_decision is None and scope_kind != "continuation":
             raise ValueError(
                 "The documented MVP planner returned neither criteria nor a decision request."
@@ -229,7 +239,22 @@ def _parse_planner_json(response: Any) -> Any:
         lines = text.splitlines()
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as primary_error:
+        # Some local models honor the schema but still add a short lead-in or
+        # trailing note. Recover only a complete embedded JSON object; normal
+        # schema and source validation still run afterwards.
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                value, _end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            return value
+        raise primary_error
 
 
 def _read_project_documents(root: Path, *, scope_kind: str = "mvp") -> list[_Document]:
@@ -344,8 +369,10 @@ def _planning_messages(
             " This is a continuation after an achieved MVP: extract only remaining documented "
             "internal work. Do not repeat completed criteria. Deployment, store submission, "
             "external credentials or accounts, paid services, legal publication, and irreversible "
-            "public actions must remain an external boundary rather than a criterion. An empty "
-            "criteria list is valid when no documented internal work remains."
+            "public actions must remain an external boundary rather than a criterion. Never ask for "
+            "a production domain, subdomain, hosting provider, deployment account, credential, or "
+            "store identifier: those details are not needed for local implementation and are external "
+            "boundaries. An empty criteria list is valid when no documented internal work remains."
         )
     header = {
         "name": str(project.get("name") or ""),
@@ -390,7 +417,10 @@ def _completed_criterion_ids(project: dict[str, Any]) -> set[str]:
 
 
 def _normalize_criteria(
-    raw: Any, allowed_sources: dict[str, str]
+    raw: Any,
+    allowed_sources: dict[str, str],
+    *,
+    fallback_commands: list[str],
 ) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raise ValueError("MVP criteria must be a list.")
@@ -409,9 +439,18 @@ def _normalize_criteria(
         acceptance = _string_list(
             entry.get("acceptance_checks"), "acceptance_checks", required=True
         )
-        commands = _string_list(
+        declared_commands = _string_list(
             entry.get("verification_commands"), "verification_commands", required=True
         )
+        commands = [
+            command
+            for command in declared_commands
+            if _is_audited_verification_command(command)
+        ] or list(fallback_commands)
+        if not commands:
+            raise ValueError(
+                f"Criterion {criterion_id} has no executable verification command."
+            )
         dependencies = [_criterion_id(item) for item in _string_list(
             entry.get("depends_on"), "depends_on", required=False
         )]
@@ -437,6 +476,96 @@ def _normalize_criteria(
                 raise ValueError(f"Criterion {item['id']} cannot depend on itself.")
     _reject_dependency_cycles(criteria)
     return criteria
+
+
+def _fallback_verification_commands(root: Path) -> list[str]:
+    package = root / "package.json"
+    if package.is_file():
+        try:
+            payload = json.loads(package.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = {}
+        scripts = payload.get("scripts") if isinstance(payload, dict) else {}
+        if isinstance(scripts, dict):
+            commands: list[str] = []
+            if str(scripts.get("test") or "").strip():
+                commands.append("npm test")
+            if str(scripts.get("typecheck") or "").strip():
+                commands.append("npm run typecheck")
+            if commands:
+                return commands
+    if (root / "pubspec.yaml").is_file():
+        return ["flutter analyze", "flutter test"]
+    if any(
+        (root / name).is_file() for name in ("pyproject.toml", "pytest.ini", "setup.cfg")
+    ):
+        return ["python -m pytest -q"]
+    return []
+
+
+def _is_audited_verification_command(command: str) -> bool:
+    try:
+        argv = shlex.split(str(command), posix=os.name != "nt")
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    lowered = [item.casefold() for item in argv]
+    executable = Path(lowered[0]).name
+    if executable == "npm":
+        return len(lowered) >= 2 and (
+            lowered[1] == "test"
+            or (
+                len(lowered) >= 3
+                and lowered[1] == "run"
+                and lowered[2] in {"test", "typecheck", "lint", "build"}
+            )
+        )
+    if executable in {"pytest", "flutter", "dart"}:
+        return len(lowered) >= 2 and lowered[1] in {"test", "analyze"}
+    if executable.startswith("python"):
+        return len(lowered) >= 3 and lowered[1:3] == ["-m", "pytest"]
+    if executable == "node":
+        return len(lowered) >= 2 and lowered[1] == "--test"
+    return False
+
+
+def _is_external_boundary_only_criterion(criterion: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(criterion.get(key) or "")
+        for key in ("id", "title", "description")
+    ).casefold()
+    return "external boundar" in text
+
+
+def _is_external_delivery_decision(decision: dict[str, Any] | None) -> bool:
+    if decision is None:
+        return False
+    text = " ".join(
+        [
+            str(decision.get("question") or ""),
+            str(decision.get("recommendation") or ""),
+            *[
+                " ".join(
+                    (str(option.get("option") or ""), str(option.get("impact") or ""))
+                )
+                for option in decision.get("options") or []
+                if isinstance(option, dict)
+            ],
+        ]
+    ).casefold()
+    return any(
+        marker in text
+        for marker in (
+            "domain",
+            "subdomain",
+            "hosting",
+            "host provider",
+            "deployment account",
+            "credential",
+            "app store identifier",
+        )
+    )
 
 
 def _criterion_id(value: Any) -> str:
