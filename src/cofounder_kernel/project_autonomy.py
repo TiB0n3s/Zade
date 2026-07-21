@@ -38,7 +38,7 @@ PHASES = (
 )
 
 ALLOWED_TRANSITIONS = {
-    "planning": {"building", "needs_decision", "blocked"},
+    "planning": {"building", "needs_decision", "blocked", "awaiting_external_boundary"},
     "building": {
         "verifying",
         "ready_for_next_increment",
@@ -340,9 +340,15 @@ class ProjectAutonomyReporter:
         project = self.get_project(project_id)
         state = self._state_for_project(project)
         if state.get("phase") == "blocked" and not state.get("mvp_criteria"):
+            scope_label = (
+                "continuation"
+                if state.get("mvp_achieved") or state.get("scope_kind") == "continuation"
+                else "MVP"
+            )
             state.update({
                 "phase": "planning", "blocking_type": None, "blocking_reason": None,
-                "active_run_id": None, "next_action": "re-plan the documented MVP from recorded founder answers",
+                "active_run_id": None,
+                "next_action": f"re-plan the documented {scope_label} from recorded founder answers",
             })
             return self._transition(project, state, event={"event_type": "autonomy_resumed", "metadata": {"phase": "planning"}})
         if state.get("phase") == "blocked":

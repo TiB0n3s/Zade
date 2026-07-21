@@ -258,7 +258,11 @@ def _read_project_documents(root: Path, *, scope_kind: str = "mvp") -> list[_Doc
             if not resolved.is_relative_to(root):
                 continue
             if resolved.stat().st_size > MAX_DOCUMENT_BYTES:
-                raise ValueError(f"Project document is too large to plan safely: {path.name}")
+                # A generated review package or historical handoff cannot be
+                # allowed to consume the bounded model context and stall every
+                # later delivery scope. Smaller, current planning documents
+                # remain eligible through the deterministic selector below.
+                continue
             content = _normalize_document(resolved.read_text(encoding="utf-8-sig"))
             if not content:
                 continue

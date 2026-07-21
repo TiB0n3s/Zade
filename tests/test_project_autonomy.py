@@ -650,6 +650,25 @@ def test_document_change_reopens_external_only_continuation(tmp_path: Path) -> N
     assert "changed project documentation" in state["next_action"]
 
 
+def test_resumed_empty_continuation_can_wait_for_external_boundary(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path, bus=FakeBus())
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+    reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
+    reporter.report_blocked(project_id, reason="temporary planner error")
+
+    reporter.resume(project_id)
+    waited = reporter.await_external_boundary(
+        project_id, external_boundaries=["app_store_submission"]
+    )
+
+    state = waited["metadata"]["autonomy"]
+    assert state["phase"] == "awaiting_external_boundary"
+    assert state["mvp_achieved"] is True
+    assert state["mvp_criteria"] == []
+
+
 def test_explicit_scope_replan_keeps_the_mvp_milestone(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path, bus=FakeBus())
     project_id, root, head = make_git_project(db, tmp_path)
