@@ -154,6 +154,8 @@ def test_api_projects_every_phase(tmp_path: Path, monkeypatch) -> None:
     )
     assert phase() == "needs_decision"
     reporter.resume_after_decision(31)
+    assert phase() == "ready_for_next_increment"
+    reporter.begin_increment(project_id, criterion_id="auth")
     assert phase() == "building"
     reporter.report_approval_required(
         project_id,

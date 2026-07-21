@@ -60,7 +60,13 @@ ALLOWED_TRANSITIONS = {
         "blocked",
         "awaiting_external_boundary",
     },
-    "needs_decision": {"building", "continuation_planning", "blocked"},
+    "needs_decision": {
+        "planning",
+        "ready_for_next_increment",
+        "building",
+        "continuation_planning",
+        "blocked",
+    },
     "approval_required": {"building", "blocked"},
     "blocked": {"planning", "building", "ready_for_next_increment"},
     "mvp_complete": {"continuation_planning"},
@@ -714,7 +720,10 @@ class ProjectAutonomyReporter:
         """Explicitly reopen a completed project before a new plan is available."""
         project = self.get_project(project_id)
         prior = self._state_for_project(project)
-        if not prior.get("mvp_complete") and prior.get("mvp_criteria"):
+        if (
+            not (prior.get("mvp_achieved") or prior.get("mvp_complete"))
+            and prior.get("mvp_criteria")
+        ):
             return project
         # A founder-approved replan starts a fresh active scope, but it must not
         # erase the durable record that the MVP was verified.  That record is
@@ -1119,12 +1128,15 @@ class ProjectAutonomyReporter:
         if state.get("phase") != "needs_decision":
             raise ValueError(f"No project is waiting on decision {decision}.")
         criterion_id = state.get("current_criterion_id")
-        target_phase = (
-            "continuation_planning"
-            if state.get("scope_kind") == "continuation"
-            and not state.get("mvp_criteria")
-            else "building"
-        )
+        if criterion_id:
+            # A delegated run has already returned a terminal decision result.
+            # Resume from the queue boundary so the orchestrator creates a new
+            # unique run instead of replaying that stale result.
+            target_phase = "ready_for_next_increment"
+        elif state.get("scope_kind") == "continuation" and not state.get("mvp_criteria"):
+            target_phase = "continuation_planning"
+        else:
+            target_phase = "planning"
         self._require_transition(
             state, target_phase, operation="resume after decision"
         )
@@ -1134,10 +1146,15 @@ class ProjectAutonomyReporter:
                 "blocking_type": None,
                 "blocking_reason": None,
                 "decision_id": None,
+                "active_run_id": None,
                 "next_action": (
                     f"apply founder decision {decision} and derive the next documented continuation scope"
                     if target_phase == "continuation_planning"
-                    else f"apply founder decision {decision} and continue"
+                    else (
+                        f"apply founder decision {decision} and retry the current documented criterion"
+                        if target_phase == "ready_for_next_increment"
+                        else f"apply founder decision {decision} and plan the documented scope"
+                    )
                 ),
             }
         )

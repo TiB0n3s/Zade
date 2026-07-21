@@ -329,13 +329,15 @@
       const autonomy = project.autonomy || {};
       const completed = autonomy.mvp_criteria_completed || 0;
       const total = autonomy.mvp_criteria_total || 0;
+      const scopeKind = autonomy.scope_kind || 'mvp';
+      const scopeLabel = scopeKind === 'continuation' ? 'Continuation' : 'MVP';
       const paused = autonomy.paused === true;
       return `
         <article class="card" data-autonomy-project="${esc(project.id)}">
           <div class="topline">
             <div>
               <div class="wants">${esc(project.name)}</div>
-              <div class="detail">${esc((project.product_type || 'project').replaceAll('_', ' '))} · MVP ${esc(completed)}/${esc(total)} · ${esc(autonomy.next_action || 'project intake')}</div>
+              <div class="detail">${esc((project.product_type || 'project').replaceAll('_', ' '))} · ${esc(scopeLabel)} priority order: ${esc(completed)}/${esc(total)} completed · ${esc(autonomy.next_action || 'project intake')}</div>
             </div>
             <div class="pillrow">
               <span class="pill ${esc(project.status || '')}">${esc(prettyLabel(project.status || 'intake'))}</span>

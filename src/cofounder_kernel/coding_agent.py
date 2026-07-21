@@ -587,6 +587,9 @@ class CodingAgentService:
                     deps |= block
         if "typescript" not in deps:
             return None
+        scripts = manifest.get("scripts") if isinstance(manifest, dict) else {}
+        if isinstance(scripts, dict) and str(scripts.get("typecheck") or "").strip():
+            return ["npm", "run", "typecheck"]
         # --no: never install on the fly; the local tsc binary or nothing.
         return ["npm", "exec", "--no", "--", "tsc", "--noEmit"]
 
@@ -1350,12 +1353,19 @@ class CodingAgentService:
             }
         if self.command_runner is not None:
             try:
+                backend = (
+                    "host"
+                    if profile_id in {"coding-agent:npm", "coding-agent:node"}
+                    and _workspace_has_windows_node_shims(root)
+                    else "auto"
+                )
                 outcome = self.command_runner.run(
                     CommandRequest(
                         workspace=root,
                         profile_id=profile_id,
                         argv=resolved,
                         timeout_seconds=COMMAND_TIMEOUT_SECONDS,
+                        backend=backend,
                     )
                 )
             except (CommandPolicyError, OSError) as exc:
@@ -1400,6 +1410,18 @@ class CodingAgentService:
 
     def _tool_git(self, root: Path, git_args: list[str]) -> dict[str, Any]:
         return self._tool_run_command(root, {"argv": ["git", *git_args]})
+
+
+def _workspace_has_windows_node_shims(root: Path) -> bool:
+    """Identify dependencies installed on Windows, not runnable in Linux Docker.
+
+    npm creates ``.cmd`` launchers on Windows.  Running a shell launcher from
+    that tree in the Docker backend can fall through to ``node.exe``, which is
+    absent from the Linux image even though Node is correctly installed on the
+    host.  Keep the already allowlisted Node check on the host in that case.
+    """
+    bin_dir = root / "node_modules" / ".bin"
+    return bin_dir.is_dir() and any(bin_dir.glob("*.cmd"))
 
 
 # ---- helpers (shared shapes with investigation.py) ----------------------------

@@ -325,7 +325,9 @@ def test_completed_mvp_automatically_executes_documented_continuation(
     assert reporter.state(project_id)["milestones"][-1]["criteria"] == ["ios-parity"]
     assert len(delegation.calls) == 2
     assert delegation.calls[-1]["task"] == (
-        "Complete documented continuation criterion ios-parity: iPhone parity"
+        "Advance priority-ordered continuation backlog: complete item 1/1, "
+        "ios-parity: iPhone parity. Verification unlocks the next priority item; "
+        "do not treat this as a terminal plan."
     )
 
 
@@ -376,7 +378,9 @@ def test_stale_empty_continuation_building_state_recovers_before_planning(
     assert reporter.state(project_id)["phase"] == "awaiting_external_boundary"
     assert len(delegation.calls) == 2
     assert delegation.calls[-1]["task"] == (
-        "Complete documented continuation criterion ios-parity: iPhone parity"
+        "Advance priority-ordered continuation backlog: complete item 1/1, "
+        "ios-parity: iPhone parity. Verification unlocks the next priority item; "
+        "do not treat this as a terminal plan."
     )
 
 

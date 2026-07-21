@@ -400,6 +400,9 @@ def _planning_messages(
     system = (
         "Extract only the MVP requirements explicitly supported by the supplied project "
         "documents. Do not invent features, accounts, services, scope, or external actions. "
+        "Return criteria in strict order of priority: the first item is the highest-priority "
+        "deliverable, and later items remain an ordered continuing backlog rather than "
+        "instructions to stop after the first item. "
         "Every criterion must cite one supplied source-relative document path and have "
         "mechanically testable acceptance checks. If the documents leave a consequential "
         "product or architecture choice unresolved, return needs_decision with the exact "

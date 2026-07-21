@@ -816,14 +816,20 @@ def test_verification_plan_adds_tsc_for_typescript_workspaces(tmp_path: Path) ->
     ts_ws = tmp_path / "ts-ws"
     ts_ws.mkdir(parents=True)
     (ts_ws / "package.json").write_text(
-        json.dumps({"name": "x", "scripts": {"test": "jest"}, "devDependencies": {"typescript": "5.9.3"}}),
+        json.dumps(
+            {
+                "name": "x",
+                "scripts": {"test": "jest", "typecheck": "tsc --noEmit"},
+                "devDependencies": {"typescript": "5.9.3"},
+            }
+        ),
         encoding="utf-8",
     )
     (ts_ws / "tsconfig.json").write_text("{}", encoding="utf-8")
     svc, _ = _service(tmp_path, ts_ws, [])
     mode, checks, unchecked = svc._verification_plan(ts_ws, ["src/App.tsx"])
     assert mode == "tests"
-    assert checks == [["npm", "test"], ["npm", "exec", "--no", "--", "tsc", "--noEmit"]]
+    assert checks == [["npm", "test"], ["npm", "run", "typecheck"]]
     assert unchecked == []
 
     # No tsconfig → single check, exactly as before.
@@ -858,6 +864,45 @@ def test_verification_plan_adds_tsc_for_typescript_workspaces(tmp_path: Path) ->
     assert mode == "tests"
     assert checks == [["npm", "exec", "--no", "--", "tsc", "--noEmit"]]
     assert unchecked == []
+
+
+def test_windows_node_modules_force_host_execution_for_node_commands(
+    tmp_path: Path, fixture_repo: Path
+) -> None:
+    """Windows-generated shims cannot be executed by the Linux Docker runner."""
+
+    class FakeResult:
+        ok = True
+        returncode = 0
+        stdout_tail = ""
+        stderr_tail = ""
+        timed_out = False
+        cancelled = False
+
+    class FakeRunner:
+        def __init__(self):
+            self.requests = []
+
+        def run(self, request):
+            self.requests.append(request)
+            return FakeResult()
+
+    (fixture_repo / "node_modules" / ".bin").mkdir(parents=True)
+    (fixture_repo / "node_modules" / ".bin" / "tsc.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    cfg = _config(tmp_path, fixture_repo)
+    runner = FakeRunner()
+    svc = CodingAgentService(
+        config=cfg,
+        db=_db(tmp_path),
+        ollama=ScriptedOllama(cfg.ollama, []),
+        inventory=_StubInventory(),
+        command_runner=runner,
+    )
+
+    result = svc._tool_run_command(fixture_repo, {"argv": ["npm", "run", "typecheck"]})
+
+    assert result["ok"] is True
+    assert runner.requests[0].backend == "host"
 
 
 def test_verification_plan_uses_offline_flutter_checks(tmp_path: Path) -> None:

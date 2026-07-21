@@ -192,7 +192,8 @@ scaffold_on_intake: false
 
     assert response.status_code == 200
     state = reporter.state(project["id"])
-    assert state["phase"] == "building"
+    assert state["phase"] == "ready_for_next_increment"
+    assert state["active_run_id"] is None
     assert state["current_criterion_id"] == "mvp-1"
     assert state["decision_id"] is None
 
@@ -299,6 +300,7 @@ def test_approvals_ui_contains_project_decision_resolution_panel() -> None:
     assert "resolved_by: 'founder.ui'" in html
     assert "project_autonomy" in html
     assert "Autonomous Project Builds" in html
+    assert "scopeKind === 'continuation' ? 'Continuation' : 'MVP'" in html
     assert "/project-intake/autonomy/status" in html
     assert "/autonomy/priority" in html
     assert "/autonomy/pause" in html

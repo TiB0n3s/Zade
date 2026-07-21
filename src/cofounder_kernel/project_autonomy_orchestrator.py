@@ -126,6 +126,20 @@ class ProjectAutonomyOrchestrator:
         documents, but intentionally does not reopen a completed MVP on its own.
         """
         project = self.reporter.get_project(project_id)
+        prior_state = (project.get("metadata") or {}).get("autonomy") or {}
+        continuation_replan = bool(
+            prior_state.get("mvp_achieved") or prior_state.get("mvp_complete")
+        )
+        if continuation_replan:
+            # The planner selects its source set from scope_kind. Open the
+            # continuation scope before deriving the plan so that current
+            # docs/product material and its structured plan are authoritative.
+            self.reporter.begin_new_scope(
+                project_id,
+                plan_revision="founder-documentation-replan",
+                next_action="re-plan the documented continuation scope",
+            )
+            project = self.reporter.get_project(project_id)
         planning_project = dict(project)
         metadata = dict(project.get("metadata") or {})
         metadata["planner_founder_answers"] = [
@@ -166,11 +180,21 @@ class ProjectAutonomyOrchestrator:
                 recommendation=planned.needs_decision["recommendation"],
                 options=planned.needs_decision["options"],
             )
+        if continuation_replan:
+            return self.reporter.begin_continuation(
+                project_id,
+                criteria=planned.criteria,
+                priority=str(prior_state.get("priority") or "normal"),
+                next_action="advance through the documented priority order, starting with the highest dependency-ready criterion",
+                external_boundaries=planned.external_boundaries,
+                plan_revision=planned.plan_revision,
+                source_hash=planned.source_hash,
+            )
         return self.reporter.plan(
             project_id,
             criteria=planned.criteria,
             priority=str((project.get("autonomy") or {}).get("priority") or "normal"),
-            next_action="build the first dependency-ready criterion from the current documentation",
+            next_action="advance through the documented priority order, starting with the highest dependency-ready criterion",
             external_boundaries=planned.external_boundaries,
             plan_revision=planned.plan_revision,
         )
@@ -466,7 +490,7 @@ class ProjectAutonomyOrchestrator:
                     project_id,
                     criteria=planned.criteria,
                     priority=str(state.get("priority") or "normal"),
-                    next_action="build the first dependency-ready documented continuation criterion",
+                    next_action="advance through the documented continuation priority order, starting with the highest dependency-ready criterion",
                     external_boundaries=planned.external_boundaries,
                     plan_revision=planned.plan_revision,
                     source_hash=planned.source_hash,
@@ -476,7 +500,7 @@ class ProjectAutonomyOrchestrator:
                     project_id,
                     criteria=planned.criteria,
                     priority=str(state.get("priority") or "normal"),
-                    next_action="build the first dependency-ready documented MVP criterion",
+                    next_action="advance through the documented MVP priority order, starting with the highest dependency-ready criterion",
                     external_boundaries=planned.external_boundaries,
                     plan_revision=planned.plan_revision,
                 )
@@ -503,6 +527,11 @@ class ProjectAutonomyOrchestrator:
             return self._complete_if_ready(project_id, root, None)
 
         increment = int(state.get("current_increment") or 0)
+        criteria = state.get("mvp_criteria") or []
+        priority_position = next(
+            (index for index, item in enumerate(criteria, start=1) if item.get("id") == criterion["id"]),
+            1,
+        )
         if state.get("phase") in {"planning", "ready_for_next_increment"}:
             increment += 1
             run_ref = _run_reference(project_id, state.get("plan_revision"), criterion["id"], increment)
@@ -511,7 +540,10 @@ class ProjectAutonomyOrchestrator:
                 criterion_id=criterion["id"],
                 increment=increment,
                 run_id=run_ref,
-                next_action=f"implement and verify {criterion['title']}",
+                next_action=(
+                    f"priority {priority_position}/{len(criteria)}: implement and verify "
+                    f"{criterion['title']}; then continue with the remaining priority-ordered backlog"
+                ),
             )
         else:
             increment = max(increment, 1)
@@ -531,8 +563,9 @@ class ProjectAutonomyOrchestrator:
             )
             result = self.delegation.queue_delegation(
                 task=(
-                    f"Complete documented {state.get('scope_kind') or 'mvp'} criterion "
-                    f"{criterion['id']}: {criterion['title']}"
+                    f"Advance priority-ordered {state.get('scope_kind') or 'mvp'} backlog: "
+                    f"complete item {priority_position}/{len(state.get('mvp_criteria') or [])}, "
+                    f"{criterion['id']}: {criterion['title']}. Verification unlocks the next priority item; do not treat this as a terminal plan."
                 ),
                 brief=self._build_brief(
                     project=project,

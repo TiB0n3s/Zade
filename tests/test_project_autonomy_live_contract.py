@@ -160,7 +160,7 @@ def test_project_decision_resolution_resumes_orchestrator_without_dispatching_it
     )
 
     assert response.status_code == 200
-    assert app.state.project_autonomy.state(project_id)["phase"] == "building"
+    assert app.state.project_autonomy.state(project_id)["phase"] == "planning"
     assert app.state.db.get_work_item(decision_id).status == "done"
     assert wakes == [project_id]
 

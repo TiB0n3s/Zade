@@ -903,7 +903,8 @@ def test_decision_resolution_resumes_correct_project_and_criterion(tmp_path: Pat
     assert resumed["project"]["id"] == second
     assert resumed["criterion_id"] == "feed"
     view = autonomy_projection(resumed["project"])
-    assert view["phase"] == "building"
+    assert view["phase"] == "ready_for_next_increment"
+    assert view["active_run_id"] is None
     assert view["decision_id"] is None
     assert view["blocking_type"] is None
     untouched = autonomy_projection(reporter.get_project(first))
