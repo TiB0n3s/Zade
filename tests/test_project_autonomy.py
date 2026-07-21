@@ -669,6 +669,31 @@ def test_resumed_empty_continuation_can_wait_for_external_boundary(tmp_path: Pat
     assert state["mvp_criteria"] == []
 
 
+def test_continuation_planning_decision_resumes_to_planning_not_building(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path, bus=FakeBus())
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+    reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
+    reporter.report_needs_decision(
+        project_id,
+        decision_id=81,
+        question="Choose the documented web default.",
+        recommendation="Use the project primary domain.",
+        options=[
+            {"option": "Primary domain", "impact": "one public surface"},
+            {"option": "Separate domain", "impact": "adds a second public surface"},
+        ],
+    )
+
+    resumed = reporter.resume_after_decision(81, answer="Use the primary domain.")
+
+    state = resumed["project"]["metadata"]["autonomy"]
+    assert state["phase"] == "continuation_planning"
+    assert state["current_criterion_id"] is None
+    assert "derive the next documented continuation scope" in state["next_action"]
+
+
 def test_explicit_scope_replan_keeps_the_mvp_milestone(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path, bus=FakeBus())
     project_id, root, head = make_git_project(db, tmp_path)

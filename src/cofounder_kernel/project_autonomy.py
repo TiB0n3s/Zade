@@ -60,7 +60,7 @@ ALLOWED_TRANSITIONS = {
         "blocked",
         "awaiting_external_boundary",
     },
-    "needs_decision": {"building", "blocked"},
+    "needs_decision": {"building", "continuation_planning", "blocked"},
     "approval_required": {"building", "blocked"},
     "blocked": {"planning", "building", "ready_for_next_increment"},
     "mvp_complete": {"continuation_planning"},
@@ -1118,15 +1118,27 @@ class ProjectAutonomyReporter:
         state = self._state_for_project(project)
         if state.get("phase") != "needs_decision":
             raise ValueError(f"No project is waiting on decision {decision}.")
-        self._require_transition(state, "building", operation="resume after decision")
         criterion_id = state.get("current_criterion_id")
+        target_phase = (
+            "continuation_planning"
+            if state.get("scope_kind") == "continuation"
+            and not state.get("mvp_criteria")
+            else "building"
+        )
+        self._require_transition(
+            state, target_phase, operation="resume after decision"
+        )
         state.update(
             {
-                "phase": "building",
+                "phase": target_phase,
                 "blocking_type": None,
                 "blocking_reason": None,
                 "decision_id": None,
-                "next_action": f"apply founder decision {decision} and continue",
+                "next_action": (
+                    f"apply founder decision {decision} and derive the next documented continuation scope"
+                    if target_phase == "continuation_planning"
+                    else f"apply founder decision {decision} and continue"
+                ),
             }
         )
         updated = self._transition(
@@ -1136,7 +1148,7 @@ class ProjectAutonomyReporter:
                 "event_type": "decision_applied",
                 "detail": answer.strip()[:400],
                 "metadata": {
-                    "phase": "building",
+                    "phase": target_phase,
                     "decision_id": decision,
                     "criterion_id": criterion_id,
                 },
@@ -1281,6 +1293,7 @@ class ProjectAutonomyReporter:
                 "milestones": milestones,
                 "scope_kind": "continuation",
                 "mvp_criteria": [],
+                "current_criterion_id": None,
                 "repo_head": head,
                 "last_verified_at": str(final_verification.get("checked_at")),
                 "final_verification": verification_summary,

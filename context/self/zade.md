@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `8095b07` 2026-07-21 - fix: recover bounded continuation planning
 - `6d70f80` 2026-07-21 - fix: bound continuation planning sources
 - `7d4ed89` 2026-07-21 - fix: migrate completed MVP projects into continuation
 - `68beecc` 2026-07-21 - feat: continue project delivery after MVP
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `9cb076e` 2026-07-20 - fix: keep incomplete delegation work visible
 - `3079586` 2026-07-20 - fix: auto-resolve local autonomy choices
 - `5d26244` 2026-07-20 - fix: isolate failed autonomy attempts
-- `2133a65` 2026-07-20 - fix: resolve Windows verifier command shims
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns
