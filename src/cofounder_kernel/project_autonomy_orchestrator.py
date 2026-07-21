@@ -316,6 +316,22 @@ class ProjectAutonomyOrchestrator:
         if state.get("phase") == "mvp_complete":
             self.reporter.migrate_legacy_mvp_completion(project_id)
             state = self.reporter.state(project_id)
+        if (
+            state.get("mvp_achieved")
+            and state.get("scope_kind") == "continuation"
+            and not state.get("mvp_criteria")
+            and state.get("phase") != "continuation_planning"
+        ):
+            # Older decision-resume paths could leave a continuation marked
+            # "building" before any continuation criterion existed. Recover
+            # that state to the one phase from which a fresh scope is validly
+            # derived, retaining the completed MVP milestone.
+            self.reporter.begin_new_scope(
+                project_id,
+                plan_revision=str(state.get("plan_revision") or ""),
+                next_action="derive the next documented internal delivery scope",
+            )
+            state = self.reporter.state(project_id)
         if state.get("paused") is True:
             return {"status": "paused", "project_id": project_id}
         policy_problem = self._local_execution_problem()

@@ -329,6 +329,57 @@ def test_completed_mvp_automatically_executes_documented_continuation(
     )
 
 
+def test_stale_empty_continuation_building_state_recovers_before_planning(
+    tmp_path: Path,
+) -> None:
+    continuation = {
+        **CRITERIA[0],
+        "id": "ios-parity",
+        "title": "iPhone parity",
+        "source": "project.md",
+    }
+    planner = SequencePlanner(
+        MvpPlanResult(
+            criteria=[CRITERIA[0]],
+            external_boundaries=["app_store_submission"],
+            source_hash="mvp-source",
+            plan_revision="mvp-plan",
+            needs_decision=None,
+        ),
+        MvpPlanResult(
+            criteria=[continuation],
+            external_boundaries=["app_store_submission"],
+            source_hash="continuation-source",
+            plan_revision="continuation-plan",
+            needs_decision=None,
+        ),
+    )
+    orchestrator, reporter, _db, _config, delegation = make_services(
+        tmp_path, planner=planner
+    )
+    project_id, _root = make_project(
+        orchestrator.db, orchestrator.config, "Same Ground", priority="normal"
+    )
+
+    orchestrator.run_once()
+    stale = reporter._state_for_project(reporter.get_project(project_id))
+    stale.update({"phase": "building", "current_criterion_id": None, "active_run_id": None})
+    reporter._transition(
+        reporter.get_project(project_id),
+        stale,
+        event={"event_type": "stale_continuation_building_fixture"},
+    )
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "awaiting_external_boundary"
+    assert reporter.state(project_id)["phase"] == "awaiting_external_boundary"
+    assert len(delegation.calls) == 2
+    assert delegation.calls[-1]["task"] == (
+        "Complete documented continuation criterion ios-parity: iPhone parity"
+    )
+
+
 def test_external_only_continuation_waits_without_fake_delegation(tmp_path: Path) -> None:
     planner = SequencePlanner(
         MvpPlanResult(
