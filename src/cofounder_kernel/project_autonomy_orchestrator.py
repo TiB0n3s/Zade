@@ -313,6 +313,9 @@ class ProjectAutonomyOrchestrator:
         project = self.reporter.get_project(project_id)
         root = Path(str(project["canonical_path"])).resolve()
         state = self.reporter.state(project_id)
+        if state.get("phase") == "mvp_complete":
+            self.reporter.migrate_legacy_mvp_completion(project_id)
+            state = self.reporter.state(project_id)
         if state.get("paused") is True:
             return {"status": "paused", "project_id": project_id}
         policy_problem = self._local_execution_problem()

@@ -494,6 +494,73 @@ class ProjectAutonomyReporter:
             continuation_source_hash=source_hash,
         )
 
+    def migrate_legacy_mvp_completion(self, project_id: int) -> dict[str, Any]:
+        """Convert a verified pre-continuation MVP state into a durable milestone.
+
+        Earlier releases stored a terminal ``mvp_complete`` phase together with
+        the completed criteria.  The migration is deliberately conservative:
+        it acts only when every saved criterion is complete, then retains that
+        evidence as the historical MVP milestone before clearing the active
+        scope for continuation planning.
+        """
+        project = self.get_project(project_id)
+        state = self._state_for_project(project)
+        if state.get("mvp_achieved") or state.get("phase") != "mvp_complete":
+            return project
+        criteria = [
+            item for item in (state.get("mvp_criteria") or []) if isinstance(item, dict)
+        ]
+        if not criteria or any(item.get("status") != "complete" for item in criteria):
+            return project
+        commit = str(state.get("mvp_completed_commit") or state.get("repo_head") or "").strip()
+        final_verification = state.get("final_verification")
+        verification_summary = (
+            _verification_summary(final_verification)
+            if isinstance(final_verification, dict)
+            else None
+        )
+        milestones = list(state.get("milestones") or [])
+        if not any(
+            isinstance(item, dict)
+            and item.get("kind") == "mvp"
+            and item.get("commit") == commit
+            for item in milestones
+        ):
+            milestones.append(
+                {
+                    "kind": "mvp",
+                    "commit": commit,
+                    "criteria": [str(item.get("id")) for item in criteria],
+                    "verification": verification_summary,
+                }
+            )
+        state.update(
+            {
+                "phase": "continuation_planning",
+                "mvp_complete": False,
+                "mvp_achieved": True,
+                "mvp_completed_commit": commit or None,
+                "mvp_final_verification": verification_summary,
+                "milestones": milestones,
+                "scope_kind": "continuation",
+                "mvp_criteria": [],
+                "current_criterion_id": None,
+                "active_run_id": None,
+                "blocking_type": None,
+                "blocking_reason": None,
+                "next_action": "derive and continue the next documented internal delivery scope",
+            }
+        )
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "legacy_mvp_migrated_to_continuation",
+                "detail": "verified legacy MVP state migrated to continuous delivery",
+                "metadata": {"commit": commit, "criteria": [item.get("id") for item in criteria]},
+            },
+        )
+
     def await_external_boundary(
         self,
         project_id: int,

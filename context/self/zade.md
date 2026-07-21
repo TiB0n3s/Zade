@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `68beecc` 2026-07-21 - feat: continue project delivery after MVP
 - `d5e4cc6` 2026-07-21 - docs: design continuous project autonomy
 - `ab99fb7` 2026-07-21 - Co-founder kernel
 - `25f186b` 2026-07-20 - fix: keep mechanical verification failures repairable
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `2133a65` 2026-07-20 - fix: resolve Windows verifier command shims
 - `6ed895c` 2026-07-20 - fix: requeue blocked autonomy on founder resume
 - `ae168b7` 2026-07-20 - fix: verify TypeScript workspaces without test scripts
-- `2b43c58` 2026-07-20 - fix: accept fenced local MVP planner JSON
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

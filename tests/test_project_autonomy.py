@@ -594,6 +594,45 @@ def test_completed_mvp_becomes_a_runnable_continuation_milestone(tmp_path: Path)
     ]
 
 
+def test_legacy_completed_mvp_state_migrates_to_continuation(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path, bus=FakeBus())
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+    legacy_verification = verification_for(root, head)
+    legacy = reporter._state_for_project(reporter.get_project(project_id))
+    legacy.update(
+        {
+            "phase": "mvp_complete",
+            "mvp_complete": True,
+            "mvp_achieved": False,
+            "mvp_completed_commit": head,
+            "repo_head": head,
+            "final_verification": legacy_verification,
+        }
+    )
+    reporter._transition(
+        reporter.get_project(project_id),
+        legacy,
+        event={"event_type": "legacy_mvp_complete_fixture"},
+    )
+
+    migrated = reporter.migrate_legacy_mvp_completion(project_id)
+
+    state = migrated["metadata"]["autonomy"]
+    assert state["phase"] == "continuation_planning"
+    assert state["mvp_achieved"] is True
+    assert state["mvp_criteria"] == []
+    assert state["milestones"] == [
+        {
+            "kind": "mvp",
+            "commit": head,
+            "criteria": ["auth"],
+            "verification": state["mvp_final_verification"],
+        }
+    ]
+
+
 def test_document_change_reopens_external_only_continuation(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path, bus=FakeBus())
     project_id, root, head = make_git_project(db, tmp_path)
