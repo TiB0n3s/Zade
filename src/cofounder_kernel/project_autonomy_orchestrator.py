@@ -679,6 +679,11 @@ class ProjectAutonomyOrchestrator:
                     "criterion_id": criterion["id"],
                 }
             problem = _dispatch_problem(dispatch)
+            if not problem:
+                problem = _no_material_workspace_change_problem(
+                    root,
+                    expected_head=attempt_head,
+                )
             if problem:
                 failure_output = (
                     f"{problem}\n\nRepair the current working tree in place. Preserve the "
@@ -1206,6 +1211,19 @@ def _dispatch_problem(dispatch: dict[str, Any]) -> str:
     if isinstance(review, dict) and str(review.get("verdict") or "").casefold() == "fail":
         return f"Fresh-context verifier rejected the increment: {review.get('notes') or 'no notes'}"[:2000]
     return ""
+
+
+def _no_material_workspace_change_problem(root: Path, *, expected_head: str) -> str:
+    """Reject a claimed implementation that left its Git checkpoint unchanged."""
+    current_head = _git_checked(root, "rev-parse", "HEAD").stdout.strip()
+    if current_head != expected_head:
+        return ""
+    if _git_checked(root, "status", "--porcelain").stdout.strip():
+        return ""
+    return (
+        "Delegation reported success but made no material repository change; "
+        "an implementation criterion cannot complete from a no-op response."
+    )
 
 
 def _quarantine_and_restore_attempt(

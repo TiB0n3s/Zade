@@ -113,6 +113,20 @@ class FakeDelegation:
         }
 
 
+class NoChangeDelegation(FakeDelegation):
+    """A superficially successful agent response that never edits the project."""
+
+    def queue_delegation(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        dispatch = self.dispatches.pop(0) if self.dispatches else passing_dispatch()
+        return {
+            "item_id": len(self.calls),
+            "created": True,
+            "auto_invoked": True,
+            "dispatch": dispatch,
+        }
+
+
 def passing_dispatch() -> dict[str, Any]:
     return {
         "status": "ok",
@@ -280,6 +294,26 @@ def test_verified_increment_immediately_queues_next_criterion(tmp_path: Path) ->
     ).stdout == ""
     assert all(call["directed"] is True for call in delegation.calls)
     assert all(call["auto_invoke"] is True for call in delegation.calls)
+
+
+def test_no_op_delegation_cannot_complete_a_planned_criterion(tmp_path: Path) -> None:
+    orchestrator, reporter, db, config, _ = make_services(
+        tmp_path,
+        delegation=NoChangeDelegation(),
+        repairs=0,
+    )
+    project_id, _root = make_project(db, config, "Same Ground")
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "repair_pending"
+    state = reporter.state(project_id)
+    assert state["mvp_criteria"][0]["status"] == "pending"
+    assert state["phase"] == "ready_for_next_increment"
+    assert not any(
+        event["event_type"] == "criterion_completed"
+        for event in db.list_project_events(project_id)
+    )
 
 
 def test_completed_mvp_automatically_executes_documented_continuation(
