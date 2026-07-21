@@ -146,6 +146,30 @@ def test_planner_prompt_treats_founder_answers_as_binding_constraints(
     assert "must not return needs_decision for a choice already answered there" in system_prompt.lower()
 
 
+def test_continuation_prompt_excludes_completed_mvp_and_keeps_external_actions_gated(
+    tmp_path: Path,
+) -> None:
+    root = make_documented_project(tmp_path)
+    project = project_record(root)
+    project["metadata"] = {
+        "autonomy": {
+            "scope_kind": "continuation",
+            "mvp_achieved": True,
+            "milestones": [{"kind": "mvp", "criteria": ["mvp-resource-search"]}],
+        }
+    }
+    fake = FakeOllama(valid_payload())
+
+    result = ProjectMvpPlanner(config=config_for(root), ollama=fake).plan(project)
+
+    system_prompt = fake.calls[0]["messages"][0]["content"].lower()
+    header = fake.calls[0]["messages"][1]["content"]
+    assert "remaining documented internal work" in system_prompt
+    assert "external boundary" in system_prompt
+    assert "mvp-resource-search" in header
+    assert [criterion["id"] for criterion in result.criteria] == ["mvp-crisis-access"]
+
+
 def test_planner_correction_call_forbids_another_decision_request(tmp_path: Path) -> None:
     root = make_documented_project(tmp_path)
     project = project_record(root)

@@ -33,6 +33,8 @@ PHASES = (
     "approval_required",
     "blocked",
     "mvp_complete",
+    "continuation_planning",
+    "awaiting_external_boundary",
 )
 
 ALLOWED_TRANSITIONS = {
@@ -50,11 +52,25 @@ ALLOWED_TRANSITIONS = {
         "approval_required",
         "blocked",
     },
-    "ready_for_next_increment": {"building", "mvp_complete", "needs_decision", "blocked"},
+    "ready_for_next_increment": {
+        "building",
+        "mvp_complete",
+        "continuation_planning",
+        "needs_decision",
+        "blocked",
+        "awaiting_external_boundary",
+    },
     "needs_decision": {"building", "blocked"},
     "approval_required": {"building", "blocked"},
     "blocked": {"planning", "building", "ready_for_next_increment"},
-    "mvp_complete": set(),
+    "mvp_complete": {"continuation_planning"},
+    "continuation_planning": {
+        "planning",
+        "needs_decision",
+        "awaiting_external_boundary",
+        "blocked",
+    },
+    "awaiting_external_boundary": {"continuation_planning", "blocked"},
 }
 
 PRIORITIES = ("low", "normal", "high", "urgent")
@@ -188,10 +204,14 @@ class ProjectAutonomyReporter:
         next_action: str = "",
         external_boundaries: list[str] | None = None,
         plan_revision: str | None = None,
+        scope_kind: str = "mvp",
+        continuation_source_hash: str | None = None,
     ) -> dict[str, Any]:
         project = self.get_project(project_id)
+        if scope_kind not in {"mvp", "continuation"}:
+            raise ValueError("Plan scope_kind must be 'mvp' or 'continuation'.")
         if not criteria:
-            raise ValueError("An MVP plan requires at least one documented criterion.")
+            raise ValueError("A documented plan requires at least one criterion.")
         prior = self._state_for_project(project)
         prior_by_id = {
             str(item.get("id")): item
@@ -232,15 +252,26 @@ class ProjectAutonomyReporter:
                 normalized.append(reconciled)
         if priority is not None and priority not in PRIORITIES:
             raise ValueError(f"Priority must be one of: {', '.join(PRIORITIES)}")
-        if prior.get("mvp_complete") and normalized == prior.get("mvp_criteria"):
+        if (
+            prior.get("scope_kind") == scope_kind
+            and normalized == prior.get("mvp_criteria")
+            and str(prior.get("phase") or "") != "continuation_planning"
+        ):
             return project
         state = copy.deepcopy(prior)
-        if prior.get("mvp_complete"):
+        if prior.get("mvp_complete") and scope_kind == "mvp":
             state = _default_state()
         state.update(
             {
+                "phase": "planning",
                 "priority": priority or prior.get("priority") or "normal",
                 "mvp_criteria": normalized,
+                "scope_kind": scope_kind,
+                "continuation_source_hash": (
+                    str(continuation_source_hash or "").strip()
+                    if scope_kind == "continuation"
+                    else None
+                ),
                 "next_action": next_action or str(prior.get("next_action") or ""),
                 "external_boundaries": (
                     [str(item) for item in external_boundaries]
@@ -436,6 +467,120 @@ class ProjectAutonomyReporter:
             },
         )
 
+    def begin_continuation(
+        self,
+        project_id: int,
+        *,
+        criteria: list[dict[str, Any]],
+        priority: str | None = None,
+        next_action: str = "",
+        external_boundaries: list[str] | None = None,
+        plan_revision: str | None = None,
+        source_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Install the next documented internal delivery scope after MVP."""
+        project = self.get_project(project_id)
+        state = self._state_for_project(project)
+        if state.get("phase") != "continuation_planning":
+            raise ValueError("Continuation planning requires an achieved MVP milestone.")
+        return self.plan(
+            project_id,
+            criteria=criteria,
+            priority=priority,
+            next_action=next_action or "build the next documented delivery criterion",
+            external_boundaries=external_boundaries,
+            plan_revision=plan_revision,
+            scope_kind="continuation",
+            continuation_source_hash=source_hash,
+        )
+
+    def await_external_boundary(
+        self,
+        project_id: int,
+        *,
+        external_boundaries: list[str] | None = None,
+        source_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Record that no documented internal delivery work remains to delegate."""
+        project = self.get_project(project_id)
+        state = self._state_for_project(project)
+        self._require_transition(
+            state, "awaiting_external_boundary", operation="await external boundary"
+        )
+        boundaries = [str(item) for item in (external_boundaries or state.get("external_boundaries") or [])]
+        criteria = list(state.get("mvp_criteria") or [])
+        completed_criteria = [
+            str(item.get("id"))
+            for item in criteria
+            if isinstance(item, dict) and item.get("status") == "complete"
+        ]
+        milestones = list(state.get("milestones") or [])
+        if criteria and len(completed_criteria) == len(criteria):
+            milestones.append(
+                {
+                    "kind": "continuation",
+                    "commit": state.get("repo_head"),
+                    "criteria": completed_criteria,
+                    "plan_revision": state.get("plan_revision"),
+                }
+            )
+        state.update(
+            {
+                "phase": "awaiting_external_boundary",
+                "scope_kind": "continuation",
+                "mvp_criteria": [],
+                "continuation_source_hash": str(source_hash or state.get("continuation_source_hash") or "").strip() or None,
+                "active_run_id": None,
+                "blocking_type": None,
+                "blocking_reason": None,
+                "external_boundaries": boundaries,
+                "milestones": milestones,
+                "next_action": (
+                    "await founder-controlled external boundaries: " + "; ".join(boundaries)
+                    if boundaries
+                    else "all documented internal delivery work is complete"
+                ),
+            }
+        )
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "continuation_external_boundary_wait",
+                "detail": state["next_action"],
+                "metadata": {"external_boundaries": boundaries},
+            },
+        )
+
+    def reopen_continuation_for_source_change(self, project_id: int) -> dict[str, Any]:
+        """Queue a fresh continuation plan when new project documentation arrives."""
+        project = self.get_project(project_id)
+        state = self._state_for_project(project)
+        if not state.get("mvp_achieved") or state.get("phase") != "awaiting_external_boundary":
+            return project
+        self._require_transition(
+            state, "continuation_planning", operation="reopen continuation after source change"
+        )
+        state.update(
+            {
+                "phase": "continuation_planning",
+                "mvp_criteria": [],
+                "continuation_source_hash": None,
+                "active_run_id": None,
+                "blocking_type": None,
+                "blocking_reason": None,
+                "next_action": "derive the next documented internal delivery scope from changed project documentation",
+            }
+        )
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "continuation_replan_queued",
+                "detail": state["next_action"],
+            },
+        )
+
     def requeue_mechanical_repair(
         self,
         project_id: int,
@@ -498,13 +643,28 @@ class ProjectAutonomyReporter:
         prior = self._state_for_project(project)
         if not prior.get("mvp_complete") and prior.get("mvp_criteria"):
             return project
-        state = _default_state()
+        # A founder-approved replan starts a fresh active scope, but it must not
+        # erase the durable record that the MVP was verified.  That record is
+        # used by the planner to avoid sending Zade back through completed work.
+        state = copy.deepcopy(prior) if (
+            prior.get("mvp_achieved") or prior.get("mvp_complete")
+        ) else _default_state()
         state.update(
             {
+                "phase": "continuation_planning",
                 "priority": str(prior.get("priority") or "normal"),
                 "plan_revision": str(plan_revision or "").strip(),
                 "next_action": str(next_action or "re-plan the documented scope").strip(),
                 "external_boundaries": list(prior.get("external_boundaries") or []),
+                "mvp_criteria": [],
+                "current_criterion_id": None,
+                "active_run_id": None,
+                "blocking_type": None,
+                "blocking_reason": None,
+                "decision_id": None,
+                "approval_request_id": None,
+                "scope_kind": "continuation",
+                "continuation_source_hash": None,
                 "_store_version": int(prior.get("_store_version") or 0),
             }
         )
@@ -969,7 +1129,7 @@ class ProjectAutonomyReporter:
     # ---- the MVP completion gate --------------------------------------------
 
     def complete_mvp(self, project_id: int, *, final_verification: dict[str, Any]) -> dict[str, Any]:
-        """Enter mvp_complete only on full mechanical evidence.
+        """Record a durable MVP milestone only on full mechanical evidence.
 
         Gate: every required documented criterion is complete (with persisted
         verification evidence and a recorded commit), none remains blocked or
@@ -979,6 +1139,14 @@ class ProjectAutonomyReporter:
         """
         project = self.get_project(project_id)
         state = self._state_for_project(project)
+        if state.get("mvp_achieved"):
+            prior_snapshot = _validate_project_verification(
+                final_verification,
+                label="final project-level verification",
+                project=project,
+            )
+            if state.get("mvp_completed_commit") == prior_snapshot["head"]:
+                return project
         criteria = state.get("mvp_criteria") or []
         if not criteria:
             raise ValueError(
@@ -1009,27 +1177,44 @@ class ProjectAutonomyReporter:
             project=project,
         )
         head = snapshot["head"]
-        if state.get("mvp_complete") and state.get("mvp_completed_commit") == head:
+        if state.get("mvp_achieved") and state.get("mvp_completed_commit") == head:
             return project  # already attested at this exact commit; exactly-one notification holds
-        self._require_transition(state, "mvp_complete", operation="complete MVP")
+        self._require_transition(
+            state, "continuation_planning", operation="complete MVP"
+        )
         completed = sum(1 for item in criteria if item.get("status") == "complete")
         checks = final_verification.get("checks") or []
+        verification_summary = _verification_summary(final_verification)
+        milestones = list(state.get("milestones") or [])
+        milestones.append(
+            {
+                "kind": "mvp",
+                "commit": head,
+                "criteria": [str(item.get("id")) for item in criteria],
+                "verification": verification_summary,
+            }
+        )
         boundaries = [str(item) for item in (state.get("external_boundaries") or [])] or [
             f"store release not yet submitted: {target}"
             for target in project.get("distribution_targets") or []
         ]
         state.update(
             {
-                "phase": "mvp_complete",
-                "mvp_complete": True,
+                "phase": "continuation_planning",
+                "mvp_complete": False,
+                "mvp_achieved": True,
                 "mvp_completed_commit": head,
+                "mvp_final_verification": verification_summary,
+                "milestones": milestones,
+                "scope_kind": "continuation",
+                "mvp_criteria": [],
                 "repo_head": head,
                 "last_verified_at": str(final_verification.get("checked_at")),
-                "final_verification": _verification_summary(final_verification),
+                "final_verification": verification_summary,
                 "active_run_id": None,
                 "blocking_type": None,
                 "blocking_reason": None,
-                "next_action": "founder review; external release boundaries remain founder-approved",
+                "next_action": "derive and continue the next documented internal delivery scope",
             }
         )
         outbox = {
@@ -1052,7 +1237,7 @@ class ProjectAutonomyReporter:
                 "event_type": "mvp_completed",
                 "detail": f"{completed}/{len(criteria)} criteria complete at {head}",
                 "metadata": {
-                    "phase": "mvp_complete",
+                    "phase": "continuation_planning",
                     "commit": head,
                     "checks": len(checks),
                     "verification": final_verification,
@@ -1066,12 +1251,7 @@ class ProjectAutonomyReporter:
     # ---- internals ----------------------------------------------------------
 
     def _mutable_state(self, project: dict[str, Any]) -> dict[str, Any]:
-        state = self._state_for_project(project)
-        if state.get("mvp_complete"):
-            raise ValueError(
-                f"Project '{project['name']}' is already mvp_complete; re-plan a new scope first."
-            )
-        return state
+        return self._state_for_project(project)
 
     def _transition(
         self,
@@ -1329,7 +1509,10 @@ def autonomy_projection(project: dict[str, Any]) -> dict[str, Any]:
         "active_run_id": _positive_int(state.get("active_run_id")),
         "last_notification_id": _positive_int(state.get("last_notification_id")),
         "repo_head": state.get("repo_head") or (snapshot.get("head") or None),
-        "mvp_complete": state.get("mvp_complete") is True,
+        "mvp_complete": state.get("mvp_achieved") is True or state.get("mvp_complete") is True,
+        "mvp_achieved": state.get("mvp_achieved") is True or state.get("mvp_complete") is True,
+        "scope_kind": str(state.get("scope_kind") or "mvp"),
+        "external_boundaries": list(state.get("external_boundaries") or []),
         "paused": state.get("paused") is True,
         "pause_reason": str(state.get("pause_reason") or ""),
     }
@@ -1339,10 +1522,10 @@ def portfolio_bucket(project: dict[str, Any], projection: dict[str, Any] | None 
     """One honest portfolio bucket per project — never a collapsed 'verified'."""
     autonomy = projection or autonomy_projection(project)
     phase = autonomy["phase"]
-    if autonomy["mvp_complete"]:
-        return "mvp_complete"
     if autonomy.get("paused"):
         return "paused"
+    if phase == "awaiting_external_boundary":
+        return "awaiting_external_boundary"
     if phase == "needs_decision":
         return "waiting_decision"
     if phase == "approval_required":
@@ -1351,6 +1534,10 @@ def portfolio_bucket(project: dict[str, Any], projection: dict[str, Any] | None 
         return "blocked"
     if phase in {"building", "verifying"} and autonomy.get("active_run_id") is not None:
         return "actively_building"
+    if autonomy.get("mvp_achieved") and autonomy.get("scope_kind") == "continuation":
+        return "continuing_delivery"
+    if autonomy["mvp_complete"]:
+        return "mvp_complete"
     if phase == "ready_for_next_increment" and autonomy["mvp_criteria_total"] > 0:
         return "ready_for_next_increment"
     if autonomy["mvp_criteria_total"] > 0:
@@ -1368,6 +1555,8 @@ def portfolio_status(projects: list[dict[str, Any]]) -> dict[str, Any]:
         "waiting_approval": 0,
         "blocked": 0,
         "mvp_complete": 0,
+        "continuing_delivery": 0,
+        "awaiting_external_boundary": 0,
         "paused": 0,
         "planned": 0,
         "ready_for_next_increment": 0,
@@ -1430,7 +1619,12 @@ def _default_state() -> dict[str, Any]:
         "last_notification_id": None,
         "repo_head": None,
         "mvp_complete": False,
+        "mvp_achieved": False,
         "mvp_completed_commit": None,
+        "mvp_final_verification": None,
+        "milestones": [],
+        "scope_kind": "mvp",
+        "continuation_source_hash": None,
         "paused": False,
         "pause_reason": "",
         "external_boundaries": [],

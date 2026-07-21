@@ -91,7 +91,16 @@ class FakeApprovals:
         }
 
 
-def make_service(tmp_path: Path, *, delegation=None, bus=None, approvals=None):
+class ContinuationAutonomy:
+    def __init__(self):
+        self.reopened: list[int] = []
+
+    def reopen_continuation_for_source_change(self, project_id: int):
+        self.reopened.append(project_id)
+        return None
+
+
+def make_service(tmp_path: Path, *, delegation=None, bus=None, approvals=None, autonomy=None):
     hot = tmp_path / "brain"
     config = KernelConfig(
         paths=PathConfig(hot_root=hot, cold_root=tmp_path / "cold", data_dir=tmp_path / "data"),
@@ -106,6 +115,7 @@ def make_service(tmp_path: Path, *, delegation=None, bus=None, approvals=None):
             delegation=delegation,
             bus=bus,
             approvals=approvals,
+            autonomy=autonomy,
         ),
         config,
         db,
@@ -144,6 +154,23 @@ def test_scan_is_idempotent_and_preserves_mobile_store_intent(tmp_path: Path) ->
     assert second["existing_count"] == 1
     assert stored["product_type"] == "mobile_application"
     assert stored["distribution_targets"] == ["google_play", "apple_app_store_eventual"]
+
+
+def test_document_change_queues_continuation_replan(tmp_path: Path) -> None:
+    autonomy = ContinuationAutonomy()
+    service, config, db = make_service(tmp_path, autonomy=autonomy)
+    project = config.paths.project_intake_dir / "Same Ground"
+    project.mkdir(parents=True)
+    (project / "project.md").write_text(MOBILE_MANIFEST, encoding="utf-8")
+    delivery = project / "docs" / "product" / "delivery.md"
+    delivery.parent.mkdir(parents=True)
+
+    service.scan(auto_run=False)
+    delivery.write_text("# Documented remaining work\n", encoding="utf-8")
+    service.scan(auto_run=False)
+
+    stored = db.find_project_by_path(str(project))
+    assert autonomy.reopened == [stored["id"]]
 
 
 def test_documentation_only_project_initializes_git_and_routes_scaffold(tmp_path: Path) -> None:

@@ -23,7 +23,7 @@ from .project_mvp_planner import MvpPlanResult, ProjectMvpPlanner
 
 
 _PRIORITY_ORDER = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
-_TERMINAL_PHASES = {"mvp_complete", "needs_decision", "approval_required", "blocked"}
+_TERMINAL_PHASES = {"needs_decision", "approval_required", "blocked", "awaiting_external_boundary"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _PROTECTED_DEPENDENCY_MANIFESTS = {
     "package.json",
@@ -364,6 +364,7 @@ class ProjectAutonomyOrchestrator:
             return {"status": "blocked", "project_id": project_id, "reason": str(exc)}
 
         if not state.get("mvp_criteria"):
+            scope_kind = "continuation" if state.get("scope_kind") == "continuation" else "mvp"
             planning_project = dict(project)
             planning_metadata = dict(project.get("metadata") or {})
             founder_answers = [
@@ -373,17 +374,18 @@ class ProjectAutonomyOrchestrator:
                 and str(event.get("detail") or "").strip()
             ]
             planning_metadata["planner_founder_answers"] = founder_answers
+            planning_metadata["autonomy"] = state
             planning_project["metadata"] = planning_metadata
             try:
                 planned = self.planner.plan(planning_project)
             except ValueError as exc:
-                reason = f"Local MVP planner returned an invalid plan: {exc}"
+                reason = f"Local {scope_kind} planner returned an invalid plan: {exc}"
                 self.reporter.report_blocked(
                     project_id,
                     reason=reason,
                     verification_output=str(exc),
                     attempts=1,
-                    needed="correct the documented MVP plan and wake project autonomy",
+                    needed=f"correct the documented {scope_kind} plan and wake project autonomy",
                 )
                 return {"status": "blocked", "project_id": project_id, "reason": reason}
             if planned.needs_decision is not None:
@@ -397,10 +399,10 @@ class ProjectAutonomyOrchestrator:
                     try:
                         planned = self.planner.plan(planning_project)
                     except ValueError as exc:
-                        reason = f"Local MVP planner returned an invalid corrected plan: {exc}"
+                        reason = f"Local {scope_kind} planner returned an invalid corrected plan: {exc}"
                         self.reporter.report_blocked(
                             project_id, reason=reason, verification_output=str(exc), attempts=2,
-                            needed="correct the documented MVP plan and wake project autonomy",
+                            needed=f"correct the documented {scope_kind} plan and wake project autonomy",
                         )
                         return {"status": "blocked", "project_id": project_id, "reason": reason}
                     if planned.needs_decision is not None and self._decision_repeats_accepted_answer(
@@ -411,7 +413,7 @@ class ProjectAutonomyOrchestrator:
                             project_id, reason=reason,
                             verification_output=json.dumps(planned.needs_decision, indent=2, sort_keys=True),
                             attempts=2,
-                            needed="repair the local MVP planner response and wake project autonomy",
+                            needed=f"repair the local {scope_kind} planner response and wake project autonomy",
                         )
                         return {"status": "blocked", "project_id": project_id, "reason": reason}
                 if planned.needs_decision is not None:
@@ -433,14 +435,32 @@ class ProjectAutonomyOrchestrator:
                         "project_id": project_id,
                         "decision_id": decision_id,
                     }
-            self.reporter.plan(
-                project_id,
-                criteria=planned.criteria,
-                priority=str(state.get("priority") or "normal"),
-                next_action="build the first dependency-ready documented MVP criterion",
-                external_boundaries=planned.external_boundaries,
-                plan_revision=planned.plan_revision,
-            )
+            if scope_kind == "continuation" and not planned.criteria:
+                self.reporter.await_external_boundary(
+                    project_id,
+                    external_boundaries=planned.external_boundaries,
+                    source_hash=planned.source_hash,
+                )
+                return {"status": "awaiting_external_boundary", "project_id": project_id}
+            if scope_kind == "continuation":
+                self.reporter.begin_continuation(
+                    project_id,
+                    criteria=planned.criteria,
+                    priority=str(state.get("priority") or "normal"),
+                    next_action="build the first dependency-ready documented continuation criterion",
+                    external_boundaries=planned.external_boundaries,
+                    plan_revision=planned.plan_revision,
+                    source_hash=planned.source_hash,
+                )
+            else:
+                self.reporter.plan(
+                    project_id,
+                    criteria=planned.criteria,
+                    priority=str(state.get("priority") or "normal"),
+                    next_action="build the first dependency-ready documented MVP criterion",
+                    external_boundaries=planned.external_boundaries,
+                    plan_revision=planned.plan_revision,
+                )
             state = self.reporter.state(project_id)
         criterion = _next_ready_criterion(state)
         if criterion is None:
@@ -491,7 +511,10 @@ class ProjectAutonomyOrchestrator:
                 f"{criterion['id']}:{increment}:{attempt}"
             )
             result = self.delegation.queue_delegation(
-                task=f"Complete documented MVP criterion {criterion['id']}: {criterion['title']}",
+                task=(
+                    f"Complete documented {state.get('scope_kind') or 'mvp'} criterion "
+                    f"{criterion['id']}: {criterion['title']}"
+                ),
                 brief=self._build_brief(
                     project=project,
                     criterion=criterion,
@@ -703,6 +726,14 @@ class ProjectAutonomyOrchestrator:
                 raise ValueError("Final MVP verification evidence is unavailable.")
             commands = required[-1].get("verification_commands") or []
             verification = _run_declared_verification(root, commands)
+        if state.get("scope_kind") == "continuation":
+            waited = self.reporter.await_external_boundary(project_id)
+            return {
+                "status": "awaiting_external_boundary",
+                "project_id": project_id,
+                "criterion_id": state.get("current_criterion_id"),
+                "commit": (waited.get("metadata") or {}).get("autonomy", {}).get("repo_head"),
+            }
         completed_project = self.reporter.complete_mvp(
             project_id, final_verification=verification
         )
@@ -1072,8 +1103,7 @@ def _reversible_local_implementation_choice(dispatch: dict[str, Any]) -> str:
 
 def _is_runnable(state: dict[str, Any]) -> bool:
     if (
-        state.get("mvp_complete") is True
-        or state.get("paused") is True
+        state.get("paused") is True
         or str(state.get("phase")) in _TERMINAL_PHASES
     ):
         return False

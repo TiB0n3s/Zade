@@ -170,10 +170,14 @@ class ProjectMvpPlanner:
             raise ValueError("The local MVP planner response must be a JSON object.")
 
         allowed_sources = {doc.relative_path.casefold(): doc.relative_path for doc in documents}
+        scope_kind = _scope_kind(project)
         criteria = _normalize_criteria(payload.get("criteria"), allowed_sources)
+        if scope_kind == "continuation":
+            completed = _completed_criterion_ids(project)
+            criteria = [item for item in criteria if item["id"] not in completed]
         boundaries = _normalize_boundaries(payload.get("external_boundaries"))
         needs_decision = _normalize_decision(payload.get("needs_decision"))
-        if not criteria and needs_decision is None:
+        if not criteria and needs_decision is None and scope_kind != "continuation":
             raise ValueError(
                 "The documented MVP planner returned neither criteria nor a decision request."
             )
@@ -283,6 +287,7 @@ def _source_hash(documents: list[_Document]) -> str:
 def _planning_messages(
     project: dict[str, Any], documents: list[_Document]
 ) -> list[dict[str, str]]:
+    scope_kind = _scope_kind(project)
     system = (
         "Extract only the MVP requirements explicitly supported by the supplied project "
         "documents. Do not invent features, accounts, services, scope, or external actions. "
@@ -296,6 +301,14 @@ def _planning_messages(
         "invalid: use the accepted answer and return criteria instead. Return JSON matching "
         "the schema."
     )
+    if scope_kind == "continuation":
+        system += (
+            " This is a continuation after an achieved MVP: extract only remaining documented "
+            "internal work. Do not repeat completed criteria. Deployment, store submission, "
+            "external credentials or accounts, paid services, legal publication, and irreversible "
+            "public actions must remain an external boundary rather than a criterion. An empty "
+            "criteria list is valid when no documented internal work remains."
+        )
     header = {
         "name": str(project.get("name") or ""),
         "product_type": str(project.get("product_type") or ""),
@@ -306,6 +319,8 @@ def _planning_messages(
         "rejected_duplicate_decision": str(
             (project.get("metadata") or {}).get("planner_rejected_duplicate_decision") or ""
         ),
+        "scope_kind": scope_kind,
+        "completed_criteria": sorted(_completed_criterion_ids(project)),
     }
     sections = [f"PROJECT\n{json.dumps(header, sort_keys=True)}"]
     sections.extend(
@@ -316,6 +331,24 @@ def _planning_messages(
         {"role": "system", "content": system},
         {"role": "user", "content": "\n\n".join(sections)},
     ]
+
+
+def _scope_kind(project: dict[str, Any]) -> str:
+    autonomy = (project.get("metadata") or {}).get("autonomy") or {}
+    return "continuation" if autonomy.get("scope_kind") == "continuation" else "mvp"
+
+
+def _completed_criterion_ids(project: dict[str, Any]) -> set[str]:
+    autonomy = (project.get("metadata") or {}).get("autonomy") or {}
+    completed: set[str] = set()
+    for milestone in autonomy.get("milestones") or []:
+        if not isinstance(milestone, dict):
+            continue
+        for criterion_id in milestone.get("criteria") or []:
+            value = str(criterion_id or "").strip()
+            if value:
+                completed.add(value)
+    return completed
 
 
 def _normalize_criteria(

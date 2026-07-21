@@ -500,6 +500,7 @@ class ProjectIntakeService:
             raise ValueError(f"Registered projects require project.md: {root}")
         manifest = load_project_manifest(manifest_path)
         fingerprint = self._fingerprint(root)
+        source_changed = prior is not None and prior.get("repo_fingerprint") != fingerprint
         prior_metadata = dict(prior.get("metadata") or {}) if prior else {}
         project_id = self.db.upsert_project(
             canonical_path=str(root),
@@ -516,7 +517,7 @@ class ProjectIntakeService:
             self.db.append_project_event(
                 project_id, event_type="discovered", metadata={"fingerprint": fingerprint}
             )
-        elif prior.get("repo_fingerprint") != fingerprint:
+        elif source_changed:
             self.db.append_project_event(
                 project_id,
                 event_type="source_updated",
@@ -524,6 +525,10 @@ class ProjectIntakeService:
             )
         self._ingest_documentation(project_id, root)
         registered = self.get(project_id)
+        if source_changed and self.autonomy is not None:
+            reopened = self.autonomy.reopen_continuation_for_source_change(project_id)
+            if isinstance(reopened, dict):
+                registered = reopened
         route = (registered.get("metadata") or {}).get("last_build_route")
         route = route if isinstance(route, dict) else {}
         dispatch = route.get("dispatch") if isinstance(route.get("dispatch"), dict) else {}
@@ -630,14 +635,16 @@ class ProjectIntakeService:
     @staticmethod
     def _fingerprint(root: Path) -> str:
         digest = hashlib.sha256()
-        for path in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
-            if path.name in {".git", "node_modules", ".zade"}:
+        document_suffixes = {".md", ".markdown", ".txt", ".rst", ".adoc", ".json", ".yaml", ".yml"}
+        ignored_directories = {".git", "node_modules", ".zade", "dist", "build", ".expo", ".gradle", ".cxx"}
+        for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix().casefold()):
+            relative = path.relative_to(root)
+            if path.is_symlink() or any(part.casefold() in ignored_directories for part in relative.parts):
                 continue
-            digest.update(path.name.encode("utf-8", errors="replace"))
-            if path.is_file():
-                digest.update(str(path.stat().st_size).encode("ascii"))
-                if path.suffix.lower() in {".md", ".txt", ".json", ".yaml", ".yml"}:
-                    digest.update(path.read_bytes())
+            if not path.is_file() or path.suffix.lower() not in document_suffixes:
+                continue
+            digest.update(relative.as_posix().encode("utf-8", errors="replace"))
+            digest.update(path.read_bytes())
         return digest.hexdigest()
 
     def _set_state(

@@ -272,13 +272,89 @@ def test_verified_increment_immediately_queues_next_criterion(tmp_path: Path) ->
     assert second["criterion_id"] == "mvp-two"
     assert second["status"] == "mvp_complete"
     state = reporter.state(project_id)
-    assert [item["status"] for item in state["mvp_criteria"]] == ["complete", "complete"]
-    assert state["mvp_complete"] is True
+    assert state["mvp_criteria"] == []
+    assert state["mvp_achieved"] is True
+    assert state["milestones"][0]["criteria"] == ["mvp-one", "mvp-two"]
     assert subprocess.run(
         ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True
     ).stdout == ""
     assert all(call["directed"] is True for call in delegation.calls)
     assert all(call["auto_invoke"] is True for call in delegation.calls)
+
+
+def test_completed_mvp_automatically_executes_documented_continuation(
+    tmp_path: Path,
+) -> None:
+    continuation = {
+        **CRITERIA[0],
+        "id": "ios-parity",
+        "title": "iPhone parity",
+        "source": "project.md",
+    }
+    planner = SequencePlanner(
+        MvpPlanResult(
+            criteria=[CRITERIA[0]],
+            external_boundaries=["app_store_submission"],
+            source_hash="mvp-source",
+            plan_revision="mvp-plan",
+            needs_decision=None,
+        ),
+        MvpPlanResult(
+            criteria=[continuation],
+            external_boundaries=["app_store_submission"],
+            source_hash="continuation-source",
+            plan_revision="continuation-plan",
+            needs_decision=None,
+        ),
+    )
+    orchestrator, reporter, db, config, delegation = make_services(tmp_path, planner=planner)
+    project_id, _root = make_project(db, config, "Same Ground", priority="normal")
+
+    first = orchestrator.run_once()
+    second = orchestrator.run_once()
+
+    assert first["status"] == "mvp_complete"
+    assert second["status"] == "awaiting_external_boundary"
+    assert second["criterion_id"] == "ios-parity"
+    assert reporter.state(project_id)["scope_kind"] == "continuation"
+    assert reporter.state(project_id)["phase"] == "awaiting_external_boundary"
+    assert [milestone["kind"] for milestone in reporter.state(project_id)["milestones"]] == [
+        "mvp",
+        "continuation",
+    ]
+    assert reporter.state(project_id)["milestones"][-1]["criteria"] == ["ios-parity"]
+    assert len(delegation.calls) == 2
+    assert delegation.calls[-1]["task"] == (
+        "Complete documented continuation criterion ios-parity: iPhone parity"
+    )
+
+
+def test_external_only_continuation_waits_without_fake_delegation(tmp_path: Path) -> None:
+    planner = SequencePlanner(
+        MvpPlanResult(
+            criteria=[CRITERIA[0]],
+            external_boundaries=["app_store_submission"],
+            source_hash="mvp-source",
+            plan_revision="mvp-plan",
+            needs_decision=None,
+        ),
+        MvpPlanResult(
+            criteria=[],
+            external_boundaries=["app_store_submission"],
+            source_hash="continuation-source",
+            plan_revision="continuation-plan",
+            needs_decision=None,
+        ),
+    )
+    orchestrator, reporter, db, config, delegation = make_services(tmp_path, planner=planner)
+    project_id, _root = make_project(db, config, "Same Ground", priority="normal")
+
+    orchestrator.run_once()
+    result = orchestrator.run_once()
+
+    assert result["status"] == "awaiting_external_boundary"
+    assert reporter.state(project_id)["phase"] == "awaiting_external_boundary"
+    assert len(delegation.calls) == 1
 
 
 def test_unplanned_project_is_planned_before_first_increment(tmp_path: Path) -> None:

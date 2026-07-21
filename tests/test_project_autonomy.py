@@ -532,7 +532,7 @@ def test_valid_mvp_completion_emits_exactly_one_notification(tmp_path: Path) -> 
     )
 
     view = autonomy_projection(completed)
-    assert view["phase"] == "mvp_complete"
+    assert view["phase"] == "continuation_planning"
     assert view["mvp_complete"] is True
     assert view["repo_head"] == head
     calls = bus.topic_calls("project.mvp_complete")
@@ -558,15 +558,73 @@ def test_valid_mvp_completion_emits_exactly_one_notification(tmp_path: Path) -> 
     assert events.count("mvp_completed") == 1
 
 
-def test_mutations_rejected_after_mvp_complete(tmp_path: Path) -> None:
+def test_direct_increment_is_rejected_until_continuation_is_planned(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path, bus=FakeBus())
     project_id, root, head = make_git_project(db, tmp_path)
     reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
     complete_planned_criterion(reporter, project_id, root, head, "auth")
     reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
 
-    with pytest.raises(ValueError, match="already mvp_complete"):
+    with pytest.raises(ValueError, match="continuation_planning"):
         reporter.begin_increment(project_id, criterion_id="auth")
+
+
+def test_completed_mvp_becomes_a_runnable_continuation_milestone(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path, bus=FakeBus())
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+
+    completed = reporter.complete_mvp(
+        project_id, final_verification=verification_for(root, head)
+    )
+
+    state = completed["metadata"]["autonomy"]
+    assert state["phase"] == "continuation_planning"
+    assert state["mvp_achieved"] is True
+    assert state["scope_kind"] == "continuation"
+    assert state["mvp_criteria"] == []
+    assert state["milestones"] == [
+        {
+            "kind": "mvp",
+            "commit": head,
+            "criteria": ["auth"],
+            "verification": state["mvp_final_verification"],
+        }
+    ]
+
+
+def test_document_change_reopens_external_only_continuation(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path, bus=FakeBus())
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+    reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
+    reporter.await_external_boundary(project_id, external_boundaries=["app_store_submission"])
+
+    reopened = reporter.reopen_continuation_for_source_change(project_id)
+
+    state = reopened["metadata"]["autonomy"]
+    assert state["phase"] == "continuation_planning"
+    assert state["mvp_achieved"] is True
+    assert state["mvp_criteria"] == []
+    assert "changed project documentation" in state["next_action"]
+
+
+def test_explicit_scope_replan_keeps_the_mvp_milestone(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path, bus=FakeBus())
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+    reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
+
+    reopened = reporter.begin_new_scope(
+        project_id, plan_revision="founder-replan", next_action="re-plan delivery"
+    )
+
+    state = reopened["metadata"]["autonomy"]
+    assert state["mvp_achieved"] is True
+    assert state["milestones"][0]["kind"] == "mvp"
 
 
 # ---- founder boundary notifications ------------------------------------------
@@ -855,7 +913,9 @@ def test_portfolio_distinguishes_every_status(tmp_path: Path) -> None:
         "waiting_decision": 1,
         "waiting_approval": 1,
         "blocked": 1,
-        "mvp_complete": 1,
+        "mvp_complete": 0,
+        "continuing_delivery": 1,
+        "awaiting_external_boundary": 0,
         "paused": 0,
         "planned": 0,
         "ready_for_next_increment": 0,
@@ -863,4 +923,4 @@ def test_portfolio_distinguishes_every_status(tmp_path: Path) -> None:
     }
     by_name = {item["name"]: item["status"] for item in status["projects"]}
     assert by_name["Scaffold Only"] == "scaffold_verified"
-    assert by_name["Complete"] == "mvp_complete"
+    assert by_name["Complete"] == "continuing_delivery"

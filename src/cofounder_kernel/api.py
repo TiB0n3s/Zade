@@ -4360,7 +4360,7 @@ def _inventory_payload(
             "Only real, registered direct-child project roots can receive build execution.",
             "Project manifests and durable project records are authoritative over stale historical build claims.",
             "Documentation-only intake wakes the durable local orchestrator; the watcher never dispatches a build directly.",
-            "Autonomy defaults to completing the documented MVP through dependency-ready verified increments, with one lease per project and two project workers by default.",
+            "Autonomy records a verified MVP milestone, then continues documented internal delivery through dependency-ready verified increments; it pauses only at founder-controlled external boundaries, with one lease per project and two project workers by default.",
             "Routine implementation runs inline through the native loopback coding agent; optional external agent routes remain separately governed and are never an automatic fallback.",
             "Founder decisions are notified through the notification bus and resolved only in Zade's Approvals & Actions UI; Telegram is notification-only.",
         ],
