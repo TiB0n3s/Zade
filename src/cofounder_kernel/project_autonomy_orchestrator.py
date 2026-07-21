@@ -373,36 +373,40 @@ class ProjectAutonomyOrchestrator:
             / str(project_id)
         )
         try:
-            # A recovered worker may inherit files from an interrupted attempt.
-            # Preserve those files outside the repo, restore the last commit,
-            # and start from a clean checkpoint. Never feed a half-applied
-            # attempt into the next model call.
+            # Preserve interrupted in-flight work outside the repo before
+            # retrying it. Pre-existing work at a planning boundary is instead
+            # checkpointed: continuous delivery must never require a founder to
+            # clean a project tree by hand before Zade can proceed.
             _ensure_clean_repository(root, allow_dirty=True)
             dirty = _git_checked(root, "status", "--porcelain").stdout.strip()
             if dirty:
                 if str(state.get("phase") or "") not in {"building", "verifying"}:
-                    raise ValueError(
-                        "Repository has uncommitted changes before the autonomy increment: "
-                        + dirty[:800]
-                    )
-                checkpoint_head = _git_checked(root, "rev-parse", "HEAD").stdout.strip()
-                quarantine = _quarantine_and_restore_attempt(
-                    root,
-                    expected_head=checkpoint_head,
-                    quarantine_root=quarantine_root,
-                )
-                if quarantine is not None:
+                    checkpoint = _checkpoint_existing_changes(root)
                     self.db.append_project_event(
                         project_id,
-                        event_type="autonomy_attempt_quarantined",
-                        detail="Recovered an interrupted build from a clean Git checkpoint.",
-                        metadata={"quarantine_path": str(quarantine)},
+                        event_type="autonomy_baseline_checkpointed",
+                        detail="Checkpointed existing project changes before advancing the priority-ordered backlog.",
+                        metadata={"commit": checkpoint, "status": dirty[:800]},
                     )
+                else:
+                    checkpoint_head = _git_checked(root, "rev-parse", "HEAD").stdout.strip()
+                    quarantine = _quarantine_and_restore_attempt(
+                        root,
+                        expected_head=checkpoint_head,
+                        quarantine_root=quarantine_root,
+                    )
+                    if quarantine is not None:
+                        self.db.append_project_event(
+                            project_id,
+                            event_type="autonomy_attempt_quarantined",
+                            detail="Recovered an interrupted build from a clean Git checkpoint.",
+                            metadata={"quarantine_path": str(quarantine)},
+                        )
         except ValueError as exc:
             self.reporter.report_blocked(
                 project_id,
                 reason=str(exc),
-                needed="restore a clean, reviewable Git baseline",
+                needed="repair the local project repository",
             )
             return {"status": "blocked", "project_id": project_id, "reason": str(exc)}
 
@@ -1358,6 +1362,30 @@ def _commit_increment(root: Path, criterion: dict[str, Any]) -> str:
             "-m",
             f"feat: {title[:68]}",
         )
+    return _git_checked(root, "rev-parse", "HEAD").stdout.strip()
+
+
+def _checkpoint_existing_changes(root: Path) -> str:
+    """Preserve a dirty planning boundary as a local commit before autonomous work.
+
+    The checkpoint is deliberately local and contains no external push. It is
+    safer than discarding or quarantining founder/project work, and it gives
+    each autonomous increment a reproducible commit baseline.
+    """
+    status = _git_checked(root, "status", "--porcelain").stdout.strip()
+    if not status:
+        return _git_checked(root, "rev-parse", "HEAD").stdout.strip()
+    _git_checked(root, "add", "-A")
+    _git_checked(
+        root,
+        "-c",
+        "user.name=Zade",
+        "-c",
+        "user.email=zade@local",
+        "commit",
+        "-m",
+        "chore: checkpoint project work before autonomous delivery",
+    )
     return _git_checked(root, "rev-parse", "HEAD").stdout.strip()
 
 

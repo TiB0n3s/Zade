@@ -970,6 +970,27 @@ def test_recovered_building_phase_can_repair_its_dirty_workspace(tmp_path: Path)
     assert len(list(quarantined.glob("*/untracked/interrupted.txt"))) == 1
 
 
+def test_planning_phase_checkpoints_existing_work_and_continues(tmp_path: Path) -> None:
+    orchestrator, reporter, db, _config, _delegation = make_services(tmp_path)
+    project_id, root = make_project(db, orchestrator.config, "Same Ground")
+    (root / "founder-note.md").write_text("preserve this work\n", encoding="utf-8")
+
+    result = orchestrator.run_once()
+
+    assert result["status"] == "criterion_complete"
+    assert (root / "founder-note.md").is_file()
+    assert subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
+    events = db.list_project_events(project_id, limit=None)
+    assert any(event["event_type"] == "autonomy_baseline_checkpointed" for event in events)
+    assert reporter.state(project_id)["mvp_criteria"][0]["status"] == "complete"
+
+
 def test_non_native_or_cloud_fallback_policy_fails_closed(tmp_path: Path) -> None:
     orchestrator, _reporter, db, config, _delegation = make_services(tmp_path)
     make_project(db, config, "Same Ground")
