@@ -153,21 +153,32 @@ class ProjectMvpPlanner:
         if not documents:
             raise ValueError("No eligible project documents were found for MVP planning.")
         source_hash = _source_hash(documents)
-        result = self.ollama.chat(
-            messages=_planning_messages(project, documents),
-            model=(
-                str(self.config.ollama.coding_agent_model or "").strip()
-                or self.config.ollama.coding_model
-            ),
-            temperature=0,
-            think=False,
-            format=_planning_schema(project),
-            num_predict=4096,
+        structured_plan = (
+            _load_structured_continuation_plan(root)
+            if scope_kind == "continuation"
+            else None
         )
-        try:
-            payload = _parse_planner_json(result.response)
-        except json.JSONDecodeError as exc:
-            raise ValueError("The local MVP planner returned invalid structured JSON.") from exc
+        if structured_plan is not None:
+            payload, structured_source = structured_plan
+            source_hash = hashlib.sha256(
+                f"{source_hash}\0{structured_source}".encode("utf-8")
+            ).hexdigest()
+        else:
+            result = self.ollama.chat(
+                messages=_planning_messages(project, documents),
+                model=(
+                    str(self.config.ollama.coding_agent_model or "").strip()
+                    or self.config.ollama.coding_model
+                ),
+                temperature=0,
+                think=False,
+                format=_planning_schema(project),
+                num_predict=4096,
+            )
+            try:
+                payload = _parse_planner_json(result.response)
+            except json.JSONDecodeError as exc:
+                raise ValueError("The local MVP planner returned invalid structured JSON.") from exc
         if not isinstance(payload, dict):
             raise ValueError("The local MVP planner response must be a JSON object.")
 
@@ -184,9 +195,14 @@ class ProjectMvpPlanner:
                 item for item in criteria if not _is_external_boundary_only_criterion(item)
             ]
         boundaries = _normalize_boundaries(payload.get("external_boundaries"))
-        needs_decision = _normalize_decision(payload.get("needs_decision"))
-        if scope_kind == "continuation" and _is_external_delivery_decision(needs_decision):
+        raw_decision = payload.get("needs_decision")
+        if scope_kind == "continuation" and (
+            _is_external_delivery_decision(raw_decision)
+            or _is_blank_decision(raw_decision)
+        ):
             needs_decision = None
+        else:
+            needs_decision = _normalize_decision(raw_decision)
         if not criteria and needs_decision is None and scope_kind != "continuation":
             raise ValueError(
                 "The documented MVP planner returned neither criteria nor a decision request."
@@ -255,6 +271,22 @@ def _parse_planner_json(response: Any) -> Any:
                 continue
             return value
         raise primary_error
+
+
+def _load_structured_continuation_plan(root: Path) -> tuple[dict[str, Any], str] | None:
+    path = root / "docs" / "product" / "continuation-plan.json"
+    if not path.is_file():
+        return None
+    try:
+        source = path.read_text(encoding="utf-8")
+        payload = json.loads(source)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "The documented structured continuation plan is invalid JSON."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError("The documented structured continuation plan must be a JSON object.")
+    return payload, source
 
 
 def _read_project_documents(root: Path, *, scope_kind: str = "mvp") -> list[_Document]:
@@ -554,8 +586,8 @@ def _is_external_boundary_only_criterion(criterion: dict[str, Any]) -> bool:
     return "external boundar" in text
 
 
-def _is_external_delivery_decision(decision: dict[str, Any] | None) -> bool:
-    if decision is None:
+def _is_external_delivery_decision(decision: Any) -> bool:
+    if not isinstance(decision, dict):
         return False
     text = " ".join(
         [
@@ -582,6 +614,24 @@ def _is_external_delivery_decision(decision: dict[str, Any] | None) -> bool:
             "app store identifier",
         )
     )
+
+
+def _is_blank_decision(decision: Any) -> bool:
+    if not isinstance(decision, dict):
+        return False
+    text = [
+        str(decision.get("question") or "").strip(),
+        str(decision.get("recommendation") or "").strip(),
+    ]
+    for option in decision.get("options") or []:
+        if isinstance(option, dict):
+            text.extend(
+                [
+                    str(option.get("option") or "").strip(),
+                    str(option.get("impact") or "").strip(),
+                ]
+            )
+    return not any(text)
 
 
 def _criterion_id(value: Any) -> str:

@@ -237,9 +237,63 @@ def test_continuation_treats_domain_questions_and_boundary_only_items_as_externa
         "question": "What is the production domain?",
         "recommendation": "Use the eventual primary domain.",
         "options": [
-            {"option": "example.org", "impact": "primary domain"},
+            {"impact": "primary domain"},
             {"option": "example.com", "impact": "alternate domain"},
         ],
+    }
+
+    result = ProjectMvpPlanner(config=config_for(root), ollama=FakeOllama(payload)).plan(project)
+
+    assert result.criteria == []
+    assert result.needs_decision is None
+
+
+def test_continuation_uses_a_documented_structured_plan_without_model_call(
+    tmp_path: Path,
+) -> None:
+    root = make_documented_project(tmp_path)
+    plan_path = root / "docs" / "product" / "continuation-plan.json"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text(
+        json.dumps(
+            {
+                "criteria": [
+                    {
+                        "id": "iphone-parity",
+                        "title": "iPhone parity",
+                        "description": "Documented iPhone implementation scope.",
+                        "source": "MVP.md",
+                        "acceptance_checks": ["The documented iPhone scope is implemented."],
+                        "verification_commands": ["npm test"],
+                        "depends_on": [],
+                    }
+                ],
+                "external_boundaries": ["app_store_submission"],
+                "needs_decision": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    project = project_record(root)
+    project["metadata"] = {"autonomy": {"scope_kind": "continuation", "mvp_achieved": True}}
+    fake = FakeOllama(valid_payload())
+
+    result = ProjectMvpPlanner(config=config_for(root), ollama=fake).plan(project)
+
+    assert [criterion["id"] for criterion in result.criteria] == ["mvp-iphone-parity"]
+    assert fake.calls == []
+
+
+def test_continuation_ignores_an_empty_model_decision_object(tmp_path: Path) -> None:
+    root = make_documented_project(tmp_path)
+    project = project_record(root)
+    project["metadata"] = {"autonomy": {"scope_kind": "continuation", "mvp_achieved": True}}
+    payload = valid_payload()
+    payload["criteria"] = []
+    payload["needs_decision"] = {
+        "question": "",
+        "recommendation": "",
+        "options": [{"option": "", "impact": ""}, {"option": "", "impact": ""}],
     }
 
     result = ProjectMvpPlanner(config=config_for(root), ollama=FakeOllama(payload)).plan(project)
