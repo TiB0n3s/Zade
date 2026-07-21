@@ -297,6 +297,20 @@ def _read_project_documents(root: Path, *, scope_kind: str = "mvp") -> list[_Doc
                     content=content,
                 )
             )
+    if scope_kind == "continuation" and any(
+        document.relative_path.casefold().startswith("docs/product/")
+        for document in candidates
+    ):
+        # A current product delivery brief explicitly supersedes historical
+        # implementation specs. Including those older specs can make a
+        # continuation rediscover completed MVP work under a different title.
+        candidates = [
+            document
+            for document in candidates
+            if document.relative_path.casefold().startswith("docs/product/")
+            or PurePosixPath(document.relative_path).name.casefold()
+            in {"project.md", "project.markdown", "readme.md", "readme.markdown"}
+        ]
     selected: list[_Document] = []
     total_chars = 0
     for document in sorted(
@@ -422,6 +436,8 @@ def _normalize_criteria(
     *,
     fallback_commands: list[str],
 ) -> list[dict[str, Any]]:
+    if isinstance(raw, dict):
+        raw = [raw]
     if not isinstance(raw, list):
         raise ValueError("MVP criteria must be a list.")
     criteria: list[dict[str, Any]] = []

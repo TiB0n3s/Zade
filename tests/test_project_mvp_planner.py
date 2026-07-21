@@ -145,6 +145,18 @@ def test_planner_recovers_a_json_plan_wrapped_in_model_commentary(tmp_path: Path
     ]
 
 
+def test_planner_accepts_a_single_criterion_object_from_the_local_model(tmp_path: Path) -> None:
+    root = make_documented_project(tmp_path)
+    payload = valid_payload()
+    payload["criteria"] = payload["criteria"][0]
+
+    result = ProjectMvpPlanner(
+        config=config_for(root), ollama=FakeOllama(payload)
+    ).plan(project_record(root))
+
+    assert [item["id"] for item in result.criteria] == ["mvp-resource-search"]
+
+
 def test_planner_replaces_prose_verification_with_project_test_commands(tmp_path: Path) -> None:
     root = make_documented_project(tmp_path)
     (root / "package.json").write_text(
@@ -298,14 +310,14 @@ def test_planner_bounds_source_input_without_exhausting_model_context(tmp_path: 
     assert "x" * 100 not in prompt
 
 
-def test_continuation_prefers_product_docs_over_large_historical_handoffs(
+def test_continuation_prefers_product_docs_over_historical_handoffs(
     tmp_path: Path,
 ) -> None:
     root = make_documented_project(tmp_path)
     product_doc = root / "docs" / "product" / "post-mvp.md"
     product_doc.parent.mkdir(parents=True)
     product_doc.write_text("IPHONE_AND_WEB_SCOPE", encoding="utf-8")
-    (root / "old-handoff.md").write_text("HISTORICAL_SCOPE\n" * 7_000, encoding="utf-8")
+    (root / "old-handoff.md").write_text("HISTORICAL_SCOPE", encoding="utf-8")
     project = project_record(root)
     project["metadata"] = {"autonomy": {"scope_kind": "continuation", "mvp_achieved": True}}
     payload = {
