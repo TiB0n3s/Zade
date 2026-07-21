@@ -650,6 +650,40 @@ def test_document_change_reopens_external_only_continuation(tmp_path: Path) -> N
     assert "changed project documentation" in state["next_action"]
 
 
+def test_resuming_external_boundary_preserves_boundary_explanation(tmp_path: Path) -> None:
+    reporter, db = make_reporter(tmp_path, bus=FakeBus())
+    project_id, root, head = make_git_project(db, tmp_path)
+    reporter.plan(project_id, criteria=[{"id": "auth", "title": "Sign-in works"}])
+    complete_planned_criterion(reporter, project_id, root, head, "auth")
+    reporter.complete_mvp(project_id, final_verification=verification_for(root, head))
+    reporter.await_external_boundary(project_id, external_boundaries=["app_store_submission"])
+    reporter.pause(project_id, reason="founder check")
+
+    resumed = reporter.resume(project_id)
+
+    state = resumed["metadata"]["autonomy"]
+    assert state["phase"] == "awaiting_external_boundary"
+    assert state["next_action"] == "await founder-controlled external boundaries: app_store_submission"
+
+
+def test_completing_one_external_boundary_preserves_remaining_launch_gates(tmp_path: Path) -> None:
+    reporter, _db = make_reporter(tmp_path)
+    project_id = make_project(_db, tmp_path)
+    reporter.plan(
+        project_id,
+        criteria=CRITERIA,
+        external_boundaries=["publishing_deployment", "credentials", "app_store_submission"],
+    )
+    reporter.await_external_boundary(project_id)
+
+    completed = reporter.complete_external_boundary(project_id, boundary="publishing_deployment")
+
+    state = autonomy_projection(completed)
+    assert state["phase"] == "awaiting_external_boundary"
+    assert state["external_boundaries"] == ["credentials", "app_store_submission"]
+    assert state["next_action"] == "await founder-controlled external boundaries: credentials; app_store_submission"
+
+
 def test_resumed_empty_continuation_can_wait_for_external_boundary(tmp_path: Path) -> None:
     reporter, db = make_reporter(tmp_path, bus=FakeBus())
     project_id, root, head = make_git_project(db, tmp_path)

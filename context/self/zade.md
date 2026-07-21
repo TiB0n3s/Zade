@@ -132,6 +132,7 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 ## Recent Activity
 
 <!-- AUTO-START: recent-activity -->
+- `2b5e1f9` 2026-07-21 - Project autonomy
 - `891e3b5` 2026-07-21 - feat: honor documented continuation plans
 - `d8b2fc2` 2026-07-21 - fix: prioritize current continuation briefs
 - `79ba6aa` 2026-07-21 - fix: harden continuation planner output
@@ -143,7 +144,6 @@ His job is to make the founder harder to fool, faster to decide, and more consis
 - `68beecc` 2026-07-21 - feat: continue project delivery after MVP
 - `d5e4cc6` 2026-07-21 - docs: design continuous project autonomy
 - `ab99fb7` 2026-07-21 - Co-founder kernel
-- `25f186b` 2026-07-20 - fix: keep mechanical verification failures repairable
 <!-- AUTO-END: recent-activity -->
 
 ## Open Questions / Unknowns

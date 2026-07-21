@@ -92,6 +92,31 @@ def test_project_endpoints_expose_full_autonomy_projection(tmp_path: Path, monke
     assert fetched["distribution_targets"] == ["google_play", "apple_app_store_eventual"]
 
 
+def test_external_boundary_completion_api_preserves_remaining_boundaries(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app, client, ids = make_client(tmp_path, monkeypatch)
+    reporter = app.state.project_autonomy
+    reporter.bus = None
+    project_id = ids["Same Ground"]
+    reporter.plan(
+        project_id,
+        criteria=[{"id": "launch", "title": "Launch package is ready"}],
+        external_boundaries=["publishing_deployment", "credentials"],
+    )
+    reporter.await_external_boundary(project_id)
+
+    response = client.post(
+        f"/project-intake/projects/{project_id}/autonomy/"
+        "external-boundaries/publishing_deployment/complete"
+    )
+
+    assert response.status_code == 200
+    autonomy = response.json()["project"]["autonomy"]
+    assert autonomy["phase"] == "awaiting_external_boundary"
+    assert autonomy["external_boundaries"] == ["credentials"]
+
+
 def test_project_api_bounds_captured_command_output(tmp_path: Path, monkeypatch) -> None:
     app, client, ids = make_client(tmp_path, monkeypatch)
     project = app.state.db.get_project(ids["Same Ground"])

@@ -1105,6 +1105,14 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/project-intake/projects/{project_id}/autonomy/external-boundaries/{boundary}/complete")
+    def complete_project_intake_external_boundary(project_id: int, boundary: str) -> dict[str, Any]:
+        try:
+            project_autonomy.complete_external_boundary(project_id, boundary=boundary)
+            return {"project": project_autonomy.project_view(project_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/project-intake/projects/{project_id}/autonomy/priority")
     def prioritize_project_intake_autonomy(
         project_id: int, payload: ProjectAutonomyPriorityRequest

@@ -392,6 +392,27 @@ class ProjectAutonomyReporter:
             )
         if state.get("paused") is not True:
             return project
+        if state.get("phase") == "awaiting_external_boundary":
+            boundaries = [str(item) for item in state.get("external_boundaries") or []]
+            state.update(
+                {
+                    "paused": False,
+                    "pause_reason": "",
+                    "next_action": (
+                        "await founder-controlled external boundaries: " + "; ".join(boundaries)
+                        if boundaries
+                        else "all documented internal delivery work is complete"
+                    ),
+                }
+            )
+            return self._transition(
+                project,
+                state,
+                event={
+                    "event_type": "autonomy_resumed",
+                    "metadata": {"phase": state.get("phase")},
+                },
+            )
         state.update(
             {
                 "paused": False,
@@ -628,6 +649,43 @@ class ProjectAutonomyReporter:
                 "event_type": "continuation_external_boundary_wait",
                 "detail": state["next_action"],
                 "metadata": {"external_boundaries": boundaries},
+            },
+        )
+
+    def complete_external_boundary(self, project_id: int, *, boundary: str) -> dict[str, Any]:
+        """Record one founder-controlled launch boundary as completed.
+
+        This deliberately preserves every other boundary and never reopens
+        completed continuation criteria merely to correct launch truth.
+        """
+        project = self.get_project(project_id)
+        state = self._state_for_project(project)
+        completed_boundary = str(boundary or "").strip()
+        if state.get("phase") != "awaiting_external_boundary":
+            raise ValueError("Project is not awaiting an external boundary.")
+        if not completed_boundary:
+            raise ValueError("External boundary is required.")
+        boundaries = [str(item) for item in state.get("external_boundaries") or []]
+        if completed_boundary not in boundaries:
+            raise ValueError(f"External boundary is not pending: {completed_boundary}")
+        remaining = [item for item in boundaries if item != completed_boundary]
+        state.update(
+            {
+                "external_boundaries": remaining,
+                "next_action": (
+                    "await founder-controlled external boundaries: " + "; ".join(remaining)
+                    if remaining
+                    else "all documented internal delivery work is complete"
+                ),
+            }
+        )
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "external_boundary_completed",
+                "detail": completed_boundary,
+                "metadata": {"completed_boundary": completed_boundary, "external_boundaries": remaining},
             },
         )
 
