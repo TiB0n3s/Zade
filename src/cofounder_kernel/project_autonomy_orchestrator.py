@@ -119,6 +119,62 @@ class ProjectAutonomyOrchestrator:
             self._condition.notify_all()
         return {"accepted": True, "project_id": project_id, "reason": reason}
 
+    def replan(self, project_id: int) -> dict[str, Any]:
+        """Replace a completed plan from the project's current documentation.
+
+        This is an explicit founder-directed action.  A scan ingests newly added
+        documents, but intentionally does not reopen a completed MVP on its own.
+        """
+        project = self.reporter.get_project(project_id)
+        planning_project = dict(project)
+        metadata = dict(project.get("metadata") or {})
+        metadata["planner_founder_answers"] = [
+            str(event.get("detail") or "")
+            for event in reversed(self.db.list_project_events(project_id, limit=None))
+            if event.get("event_type") == "decision_applied"
+            and str(event.get("detail") or "").strip()
+        ]
+        planning_project["metadata"] = metadata
+        planned = self.planner.plan(planning_project)
+        founder_answers = list(metadata["planner_founder_answers"])
+        if (
+            planned.needs_decision is not None
+            and self._decision_repeats_accepted_answer(planned.needs_decision, founder_answers)
+        ):
+            metadata["planner_rejected_duplicate_decision"] = json.dumps(
+                planned.needs_decision, sort_keys=True
+            )
+            planning_project["metadata"] = metadata
+            planned = self.planner.plan(planning_project)
+        if planned.needs_decision is not None:
+            self.reporter.begin_new_scope(
+                project_id,
+                plan_revision=planned.plan_revision,
+                next_action="founder decision required before planning the documented scope",
+            )
+            project = self.reporter.get_project(project_id)
+            decision_id = self._file_decision(
+                project,
+                planned.needs_decision,
+                plan_revision=planned.plan_revision,
+                criterion_id=None,
+            )
+            return self.reporter.report_needs_decision(
+                project_id,
+                decision_id=decision_id,
+                question=planned.needs_decision["question"],
+                recommendation=planned.needs_decision["recommendation"],
+                options=planned.needs_decision["options"],
+            )
+        return self.reporter.plan(
+            project_id,
+            criteria=planned.criteria,
+            priority=str((project.get("autonomy") or {}).get("priority") or "normal"),
+            next_action="build the first dependency-ready criterion from the current documentation",
+            external_boundaries=planned.external_boundaries,
+            plan_revision=planned.plan_revision,
+        )
+
     def claim_ready(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         if self._shutdown or not self.config.project_intake.autonomy_enabled:
             return []

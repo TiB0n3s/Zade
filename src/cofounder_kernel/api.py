@@ -1074,6 +1074,18 @@ def create_app(config: KernelConfig | None = None, *, run_boot_maintenance: bool
             payload.project_id, reason=payload.reason
         )
 
+    @app.post("/project-intake/projects/{project_id}/autonomy/replan")
+    def replan_project_intake_autonomy(project_id: int) -> dict[str, Any]:
+        """Explicitly derive a fresh autonomy plan from the current project docs."""
+        try:
+            project = project_autonomy_orchestrator.replan(project_id)
+            project_autonomy_orchestrator.wake(
+                project_id, reason="founder requested documentation replan"
+            )
+            return {"project": project}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/project-intake/projects/{project_id}/autonomy/pause")
     def pause_project_intake_autonomy(
         project_id: int, payload: ProjectAutonomyPauseRequest

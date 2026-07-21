@@ -486,6 +486,38 @@ class ProjectAutonomyReporter:
             },
         )
 
+    def begin_new_scope(
+        self,
+        project_id: int,
+        *,
+        plan_revision: str,
+        next_action: str,
+    ) -> dict[str, Any]:
+        """Explicitly reopen a completed project before a new plan is available."""
+        project = self.get_project(project_id)
+        prior = self._state_for_project(project)
+        if not prior.get("mvp_complete") and prior.get("mvp_criteria"):
+            return project
+        state = _default_state()
+        state.update(
+            {
+                "priority": str(prior.get("priority") or "normal"),
+                "plan_revision": str(plan_revision or "").strip(),
+                "next_action": str(next_action or "re-plan the documented scope").strip(),
+                "external_boundaries": list(prior.get("external_boundaries") or []),
+                "_store_version": int(prior.get("_store_version") or 0),
+            }
+        )
+        return self._transition(
+            project,
+            state,
+            event={
+                "event_type": "autonomy_scope_reopened",
+                "detail": state["next_action"],
+                "metadata": {"plan_revision": state["plan_revision"]},
+            },
+        )
+
     def bind_run(self, project_id: int, *, run_id: int) -> dict[str, Any]:
         """Attach a recovered/resumed building phase to its current local run."""
         project = self.get_project(project_id)
